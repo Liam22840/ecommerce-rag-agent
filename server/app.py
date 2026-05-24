@@ -62,7 +62,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         prepared = app.state.assistant.prepare(message, request.session_id, request.top_k)
         return StreamingResponse(
             _sse_stream(app.state.assistant, prepared),
-            media_type="text/event-stream",
+            media_type="text/event-stream; charset=utf-8",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 

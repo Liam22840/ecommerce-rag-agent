@@ -60,10 +60,10 @@ class ArkChatClient:
         ) as resp:
             if resp.status_code >= 400:
                 raise ModelUnavailable(f"chat stream failed {resp.status_code}: {resp.text[:300]}")
-            for raw_line in resp.iter_lines(decode_unicode=True):
+            for raw_line in resp.iter_lines(decode_unicode=False):
                 if not raw_line:
                     continue
-                line = raw_line.strip()
+                line = raw_line.decode("utf-8").strip()
                 if line.startswith("data:"):
                     line = line[5:].strip()
                 if line == "[DONE]":
