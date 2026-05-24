@@ -1,5 +1,4 @@
 .DS_Store
-docs/
 .venv/
 .env
 data/*
@@ -8,3 +7,7 @@ data/*
 __pycache__/
 *.pyc
 .pytest_cache/
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
