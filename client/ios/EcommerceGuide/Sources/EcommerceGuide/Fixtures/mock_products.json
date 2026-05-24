@@ -1,0 +1,42 @@
+[
+  {
+    "product_id": "SKU-1001",
+    "title": "Everyday Linen Shirt",
+    "brand": "North & Field",
+    "category": "Apparel",
+    "sub_category": "Shirts",
+    "base_price": 68.00,
+    "image_path": "https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80",
+    "reason": "Breathable fabric and a relaxed cut make it easy to dress up or down."
+  },
+  {
+    "product_id": "SKU-2035",
+    "title": "Trail Knit Sneakers",
+    "brand": "Vela",
+    "category": "Footwear",
+    "sub_category": "Sneakers",
+    "base_price": 124.00,
+    "image_path": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=800&q=80",
+    "reason": "A cushioned all-day sneaker with enough grip for weekend errands."
+  },
+  {
+    "product_id": "SKU-4412",
+    "title": "Compact Crossbody Tote",
+    "brand": "Kanso Goods",
+    "category": "Accessories",
+    "sub_category": "Bags",
+    "base_price": 89.50,
+    "image_path": "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?auto=format&fit=crop&w=800&q=80",
+    "reason": "Keeps essentials organized without adding bulk."
+  },
+  {
+    "product_id": "SKU-5020",
+    "title": "Insulated Travel Tumbler",
+    "brand": "Morrow",
+    "category": "Home",
+    "sub_category": "Drinkware",
+    "base_price": 32.00,
+    "image_path": "https://images.unsplash.com/photo-1523362628745-0c100150b504?auto=format&fit=crop&w=800&q=80",
+    "reason": "A practical add-on for commutes, gym bags, and gifting."
+  }
+]
