@@ -3,8 +3,9 @@ ProjectSpecification.md
 docs/
 .venv/
 .env
-data/milvus.db.lock
-data/embedding_cache.jsonl
+data/*
+!data/milvus.db
+!data/embedding_cache.jsonl
 __pycache__/
 *.pyc
 .pytest_cache/

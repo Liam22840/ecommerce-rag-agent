@@ -1,6 +1,6 @@
 pymilvus==2.4.12
 milvus-lite==2.4.12
-setuptools<81
+setuptools<80
 requests>=2.31.0
 python-dotenv>=1.0.0
 fastapi>=0.111.0
