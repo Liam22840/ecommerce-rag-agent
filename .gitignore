@@ -8,3 +8,7 @@ data/embedding_cache.jsonl
 __pycache__/
 *.pyc
 .pytest_cache/
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
