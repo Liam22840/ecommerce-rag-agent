@@ -15,7 +15,7 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 uv venv
 uv pip install -r requirements.txt
 cp .env.example .env
-# Then edit .env and set ARK_API_KEY to your real Doubao key.
+# Then edit .env and set ARK_CHAT_API_KEY / ARK_EMBEDDING_API_KEY.
 ```
 
 ## Running the ingestion
@@ -67,6 +67,50 @@ for path in glob("ecommerce_agent_dataset/*/data/*.json"):
     p = json.load(open(path, encoding="utf-8"))
     PRODUCTS[p["product_id"]] = p
 ```
+
+## Running the backend API
+
+Create `.env` from the example and fill in the real Ark key locally:
+
+```bash
+cp .env.example .env
+# edit .env and set ARK_CHAT_API_KEY / ARK_EMBEDDING_API_KEY
+```
+
+The current backend uses separate Ark settings for chat and embeddings. Keep
+real keys in `.env` only:
+
+- `ARK_CHAT_API_KEY`: key for the chat model
+- `ARK_CHAT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
+- `ARK_CHAT_MODEL=ep-20260514111645-lmgt2`
+- `ARK_EMBEDDING_API_KEY`: key for query/product embeddings
+- `ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
+- `ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215`
+
+Start the FastAPI service:
+
+```bash
+.venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8000
+```
+
+Core endpoints:
+
+- `GET /health`
+- `POST /api/chat` for a full JSON response with answer + product cards
+- `POST /api/chat/stream` for SSE streaming replies
+- `GET /api/products/{product_id}` for product-card detail data
+
+Example:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"推荐一款适合油皮的洗面奶"}'
+```
+
+If the embedding key or the vector DB is unavailable, the service degrades to
+local lexical retrieval plus a deterministic grounded answer instead of
+hallucinating product facts.
 
 ## Running the tests
 
