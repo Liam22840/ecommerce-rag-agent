@@ -4,6 +4,7 @@ docs/
 .env
 data/*
 !data/milvus.db
+!data/embedding_cache.jsonl
 __pycache__/
 *.pyc
 .pytest_cache/
