@@ -1,6 +1,6 @@
 import SwiftUI
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 public struct ChatScreen: View {
     @StateObject private var viewModel: ChatViewModel
     @State private var selectedProduct: Product?
@@ -28,9 +28,9 @@ public struct ChatScreen: View {
                             ForEach(viewModel.timeline) { item in
                                 ChatTimelineItemView(
                                     item: item,
-                                    retryAction: viewModel.retryLastMessage,
+                                    retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
-                                    addToCartAction: viewModel.addToCart(product:)
+                                    addToCartAction: { viewModel.addToCart(product: $0) }
                                 )
                                 .id(item.id)
                             }
@@ -39,7 +39,7 @@ public struct ChatScreen: View {
                         .padding(.vertical, 18)
                     }
                     .background(GuideTheme.pageBackground)
-                    .onChange(of: viewModel.timeline) { _, items in
+                    .onChange(of: viewModel.timeline) { items in
                         guard let id = items.last?.id else {
                             return
                         }
@@ -55,8 +55,8 @@ public struct ChatScreen: View {
                 ChatComposerView(
                     text: $viewModel.draftMessage,
                     isSending: viewModel.isSending,
-                    sendAction: viewModel.sendDraftMessage,
-                    cancelAction: viewModel.cancelStreaming
+                    sendAction: { viewModel.sendDraftMessage() },
+                    cancelAction: { viewModel.cancelStreaming() }
                 )
             }
             .background(GuideTheme.pageBackground)
@@ -70,7 +70,7 @@ public struct ChatScreen: View {
     }
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 private struct ChatTimelineItemView: View {
     let item: ChatTimelineItem
     let retryAction: () -> Void

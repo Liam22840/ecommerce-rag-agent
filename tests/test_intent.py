@@ -32,3 +32,15 @@ def test_parses_brand_exclusion_for_future_advanced_cases():
     assert filters.max_price == 8000.0
     assert "华为" in filters.excluded_brands
 
+
+def test_parses_low_price_preference():
+    filters = _parser().parse("推荐一个适合敏感肌的保湿护肤品，cheaper is better")
+
+    assert filters.prefer_low_price is True
+    assert filters.required_terms == ["敏感肌", "保湿"]
+
+
+def test_parses_requested_specs():
+    filters = _parser().parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
+
+    assert filters.requested_specs == ["50g"]

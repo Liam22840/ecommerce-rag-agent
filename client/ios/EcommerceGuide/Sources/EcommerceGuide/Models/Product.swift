@@ -17,8 +17,71 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         case category
         case subCategory = "sub_category"
         case basePrice = "base_price"
+        case price
         case imagePath = "image_path"
         case reason
+        case matchedReason = "matched_reason"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.brand = try container.decode(String.self, forKey: .brand)
+        self.category = try container.decode(String.self, forKey: .category)
+        self.subCategory = try container.decode(String.self, forKey: .subCategory)
+        self.basePrice = try Self.decodePrice(from: container)
+        self.imagePath = try container.decode(String.self, forKey: .imagePath)
+        self.reason = try container.decodeIfPresent(String.self, forKey: .reason)
+            ?? container.decodeIfPresent(String.self, forKey: .matchedReason)
+    }
+
+    private static func decodePrice(from container: KeyedDecodingContainer<CodingKeys>) throws -> Decimal {
+        if let price = try decodeDecimal(forKey: .basePrice, from: container) {
+            return price
+        }
+        if let price = try decodeDecimal(forKey: .price, from: container) {
+            return price
+        }
+        throw DecodingError.keyNotFound(
+            CodingKeys.basePrice,
+            DecodingError.Context(
+                codingPath: container.codingPath,
+                debugDescription: "Expected base_price or price"
+            )
+        )
+    }
+
+    private static func decodeDecimal(
+        forKey key: CodingKeys,
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> Decimal? {
+        if let value = try? container.decode(Double.self, forKey: key) {
+            return Decimal(value)
+        }
+        if let value = try? container.decode(Int.self, forKey: key) {
+            return Decimal(value)
+        }
+        if let value = try? container.decode(String.self, forKey: key),
+           let decimal = Decimal(string: value) {
+            return decimal
+        }
+        if let value = try? container.decode(Decimal.self, forKey: key) {
+            return value
+        }
+        return nil
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(brand, forKey: .brand)
+        try container.encode(category, forKey: .category)
+        try container.encode(subCategory, forKey: .subCategory)
+        try container.encode(basePrice, forKey: .basePrice)
+        try container.encode(imagePath, forKey: .imagePath)
+        try container.encodeIfPresent(reason, forKey: .reason)
     }
 
     public init(

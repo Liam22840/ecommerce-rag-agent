@@ -68,6 +68,9 @@ class SearchFilters:
     category: str | None = None
     sub_category: str | None = None
     brand: str | None = None
+    prefer_low_price: bool = False
+    required_terms: list[str] = field(default_factory=list)
+    requested_specs: list[str] = field(default_factory=list)
     excluded_brands: list[str] = field(default_factory=list)
     excluded_terms: list[str] = field(default_factory=list)
     raw_query: str = ""
@@ -94,6 +97,9 @@ class IntentParser:
             if inferred in self._categories:
                 filters.category = inferred
         filters.brand = self._match_brand(text)
+        filters.prefer_low_price = _prefers_low_price(text)
+        filters.required_terms = _parse_required_terms(text)
+        filters.requested_specs = _parse_requested_specs(text)
         filters.excluded_brands = self._match_excluded_brands(text)
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
@@ -163,3 +169,42 @@ def _parse_excluded_terms(text: str) -> list[str]:
             if term and len(term) <= 20:
                 terms.append(term)
     return terms
+
+
+def _prefers_low_price(text: str) -> bool:
+    lowered = text.lower()
+    hints = [
+        "cheaper",
+        "cheap",
+        "low price",
+        "budget",
+        "便宜",
+        "低价",
+        "划算",
+        "性价比",
+        "不要太贵",
+        "价格低",
+        "价格从低到高",
+    ]
+    return any(hint in lowered for hint in hints)
+
+
+def _parse_required_terms(text: str) -> list[str]:
+    required_terms = []
+    if any(term in text for term in ["敏感肌", "敏感皮", "易敏", "干敏", "敏皮"]):
+        required_terms.append("敏感肌")
+    if any(term in text for term in ["保湿", "补水", "锁水", "滋润"]):
+        required_terms.append("保湿")
+    return required_terms
+
+
+def _parse_requested_specs(text: str) -> list[str]:
+    specs = []
+    pattern = r"\d+(?:\.\d+)?\s*(?:g|kg|克|千克|ml|mL|ML|l|L|升|毫升|片|枚|粒|支|瓶|包|盒|寸|英寸|gb|GB|tb|TB)"
+    for match in re.finditer(pattern, text):
+        specs.append(_normalize_spec(match.group(0)))
+    return list(dict.fromkeys(specs))
+
+
+def _normalize_spec(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()

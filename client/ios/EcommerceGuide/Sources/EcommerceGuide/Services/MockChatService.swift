@@ -1,6 +1,6 @@
 import Foundation
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 public struct MockChatService: ChatService {
     private let tokenDelay: UInt64
     private let fixtureName: String

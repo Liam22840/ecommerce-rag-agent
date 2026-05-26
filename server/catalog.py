@@ -8,7 +8,41 @@ from pathlib import Path
 from typing import Any
 
 from server.intent import SUB_CATEGORY_ALIASES, SearchFilters
-from server.schemas import ProductCard
+from server.schemas import ProductCard, SkuPrice
+
+
+REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
+    "敏感肌": ["敏感肌", "敏感性", "敏感皮", "干敏", "易敏", "敏皮"],
+    "保湿": ["保湿", "补水", "锁水", "滋润"],
+}
+
+STRONG_SENSITIVE_SIGNALS = [
+    "专为敏感肌",
+    "专为干性敏感肌",
+    "专为干敏肌",
+    "敏感肌打造",
+    "敏感肌友好",
+    "敏感肌可放心",
+    "敏感肌放心",
+    "敏感肌福音",
+    "干敏皮福音",
+    "干敏肌救星",
+    "易敏肌适用",
+    "通过敏感肌测试",
+    "大部分敏感肌",
+    "敏感肌可使用",
+    "敏感肌能用",
+    "对敏感肌友好",
+]
+
+WEAK_SENSITIVE_ONLY_SIGNALS = [
+    "敏感肌需先",
+    "敏感肌先",
+    "敏感肌建议先",
+    "敏感肌需谨慎",
+    "敏感肌谨慎",
+    "敏感肌慎入",
+]
 
 
 @dataclass
@@ -61,30 +95,51 @@ class ProductCatalog:
             raise KeyError(product_id)
         return product
 
-    def product_card(self, product: dict[str, Any], matched_reason: str | None = None) -> ProductCard:
+    def product_card(
+        self,
+        product: dict[str, Any],
+        matched_reason: str | None = None,
+        filters: SearchFilters | None = None,
+    ) -> ProductCard:
+        selected_sku = self.selected_price_sku(product, filters)
+        lowest_sku = self.lowest_price_sku(product)
         return ProductCard(
             product_id=product["product_id"],
             title=product["title"],
             brand=product["brand"],
             category=product["category"],
             sub_category=product["sub_category"],
-            price=self.lowest_price(product),
+            price=selected_sku["price"] if selected_sku else self.lowest_price(product),
+            price_label=self.price_label(product, filters),
+            price_summary=self.price_summary(product),
+            lowest_price_sku=SkuPrice(**lowest_sku) if lowest_sku else None,
+            selected_price_sku=SkuPrice(**selected_sku) if selected_sku else None,
             image_path=product["image_path"],
             detail_path=f"/api/products/{product['product_id']}",
             matched_reason=matched_reason,
         )
 
-    def product_facts(self, product: dict[str, Any]) -> dict[str, Any]:
+    def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
         reviews = product.get("rag_knowledge", {}).get("user_reviews", [])
         faqs = product.get("rag_knowledge", {}).get("official_faq", [])
+        selected_sku = self.selected_price_sku(product, filters)
         return {
             "product_id": product["product_id"],
             "title": product["title"],
             "brand": product["brand"],
             "category": product["category"],
             "sub_category": product["sub_category"],
-            "price": self.lowest_price(product),
+            "lowest_price": self.lowest_price(product),
+            "price_label": self.price_label(product, filters),
+            "price_summary": self.price_summary(product),
+            "lowest_price_sku": self.lowest_price_sku(product),
+            "selected_price_sku": selected_sku,
+            "sku_prices": self.sku_prices(product),
             "sku_count": len(product.get("skus", [])),
+            "price_instruction": (
+                "Use price_label or price_summary verbatim. If the title contains a spec that differs "
+                "from the lowest_price_sku label, do not attach the lowest price to the title spec."
+            ),
             "description": product.get("rag_knowledge", {}).get("marketing_description", ""),
             "faq": faqs[:3],
             "reviews": reviews[:3],
@@ -119,6 +174,11 @@ class ProductCatalog:
             return False
 
         haystack = self._haystack(product)
+        if filters.requested_specs and not self.matches_requested_specs(product, filters.requested_specs):
+            return False
+        for term in filters.required_terms:
+            if not self._matches_required_term(product, term, haystack):
+                return False
         for term in filters.excluded_terms:
             if term and term in haystack:
                 return False
@@ -134,6 +194,78 @@ class ProductCatalog:
         if sku_prices:
             return min(sku_prices)
         return float(product["base_price"])
+
+    def sku_prices(self, product: dict[str, Any]) -> list[dict[str, Any]]:
+        sku_prices = []
+        for sku in product.get("skus", []):
+            price = sku.get("price")
+            if not isinstance(price, int | float):
+                continue
+            properties = sku.get("properties") or {}
+            label_parts = [str(value).strip() for value in properties.values() if str(value).strip()]
+            label = " ".join(label_parts) if label_parts else "默认规格"
+            sku_prices.append({
+                "sku_id": sku.get("sku_id"),
+                "label": label,
+                "price": float(price),
+            })
+        if sku_prices:
+            return sorted(sku_prices, key=lambda item: (item["price"], item["label"]))
+        return [{
+            "sku_id": None,
+            "label": "默认规格",
+            "price": float(product["base_price"]),
+        }]
+
+    def lowest_price_sku(self, product: dict[str, Any]) -> dict[str, Any] | None:
+        sku_prices = self.sku_prices(product)
+        return sku_prices[0] if sku_prices else None
+
+    def selected_price_sku(
+        self,
+        product: dict[str, Any],
+        filters: SearchFilters | None = None,
+    ) -> dict[str, Any] | None:
+        if filters and filters.requested_specs:
+            for item in self.sku_prices(product):
+                normalized_label = _normalize_spec_text(item["label"])
+                if all(spec in normalized_label for spec in filters.requested_specs):
+                    return item
+        return self.lowest_price_sku(product)
+
+    def price_label(self, product: dict[str, Any], filters: SearchFilters | None = None) -> str:
+        sku_prices = self.sku_prices(product)
+        if not sku_prices:
+            return f"{float(product['base_price']):g}元"
+
+        selected = self.selected_price_sku(product, filters) or sku_prices[0]
+        if filters and filters.requested_specs:
+            return f"{selected['price']:g}元（{selected['label']}）"
+
+        lowest = selected
+        prices = {item["price"] for item in sku_prices}
+        if len(sku_prices) == 1:
+            return f"{lowest['price']:g}元（{lowest['label']}）"
+        if len(prices) == 1:
+            labels = " / ".join(item["label"] for item in sku_prices[:3])
+            return f"{lowest['price']:g}元（{labels}）"
+        return f"{lowest['price']:g}元起（{lowest['label']}）"
+
+    def price_summary(self, product: dict[str, Any]) -> str:
+        return "；".join(
+            f"{item['label']} {item['price']:g}元"
+            for item in self.sku_prices(product)
+        )
+
+    def matches_requested_specs(self, product: dict[str, Any], requested_specs: list[str]) -> bool:
+        if not requested_specs:
+            return True
+        normalized_title = _normalize_spec_text(product.get("title", ""))
+        normalized_skus = [_normalize_spec_text(item["label"]) for item in self.sku_prices(product)]
+        return all(
+            spec in normalized_title or any(spec in label for label in normalized_skus)
+            for spec in requested_specs
+        )
 
     def _score_product(
         self,
@@ -154,6 +286,8 @@ class ProductCatalog:
         if filters.brand and product["brand"] == filters.brand:
             score += 5
 
+        score += self._required_term_score(product, filters)
+
         for term in query_terms:
             term_l = term.lower()
             if not term_l:
@@ -173,6 +307,47 @@ class ProductCatalog:
         if not query_terms and (filters.category or filters.sub_category or filters.max_price):
             score += 1
         return score, _dedupe(snippets)[:3]
+
+    def _required_term_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
+        if not filters.required_terms:
+            return 0.0
+
+        score = 0.0
+        haystack = self._haystack(product)
+        title = product["title"]
+        description = product.get("rag_knowledge", {}).get("marketing_description", "")
+
+        if "敏感肌" in filters.required_terms:
+            score += self._sensitive_relevance_score(product, haystack) * 4
+
+        if "保湿" in filters.required_terms:
+            if "保湿" in title or "补水" in title:
+                score += 5
+            if any(term in description for term in ["保湿", "补水", "锁水", "滋润"]):
+                score += 4
+
+        return score
+
+    def _matches_required_term(self, product: dict[str, Any], term: str, haystack: str) -> bool:
+        if term == "敏感肌":
+            return self._sensitive_relevance_score(product, haystack) > 0
+        aliases = REQUIRED_TERM_ALIASES.get(term, [term])
+        return any(alias in haystack for alias in aliases)
+
+    def _sensitive_relevance_score(self, product: dict[str, Any], haystack: str | None = None) -> float:
+        haystack = haystack if haystack is not None else self._haystack(product)
+        title = product["title"]
+        description = product.get("rag_knowledge", {}).get("marketing_description", "")
+        score = 0.0
+        if "敏感肌" in title or "干敏" in title or "易敏" in title:
+            score += 2
+        if any(signal in description for signal in STRONG_SENSITIVE_SIGNALS):
+            score += 2
+        elif any(signal in haystack for signal in STRONG_SENSITIVE_SIGNALS):
+            score += 1
+        if any(signal in description for signal in WEAK_SENSITIVE_ONLY_SIGNALS):
+            score -= 2
+        return score
 
     def _haystack(self, product: dict[str, Any]) -> str:
         parts = [
@@ -214,3 +389,6 @@ def _dedupe(items: list[str]) -> list[str]:
             out.append(item)
     return out
 
+
+def _normalize_spec_text(value: str) -> str:
+    return "".join(str(value).lower().split())

@@ -1,6 +1,6 @@
 import SwiftUI
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct ChatHeaderView: View {
     let cartItems: [CartItem]
 
@@ -48,7 +48,7 @@ struct ChatHeaderView: View {
     }
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct CartPillView: View {
     let cartItems: [CartItem]
 

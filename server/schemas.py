@@ -10,7 +10,18 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
     session_id: str | None = Field(default=None, max_length=128)
-    top_k: int = Field(default=5, ge=1, le=10)
+    conversation_id: str | None = Field(default=None, max_length=128)
+    top_k: int = Field(default=3, ge=1, le=10)
+
+    @property
+    def effective_session_id(self) -> str | None:
+        return self.session_id or self.conversation_id
+
+
+class SkuPrice(BaseModel):
+    sku_id: str | None = None
+    label: str
+    price: float
 
 
 class ProductCard(BaseModel):
@@ -20,6 +31,10 @@ class ProductCard(BaseModel):
     category: str
     sub_category: str
     price: float
+    price_label: str
+    price_summary: str
+    lowest_price_sku: SkuPrice | None = None
+    selected_price_sku: SkuPrice | None = None
     image_path: str
     detail_path: str
     matched_reason: str | None = None
@@ -33,4 +48,3 @@ class ChatResponse(BaseModel):
     retrieval_source: Literal["vector", "lexical", "hybrid", "none"]
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
-

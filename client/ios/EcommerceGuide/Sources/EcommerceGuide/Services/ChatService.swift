@@ -12,7 +12,7 @@ public struct ChatRequest: Equatable, Sendable {
     }
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 public protocol ChatService: Sendable {
     func streamChat(for request: ChatRequest) -> AsyncThrowingStream<ChatStreamEvent, Error>
 }

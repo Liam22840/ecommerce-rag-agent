@@ -5,7 +5,7 @@ import UIKit
 import AppKit
 #endif
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 enum GuideTheme {
 #if canImport(UIKit)
     static let pageBackground = Color(uiColor: .systemGroupedBackground)
@@ -44,7 +44,7 @@ enum GuideTheme {
     }()
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 extension Product {
     var formattedPrice: String {
         let value = NSDecimalNumber(decimal: basePrice)

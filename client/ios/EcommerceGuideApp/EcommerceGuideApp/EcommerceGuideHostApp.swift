@@ -13,10 +13,10 @@ struct EcommerceGuideHostApp: App {
         let value = ProcessInfo.processInfo.environment["ECOMMERCE_GUIDE_SERVICE"]
             ?? UserDefaults.standard.string(forKey: "EcommerceGuideService")
 
-        if value?.lowercased() == "sse" {
-            return SSEChatService()
+        if value?.lowercased() == "mock" {
+            return MockChatService()
         }
 
-        return MockChatService()
+        return SSEChatService()
     }
 }

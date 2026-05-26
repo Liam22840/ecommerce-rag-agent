@@ -1,6 +1,6 @@
 import SwiftUI
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct ProductCarouselView: View {
     let products: [Product]
     let productAction: (Product) -> Void
@@ -28,7 +28,7 @@ struct ProductCarouselView: View {
     }
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct ProductCardView: View {
     let product: Product
     let productAction: (Product) -> Void
@@ -98,7 +98,7 @@ struct ProductCardView: View {
     }
 }
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct ProductImageView: View {
     let product: Product
 
@@ -141,7 +141,7 @@ struct ProductImageView: View {
     private var productImageBaseURL: URL {
         let configured = UserDefaults.standard.string(forKey: "EcommerceGuideBackendURL")
             .flatMap(URL.init(string:))
-        let endpoint = configured ?? URL(string: "http://127.0.0.1:8000/api/v1/chat/stream")!
+        let endpoint = configured ?? URL(string: "http://127.0.0.1:8000/api/chat/stream")!
 
         var components = URLComponents()
         components.scheme = endpoint.scheme

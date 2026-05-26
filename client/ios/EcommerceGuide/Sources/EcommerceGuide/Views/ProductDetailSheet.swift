@@ -1,6 +1,6 @@
 import SwiftUI
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 struct ProductDetailSheet: View {
     let product: Product
     let addToCartAction: () -> Void

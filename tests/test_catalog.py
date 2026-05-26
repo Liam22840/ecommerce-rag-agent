@@ -19,6 +19,33 @@ def test_catalog_loads_all_products_and_builds_cards():
     assert card.detail_path == "/api/products/p_beauty_011"
 
 
+def test_catalog_exposes_sku_safe_price_labels():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+
+    product = catalog.require("p_beauty_007")
+    card = catalog.product_card(product)
+
+    assert card.price == 89.0
+    assert card.price_label == "89元起（15g 体验装）"
+    assert card.price_summary == "15g 体验装 89元；50g 标准装 268元"
+    assert card.lowest_price_sku is not None
+    assert card.lowest_price_sku.label == "15g 体验装"
+
+
+def test_catalog_uses_requested_sku_price_when_specified():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
+    filters = parser.parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
+
+    product = catalog.require("p_beauty_007")
+    card = catalog.product_card(product, filters=filters)
+
+    assert card.price == 268.0
+    assert card.price_label == "268元（50g 标准装）"
+    assert card.selected_price_sku is not None
+    assert card.selected_price_sku.label == "50g 标准装"
+
+
 def test_lexical_search_handles_basic_skin_care_query():
     catalog = ProductCatalog.load(DATASET_ROOT)
     parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
@@ -40,3 +67,12 @@ def test_lexical_search_respects_budget_filter():
 
     assert hits == []
 
+
+def test_sensitive_skin_search_requires_positive_sensitive_fit():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
+    filters = parser.parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
+
+    hits = catalog.search_lexical("推荐50g适合敏感肌的保湿霜，cheaper is better", filters, limit=5)
+
+    assert [hit.product["product_id"] for hit in hits] == ["p_beauty_007"]
