@@ -7,6 +7,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
     public let category: String
     public let subCategory: String
     public let basePrice: Decimal
+    public let priceLabel: String?
+    public let priceSummary: String?
     public let imagePath: String
     public let reason: String?
 
@@ -18,6 +20,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         case subCategory = "sub_category"
         case basePrice = "base_price"
         case price
+        case priceLabel = "price_label"
+        case priceSummary = "price_summary"
         case imagePath = "image_path"
         case reason
         case matchedReason = "matched_reason"
@@ -31,6 +35,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         self.category = try container.decode(String.self, forKey: .category)
         self.subCategory = try container.decode(String.self, forKey: .subCategory)
         self.basePrice = try Self.decodePrice(from: container)
+        self.priceLabel = try container.decodeIfPresent(String.self, forKey: .priceLabel)
+        self.priceSummary = try container.decodeIfPresent(String.self, forKey: .priceSummary)
         self.imagePath = try container.decode(String.self, forKey: .imagePath)
         self.reason = try container.decodeIfPresent(String.self, forKey: .reason)
             ?? container.decodeIfPresent(String.self, forKey: .matchedReason)
@@ -80,6 +86,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         try container.encode(category, forKey: .category)
         try container.encode(subCategory, forKey: .subCategory)
         try container.encode(basePrice, forKey: .basePrice)
+        try container.encodeIfPresent(priceLabel, forKey: .priceLabel)
+        try container.encodeIfPresent(priceSummary, forKey: .priceSummary)
         try container.encode(imagePath, forKey: .imagePath)
         try container.encodeIfPresent(reason, forKey: .reason)
     }
@@ -91,6 +99,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         category: String,
         subCategory: String,
         basePrice: Decimal,
+        priceLabel: String? = nil,
+        priceSummary: String? = nil,
         imagePath: String,
         reason: String? = nil
     ) {
@@ -100,6 +110,8 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         self.category = category
         self.subCategory = subCategory
         self.basePrice = basePrice
+        self.priceLabel = priceLabel
+        self.priceSummary = priceSummary
         self.imagePath = imagePath
         self.reason = reason
     }

@@ -29,6 +29,15 @@ struct ProductDetailSheet: View {
                         Text(product.formattedPrice)
                             .font(.title3.weight(.bold))
                             .foregroundStyle(GuideTheme.accent)
+
+                        if let priceSummary = product.priceSummary,
+                           !priceSummary.isEmpty,
+                           priceSummary != product.formattedPrice {
+                            Text(priceSummary)
+                                .font(.footnote)
+                                .foregroundStyle(GuideTheme.secondaryInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
 
                     HStack(spacing: 8) {

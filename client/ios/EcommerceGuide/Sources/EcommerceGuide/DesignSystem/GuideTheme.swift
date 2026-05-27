@@ -47,6 +47,9 @@ enum GuideTheme {
 @available(iOS 17.0, macOS 13.0, *)
 extension Product {
     var formattedPrice: String {
+        if let priceLabel, !priceLabel.isEmpty {
+            return priceLabel
+        }
         let value = NSDecimalNumber(decimal: basePrice)
         return GuideTheme.currencyFormatter.string(from: value) ?? "\(basePrice)"
     }

@@ -19,7 +19,7 @@ final class SSEEventParserTests: XCTestCase {
         let second = try parseFrame(["data: {\"type\":\"token\",\"delta\":\" are durable\"}", ""])
         let products = try parseFrame([
             "event: products",
-            "data: {\"items\":[{\"product_id\":\"BOOT-1\",\"title\":\"Summit Boot\",\"brand\":\"Northstar\",\"category\":\"Shoes\",\"sub_category\":\"Boots\",\"base_price\":189.00,\"image_path\":\"images/boot-1.jpg\",\"reason\":\"Good grip\"}]}",
+            "data: {\"items\":[{\"product_id\":\"BOOT-1\",\"title\":\"Summit Boot\",\"brand\":\"Northstar\",\"category\":\"Shoes\",\"sub_category\":\"Boots\",\"base_price\":189.00,\"price_label\":\"189元起（基础款）\",\"price_summary\":\"基础款 189元；加强款 239元\",\"image_path\":\"images/boot-1.jpg\",\"reason\":\"Good grip\"}]}",
             ""
         ])
         let cart = try parseFrame([
@@ -38,6 +38,8 @@ final class SSEEventParserTests: XCTestCase {
                 category: "Shoes",
                 subCategory: "Boots",
                 basePrice: Decimal(string: "189.00")!,
+                priceLabel: "189元起（基础款）",
+                priceSummary: "基础款 189元；加强款 239元",
                 imagePath: "images/boot-1.jpg",
                 reason: "Good grip"
             )
@@ -174,7 +176,7 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
             "data: {\"type\":\"token\",\"token\":\"按\",\"delta\":\"按\",\"text\":\"按\"}",
             "",
             "event: products",
-            "data: {\"type\":\"products\",\"products\":[{\"product_id\":\"p_beauty_007\",\"title\":\"薇诺娜舒敏保湿特护霜\",\"brand\":\"薇诺娜\",\"category\":\"美妆护肤\",\"sub_category\":\"面霜\",\"base_price\":89.0,\"image_path\":\"1_美妆护肤/images/p_beauty_007_live.jpg\",\"reason\":\"适合敏感肌\"}],\"items\":[{\"product_id\":\"p_beauty_007\",\"title\":\"薇诺娜舒敏保湿特护霜\",\"brand\":\"薇诺娜\",\"category\":\"美妆护肤\",\"sub_category\":\"面霜\",\"base_price\":89.0,\"image_path\":\"1_美妆护肤/images/p_beauty_007_live.jpg\",\"reason\":\"适合敏感肌\"}]}",
+            "data: {\"type\":\"products\",\"products\":[{\"product_id\":\"p_beauty_007\",\"title\":\"薇诺娜舒敏保湿特护霜\",\"brand\":\"薇诺娜\",\"category\":\"美妆护肤\",\"sub_category\":\"面霜\",\"base_price\":89.0,\"price_label\":\"89元起（15g 体验装）\",\"price_summary\":\"15g 体验装 89元；50g 标准装 268元\",\"image_path\":\"1_美妆护肤/images/p_beauty_007_live.jpg\",\"reason\":\"适合敏感肌\"}],\"items\":[{\"product_id\":\"p_beauty_007\",\"title\":\"薇诺娜舒敏保湿特护霜\",\"brand\":\"薇诺娜\",\"category\":\"美妆护肤\",\"sub_category\":\"面霜\",\"base_price\":89.0,\"price_label\":\"89元起（15g 体验装）\",\"price_summary\":\"15g 体验装 89元；50g 标准装 268元\",\"image_path\":\"1_美妆护肤/images/p_beauty_007_live.jpg\",\"reason\":\"适合敏感肌\"}]}",
             "",
             "event: done",
             "data: {\"type\":\"done\",\"message_id\":\"msg-1\"}",
@@ -222,6 +224,8 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
                     category: "美妆护肤",
                     subCategory: "面霜",
                     basePrice: Decimal(string: "89.0")!,
+                    priceLabel: "89元起（15g 体验装）",
+                    priceSummary: "15g 体验装 89元；50g 标准装 268元",
                     imagePath: "1_美妆护肤/images/p_beauty_007_live.jpg",
                     reason: "适合敏感肌"
                 )
@@ -262,6 +266,10 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
 
         XCTAssertFalse(answer.isEmpty)
         XCTAssertFalse(products.isEmpty)
+        XCTAssertTrue(answer.contains("89元起（15g 体验装）"))
+        XCTAssertTrue(answer.contains("50g 标准装 268元"))
+        XCTAssertEqual(products.first?.formattedPrice, "89元起（15g 体验装）")
+        XCTAssertEqual(products.first?.priceSummary, "15g 体验装 89元；50g 标准装 268元")
         XCTAssertTrue(sawDone)
     }
 }
