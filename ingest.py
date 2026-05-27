@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from ingestion.cache import EmbeddingCache
 from ingestion.chunk import extract_chunks
-from ingestion.embed import DoubaoEmbedder
+from ingestion.embed import DEFAULT_BASE_URL, DEFAULT_MODEL, DoubaoEmbedder
 from ingestion.milvus_store import MilvusStore
 
 DATA_DIR = Path("data")
@@ -40,14 +40,20 @@ def main() -> int:
     args = parser.parse_args()
 
     load_dotenv()
-    api_key = os.environ.get("ARK_API_KEY")
+    api_key = os.environ.get("ARK_EMBEDDING_API_KEY")
     if not api_key:
-        print("ERROR: ARK_API_KEY not set in environment or .env", file=sys.stderr)
+        print("ERROR: ARK_EMBEDDING_API_KEY not set in environment or .env", file=sys.stderr)
         return 1
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cache = EmbeddingCache(CACHE_PATH)
-    embedder = DoubaoEmbedder(api_key=api_key, cache=cache, dataset_root=DATASET_ROOT)
+    embedder = DoubaoEmbedder(
+        api_key=api_key,
+        cache=cache,
+        dataset_root=DATASET_ROOT,
+        base_url=os.environ.get("ARK_EMBEDDING_BASE_URL", DEFAULT_BASE_URL),
+        model=os.environ.get("ARK_EMBEDDING_MODEL", DEFAULT_MODEL),
+    )
     store = MilvusStore(uri=str(MILVUS_PATH), dim=EMBEDDING_DIM)
     store.ensure_collection()
 

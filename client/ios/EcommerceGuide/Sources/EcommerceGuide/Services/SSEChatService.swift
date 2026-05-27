@@ -1,6 +1,6 @@
 import Foundation
 
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 public struct SSEChatService: ChatService {
     public let endpointURL: URL
 
@@ -35,11 +35,21 @@ public struct SSEChatService: ChatService {
                     }
 
                     var parser = SSEEventParser()
+                    var lineScanner = SSELineScanner()
 
-                    for try await line in bytes.lines {
+                    for try await byte in bytes {
+                        guard let line = lineScanner.consume(byte: byte) else {
+                            continue
+                        }
+
                         if let event = try parser.consume(line: line) {
                             continuation.yield(event)
                         }
+                    }
+
+                    if let line = lineScanner.finish(),
+                       let event = try parser.consume(line: line) {
+                        continuation.yield(event)
                     }
 
                     if let event = try parser.finish() {
@@ -64,8 +74,51 @@ public struct SSEChatService: ChatService {
             return url
         }
 
-        return URL(string: "http://127.0.0.1:8000/api/v1/chat/stream")!
+        return URL(string: "http://127.0.0.1:8000/api/chat/stream")!
     }
+}
+
+struct SSELineScanner {
+    private var buffer = Data()
+    private var previousByteWasCarriageReturn = false
+
+    mutating func consume(byte: UInt8) -> String? {
+        if previousByteWasCarriageReturn {
+            previousByteWasCarriageReturn = false
+            if byte == Self.lineFeed {
+                return nil
+            }
+        }
+
+        switch byte {
+        case Self.lineFeed:
+            return flush()
+        case Self.carriageReturn:
+            previousByteWasCarriageReturn = true
+            return flush()
+        default:
+            buffer.append(byte)
+            return nil
+        }
+    }
+
+    mutating func finish() -> String? {
+        previousByteWasCarriageReturn = false
+        guard !buffer.isEmpty else {
+            return nil
+        }
+
+        return flush()
+    }
+
+    private mutating func flush() -> String {
+        let line = String(decoding: buffer, as: UTF8.self)
+        buffer.removeAll(keepingCapacity: true)
+        return line
+    }
+
+    private static let lineFeed = UInt8(ascii: "\n")
+    private static let carriageReturn = UInt8(ascii: "\r")
 }
 
 struct SSEEventParser {
@@ -73,6 +126,8 @@ struct SSEEventParser {
     private var dataLines: [String] = []
 
     mutating func consume(line: String) throws -> ChatStreamEvent? {
+        let line = line.trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
+
         guard !line.isEmpty else {
             return try flush()
         }
@@ -80,10 +135,11 @@ struct SSEEventParser {
         if line.hasPrefix(":") {
             return nil
         } else if line.hasPrefix("event:") {
-            eventName = line.dropFirst("event:".count).trimmingCharacters(in: .whitespaces)
+            eventName = sseFieldValue(from: line, field: "event")
         } else if line.hasPrefix("data:") {
-            let value = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
-            dataLines.append(value)
+            dataLines.append(sseFieldValue(from: line, field: "data"))
+        } else if line == "[DONE]" || line.hasPrefix("{") || line.hasPrefix("[") {
+            dataLines.append(line)
         }
 
         return nil
@@ -94,14 +150,17 @@ struct SSEEventParser {
     }
 
     private mutating func flush() throws -> ChatStreamEvent? {
+        defer {
+            eventName = nil
+            dataLines.removeAll(keepingCapacity: true)
+        }
+
         guard !dataLines.isEmpty else {
             return nil
         }
 
         let payload = dataLines.joined(separator: "\n")
         let eventName = eventName
-        self.eventName = nil
-        dataLines.removeAll(keepingCapacity: true)
 
         if payload == "[DONE]" {
             return .done(messageID: nil)
@@ -112,11 +171,53 @@ struct SSEEventParser {
         }
 
         do {
-            let decoded = try JSONDecoder().decode(StreamEventPayload.self, from: data)
-            return try decoded.streamEvent(fallbackType: eventName)
+            if let event = try parsePrimitiveEvent(data: data, fallbackType: eventName) {
+                return event
+            }
         } catch {
             throw ChatServiceError.malformedEvent(payload)
         }
+
+        do {
+            let decoded = try JSONDecoder().decode(StreamEventPayload.self, from: data)
+            return decoded.streamEvent(fallbackType: eventName)
+        } catch {
+            throw ChatServiceError.malformedEvent(payload)
+        }
+    }
+
+    private func parsePrimitiveEvent(data: Data, fallbackType: String?) throws -> ChatStreamEvent? {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let payload = object as? [String: Any] else {
+            return nil
+        }
+
+        let eventType = payload["type"] as? String
+            ?? payload["event"] as? String
+            ?? fallbackType
+
+        switch eventType {
+        case "token", "delta":
+            let token = payload["token"] as? String
+                ?? payload["delta"] as? String
+                ?? payload["text"] as? String
+                ?? ""
+            return .token(token)
+        case "done":
+            return .done(messageID: payload["message_id"] as? String ?? payload["messageID"] as? String)
+        case "meta", "metadata", "debug", "warning", "warnings":
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private func sseFieldValue(from line: String, field: String) -> String {
+        var value = line.dropFirst(field.count + 1)
+        if value.first == " " {
+            value = value.dropFirst()
+        }
+        return String(value)
     }
 }
 
@@ -164,9 +265,9 @@ private struct StreamEventPayload: Decodable {
             ?? container.decodeIfPresent(String.self, forKey: .messageIDSnake)
     }
 
-    func streamEvent(fallbackType: String?) throws -> ChatStreamEvent {
+    func streamEvent(fallbackType: String?) -> ChatStreamEvent? {
         switch type ?? event ?? fallbackType {
-        case "token":
+        case "token", "delta":
             return .token(token ?? delta ?? text ?? "")
         case "products":
             return .products(products ?? items ?? [])
@@ -184,8 +285,10 @@ private struct StreamEventPayload: Decodable {
             return .cartUpdated(parsedItems, summary: summary)
         case "done":
             return .done(messageID: messageID)
+        case "meta", "metadata", "debug", "warning", "warnings":
+            return nil
         default:
-            throw ChatServiceError.malformedEvent(type ?? event ?? "unknown")
+            return nil
         }
     }
 }

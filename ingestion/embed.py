@@ -12,8 +12,8 @@ import requests
 from ingestion.cache import EmbeddingCache, image_key, text_key
 from ingestion.chunk import Chunk
 
-ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
-MODEL = "doubao-embedding-vision-251215"
+DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_MODEL = "doubao-embedding-vision-251215"
 MAX_ATTEMPTS = 3
 
 
@@ -23,11 +23,15 @@ class DoubaoEmbedder:
         api_key: str,
         cache: EmbeddingCache,
         dataset_root: Optional[Path] = None,
+        base_url: str = DEFAULT_BASE_URL,
+        model: str = DEFAULT_MODEL,
         retry_sleep: float = 2.0,
     ):
         self._api_key = api_key
         self._cache = cache
         self._dataset_root = Path(dataset_root) if dataset_root else Path(".")
+        self._base_url = base_url.rstrip("/")
+        self._model = model
         self._retry_sleep = retry_sleep
 
     def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
@@ -38,14 +42,13 @@ class DoubaoEmbedder:
         results: list[list[float]] = []
         for chunk in chunks:
             key, item = self._build_input(chunk)
-            cached = self._cache.get(key)
-            if cached is not None:
-                results.append(cached)
-                continue
-            vec = self._call_api(item)
-            self._cache.put(key, vec)
-            results.append(vec)
+            results.append(self._embed_item(key, item))
         return results
+
+    def embed_text(self, text: str) -> list[float]:
+        """Embed a standalone text query with the same model/cache as chunks."""
+        key = text_key(text)
+        return self._embed_item(key, {"type": "text", "text": text})
 
     def _build_input(self, chunk: Chunk) -> tuple[str, dict]:
         """Return (cache_key, api_input_item) for a single chunk."""
@@ -63,17 +66,26 @@ class DoubaoEmbedder:
             key = text_key(chunk.text)
             return key, {"type": "text", "text": chunk.text}
 
+    def _embed_item(self, key: str, item: dict) -> list[float]:
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        vec = self._call_api(item)
+        self._cache.put(key, vec)
+        return vec
+
     def _call_api(self, item: dict) -> list[float]:
-        payload = {"model": MODEL, "input": [item]}
+        payload = {"model": self._model, "input": [item]}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        endpoint = f"{self._base_url}/embeddings/multimodal"
 
         last_err: Optional[Exception] = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                resp = requests.post(ENDPOINT, headers=headers, json=payload, timeout=60)
+                resp = requests.post(endpoint, headers=headers, json=payload, timeout=60)
             except requests.RequestException as e:
                 last_err = e
                 if attempt < MAX_ATTEMPTS:

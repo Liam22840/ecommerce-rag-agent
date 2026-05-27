@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-@available(iOS 17.0, macOS 14.0, *)
+@available(iOS 17.0, macOS 13.0, *)
 public final class ChatViewModel: ObservableObject {
     @Published public var timeline: [ChatTimelineItem]
     @Published public var draftMessage: String
