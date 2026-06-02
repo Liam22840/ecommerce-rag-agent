@@ -106,20 +106,11 @@ class ShoppingAssistant:
             condition = "、".join(constraints) if constraints else query
             return f"没有在商品库中找到完全匹配“{condition}”的商品。可以放宽预算、换一个类目，或补充你更看重的功能。"
 
-        order_note = "，并按价格从低到高排列" if filters.prefer_low_price else ""
-        lines = [f"我按你的条件从商品库里筛选出以下{len(hits[:3])}款{order_note}："]
-        for idx, hit in enumerate(hits[:3], start=1):
-            product = hit.product
-            reason = _reason(hit, filters)
-            price_label = self._catalog.price_label(product, filters)
-            price_summary = self._catalog.price_summary(product)
-            line = f"{idx}. {product['title']}，{product['brand']}，价格：{price_label}。"
-            if price_summary and price_summary != price_label:
-                line += f"SKU价格明细：{price_summary}。"
-            line += f"{reason}。"
-            lines.append(line)
-        lines.append("以上商品名、品牌、类目、SKU和价格均来自当前商品库；多规格商品以SKU价格明细为准。")
-        return "\n".join(lines)
+        count = len(hits[:3])
+        order_note = "，已按价格从低到高排列" if filters.prefer_low_price else ""
+        if count == 1:
+            return f"我从商品库里找到1款符合条件的商品{order_note}。价格、规格和推荐理由都放在下方商品卡里，多规格商品以卡片/详情里的SKU价格为准。"
+        return f"我从商品库里筛出{count}款符合条件的商品{order_note}。你可以直接看下方商品卡的价格、规格和推荐理由，多规格商品以卡片/详情里的SKU价格为准。"
 
 
 def _reason(hit: CatalogHit, filters: SearchFilters) -> str:

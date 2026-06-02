@@ -113,4 +113,31 @@ final class ProductDecodingTests: XCTestCase {
 
         XCTAssertEqual(product.basePrice, Decimal(string: "18.50")!)
     }
+
+    func testDecodesOptionalComparisonMetadata() throws {
+        let json = """
+        {
+          "product_id": "SKU-004",
+          "title": "Comparison Ready Product",
+          "brand": "GuideLab",
+          "category": "Beauty",
+          "sub_category": "Sunscreen",
+          "base_price": 158,
+          "image_path": "images/sku-004.jpg",
+          "spec": "SPF50+ PA+++ 60ml",
+          "rating": 4.8,
+          "sales": "10万+",
+          "pros": ["无酒精无香精", "不闷痘"],
+          "cons": ["轻微泛白"]
+        }
+        """
+
+        let product = try JSONDecoder().decode(Product.self, from: Data(json.utf8))
+
+        XCTAssertEqual(product.spec, "SPF50+ PA+++ 60ml")
+        XCTAssertEqual(product.rating, 4.8)
+        XCTAssertEqual(product.sales, "10万+")
+        XCTAssertEqual(product.pros, ["无酒精无香精", "不闷痘"])
+        XCTAssertEqual(product.cons, ["轻微泛白"])
+    }
 }

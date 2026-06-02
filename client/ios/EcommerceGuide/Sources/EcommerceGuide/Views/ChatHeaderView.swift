@@ -3,54 +3,36 @@ import SwiftUI
 @available(iOS 17.0, macOS 13.0, *)
 struct ChatHeaderView: View {
     let cartItems: [CartItem]
+    let cartAction: () -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            horizontalLayout
-            verticalLayout
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(GuideTheme.panelBackground)
-    }
+        HStack(alignment: .center) {
+            Color.clear
+                .frame(width: 48, height: 36)
 
-    private var horizontalLayout: some View {
-        HStack(alignment: .center, spacing: 12) {
-            titleBlock
+            Spacer(minLength: 8)
 
-            Spacer(minLength: 10)
-
-            CartPillView(cartItems: cartItems)
-        }
-    }
-
-    private var verticalLayout: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            titleBlock
-            CartPillView(cartItems: cartItems)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Ecommerce Guide")
+            Text("AI 购物助手")
                 .font(.headline.weight(.semibold))
-                .foregroundStyle(GuideTheme.ink)
+                .foregroundStyle(GuideTheme.inkStrong)
                 .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .minimumScaleFactor(0.78)
 
-            Text("Catalog search and shopping assistant")
-                .font(.caption)
-                .foregroundStyle(GuideTheme.secondaryInk)
-                .lineLimit(2)
+            Spacer(minLength: 8)
+
+            CartPillView(cartItems: cartItems, action: cartAction)
         }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(GuideTheme.panelBackground)
     }
 }
 
 @available(iOS 17.0, macOS 13.0, *)
 struct CartPillView: View {
     let cartItems: [CartItem]
+    let action: () -> Void
 
     private var itemCount: Int {
         cartItems.reduce(0) { $0 + $1.quantity }
@@ -63,28 +45,28 @@ struct CartPillView: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "cart")
-                .font(.system(size: 14, weight: .semibold))
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "bag")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(GuideTheme.inkStrong)
+                    .frame(width: 36, height: 36)
 
-            Text("\(itemCount)")
-                .font(.subheadline.weight(.semibold))
-
-            if itemCount > 0 {
-                Text(formattedTotal)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(GuideTheme.secondaryInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                if itemCount > 0 {
+                    Text("\(itemCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .padding(.horizontal, itemCount > 9 ? 3 : 0)
+                        .background(GuideTheme.accent)
+                        .clipShape(Capsule())
+                        .offset(x: 4, y: -1)
+                }
             }
+            .frame(width: 48, height: 36, alignment: .trailing)
         }
-        .foregroundStyle(GuideTheme.ink)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(minHeight: 44)
-        .background(GuideTheme.accentSoft)
-        .clipShape(Capsule())
-        .accessibilityLabel("Cart, \(itemCount) items, \(formattedTotal)")
+        .buttonStyle(.plain)
+        .accessibilityLabel("购物车，\(itemCount) 件商品，\(formattedTotal)")
     }
 
     private var formattedTotal: String {

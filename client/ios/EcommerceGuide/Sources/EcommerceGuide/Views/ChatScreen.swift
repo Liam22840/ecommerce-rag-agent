@@ -4,27 +4,48 @@ import SwiftUI
 public struct ChatScreen: View {
     @StateObject private var viewModel: ChatViewModel
     @State private var selectedProduct: Product?
+    @State private var isCartPresented = false
+    private let cameraAction: () -> Void
+    private let checkoutAction: () -> Void
 
     @MainActor
     public init() {
         _viewModel = StateObject(wrappedValue: ChatViewModel())
+        self.cameraAction = {}
+        self.checkoutAction = {}
     }
 
     @MainActor
-    public init(viewModel: ChatViewModel) {
+    public init(
+        viewModel: ChatViewModel,
+        cameraAction: @escaping () -> Void = {},
+        checkoutAction: @escaping () -> Void = {}
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.cameraAction = cameraAction
+        self.checkoutAction = checkoutAction
     }
 
     public var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                ChatHeaderView(cartItems: viewModel.cartItems)
+                ChatHeaderView(
+                    cartItems: viewModel.cartItems,
+                    cartAction: { isCartPresented = true }
+                )
 
                 Divider()
+                    .overlay(GuideTheme.line)
 
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
+                            Text("今天")
+                                .font(.caption2)
+                                .foregroundStyle(GuideTheme.tertiaryInk)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.bottom, 2)
+
                             ForEach(viewModel.timeline) { item in
                                 ChatTimelineItemView(
                                     item: item,
@@ -35,9 +56,11 @@ public struct ChatScreen: View {
                                 .id(item.id)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 18)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(GuideTheme.pageBackground)
                     .onChange(of: viewModel.timeline) { items in
                         guard let id = items.last?.id else {
@@ -49,12 +72,15 @@ public struct ChatScreen: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Divider()
+                    .overlay(GuideTheme.line)
 
                 ChatComposerView(
                     text: $viewModel.draftMessage,
                     isSending: viewModel.isSending,
+                    cameraAction: cameraAction,
                     sendAction: { viewModel.sendDraftMessage() },
                     cancelAction: { viewModel.cancelStreaming() }
                 )
@@ -65,6 +91,14 @@ public struct ChatScreen: View {
                     viewModel.addToCart(product: product)
                     selectedProduct = nil
                 }
+            }
+            .sheet(isPresented: $isCartPresented) {
+                CartSheetView(
+                    items: viewModel.cartItems,
+                    quantityAction: { viewModel.updateCartItem(productID: $0, delta: $1) },
+                    removeAction: { viewModel.removeFromCart(productID: $0) },
+                    checkoutAction: checkoutAction
+                )
             }
         }
     }
@@ -86,6 +120,12 @@ private struct ChatTimelineItemView: View {
                 products: products,
                 productAction: productAction,
                 addToCartAction: addToCartAction
+            )
+        case .comparison(_, let products):
+            ProductComparisonView(
+                products: products,
+                productAction: productAction,
+                pickAction: addToCartAction
             )
         case .cartStatus(_, let text):
             CartStatusView(text: text)

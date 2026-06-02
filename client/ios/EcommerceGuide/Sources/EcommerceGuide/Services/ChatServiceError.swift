@@ -8,11 +8,11 @@ public enum ChatServiceError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "The server returned an invalid response."
+            "服务器返回了无效响应。"
         case .malformedEvent(let event):
-            "Could not parse stream event: \(event)"
+            "无法解析流式事件：\(event)"
         case .missingFixture(let name):
-            "Missing fixture: \(name)"
+            "缺少测试数据：\(name)"
         }
     }
 }

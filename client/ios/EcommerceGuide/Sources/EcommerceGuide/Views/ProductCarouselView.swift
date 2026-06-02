@@ -7,23 +7,21 @@ struct ProductCarouselView: View {
     let addToCartAction: (Product) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Recommended products")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(GuideTheme.ink)
+        HStack(alignment: .top, spacing: 8) {
+            AssistantAvatarView()
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 12) {
-                    ForEach(products) { product in
-                        ProductCardView(
-                            product: product,
-                            productAction: productAction,
-                            addToCartAction: addToCartAction
-                        )
-                    }
+            VStack(spacing: 6) {
+                ForEach(products) { product in
+                    ProductCardView(
+                        product: product,
+                        productAction: productAction,
+                        addToCartAction: addToCartAction
+                    )
                 }
-                .padding(.trailing, 16)
             }
+            .frame(maxWidth: 610, alignment: .leading)
+
+            Spacer(minLength: 42)
         }
     }
 }
@@ -35,65 +33,81 @@ struct ProductCardView: View {
     let addToCartAction: (Product) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        HStack(alignment: .top, spacing: 10) {
             Button {
                 productAction(product)
             } label: {
-                VStack(alignment: .leading, spacing: 9) {
-                    ProductImageView(product: product)
-                        .frame(width: 210, height: 132)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                ProductImageView(product: product)
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("打开商品详情")
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(product.brand)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(GuideTheme.secondaryInk)
-                            .lineLimit(1)
-
+            VStack(alignment: .leading, spacing: 3) {
+                Button {
+                    productAction(product)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(product.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(GuideTheme.ink)
-                            .lineLimit(2)
+                            .foregroundStyle(GuideTheme.inkStrong)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
                             .multilineTextAlignment(.leading)
+
+                        ProductSpecLine(product: product)
 
                         if let reason = product.reason, !reason.isEmpty {
                             Text(reason)
                                 .font(.caption)
                                 .foregroundStyle(GuideTheme.secondaryInk)
-                                .lineLimit(2)
+                                .lineLimit(1)
                                 .multilineTextAlignment(.leading)
                         }
-
-                        Text(product.formattedPrice)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(GuideTheme.accent)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens product details")
+                .buttonStyle(.plain)
 
-            Button {
-                addToCartAction(product)
-            } label: {
-                Label("Add", systemImage: "plus")
-                    .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 44)
+                ProductRatingSalesRow(product: product)
+
+                HStack(alignment: .center, spacing: 8) {
+                    Text(product.formattedPrice)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(GuideTheme.accent)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        addToCartAction(product)
+                    } label: {
+                        Label("加购", systemImage: "plus")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 6)
+                            .background(GuideTheme.accent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("将 \(product.title) 加入购物车")
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(GuideTheme.accent)
-            .accessibilityLabel("Add \(product.title) to cart")
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
-        .frame(width: 230, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(GuideTheme.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(GuideTheme.line)
+            RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
+                .stroke(Color.black.opacity(0.04))
         }
+        .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
         .accessibilityLabel("\(product.title), \(product.formattedPrice)")
     }
 }
@@ -152,20 +166,57 @@ struct ProductImageView: View {
 
     private var placeholder: some View {
         ZStack {
-            Rectangle()
-                .fill(GuideTheme.accentSoft)
+            LinearGradient(
+                colors: [
+                    ProductVisuals.softColor(for: product).opacity(0.9),
+                    ProductVisuals.softColor(for: product).opacity(0.55)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
 
             VStack(spacing: 7) {
-                Image(systemName: "shippingbox")
+                Image(systemName: ProductVisuals.symbol(for: product))
                     .font(.title2)
                     .foregroundStyle(GuideTheme.accent)
 
                 Text(product.category)
-                    .font(.caption.weight(.medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(GuideTheme.secondaryInk)
                     .lineLimit(1)
             }
             .padding(12)
+        }
+    }
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+private enum ProductVisuals {
+    static func symbol(for product: Product) -> String {
+        switch product.category.lowercased() {
+        case let value where value.contains("apparel") || value.contains("服"):
+            return "tshirt.fill"
+        case let value where value.contains("footwear") || value.contains("鞋"):
+            return "shoe.2.fill"
+        case let value where value.contains("access") || value.contains("配饰") || value.contains("包"):
+            return "bag.fill"
+        case let value where value.contains("home") || value.contains("家居"):
+            return "cup.and.saucer.fill"
+        default:
+            return "shippingbox.fill"
+        }
+    }
+
+    static func softColor(for product: Product) -> Color {
+        switch abs(product.id.hashValue) % 4 {
+        case 0:
+            return Color(red: 0.953, green: 0.878, blue: 0.827)
+        case 1:
+            return Color(red: 0.894, green: 0.929, blue: 0.996)
+        case 2:
+            return Color(red: 0.902, green: 0.949, blue: 0.902)
+        default:
+            return Color(red: 0.957, green: 0.918, blue: 0.976)
         }
     }
 }

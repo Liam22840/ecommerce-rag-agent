@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatComposerView: View {
     @Binding var text: String
     let isSending: Bool
+    let cameraAction: () -> Void
     let sendAction: () -> Void
     let cancelAction: () -> Void
 
@@ -12,20 +13,28 @@ struct ChatComposerView: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask for products, comparisons, or cart help", text: $text, axis: .vertical)
+        HStack(alignment: .bottom, spacing: 8) {
+            Button(action: cameraAction) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(GuideTheme.tertiaryInk)
+                    .frame(width: 36, height: 36)
+                    .background(GuideTheme.pageBackground)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("相机")
+
+            TextField("说出你想买什么...", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
-                .font(.body)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(minHeight: 44)
+                .font(.subheadline)
+                .foregroundStyle(GuideTheme.inkStrong)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .frame(minHeight: 36)
                 .background(GuideTheme.pageBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(GuideTheme.line)
-                }
+                .clipShape(RoundedRectangle(cornerRadius: GuideTheme.controlRadius, style: .continuous))
                 .submitLabel(.send)
                 .onSubmit {
                     if canSend {
@@ -34,17 +43,26 @@ struct ChatComposerView: View {
                 }
 
             Button(action: isSending ? cancelAction : sendAction) {
-                Image(systemName: isSending ? "stop.fill" : "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
-                    .frame(width: 44, height: 44)
-                    .foregroundStyle(.white)
-                    .background(isSending || canSend ? GuideTheme.accent : GuideTheme.line)
+                Image(systemName: buttonIcon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(canSend || isSending ? .white : GuideTheme.tertiaryInk)
+                    .background(canSend || isSending ? GuideTheme.accent : GuideTheme.pageBackground)
                     .clipShape(Circle())
             }
             .disabled(!isSending && !canSend)
-            .accessibilityLabel(isSending ? "Stop response" : "Send message")
+            .accessibilityLabel(isSending ? "停止回复" : "发送消息")
         }
-        .padding(12)
-        .background(.regularMaterial)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(GuideTheme.panelBackground)
+    }
+
+    private var buttonIcon: String {
+        if isSending {
+            return "stop.fill"
+        }
+
+        return canSend ? "arrow.up" : "mic.fill"
     }
 }

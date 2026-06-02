@@ -1,42 +1,62 @@
 [
   {
     "product_id": "SKU-1001",
-    "title": "Everyday Linen Shirt",
-    "brand": "North & Field",
-    "category": "Apparel",
-    "sub_category": "Shirts",
+    "title": "日常亚麻衬衫",
+    "brand": "北境田园",
+    "category": "服饰",
+    "sub_category": "衬衫",
     "base_price": 68.00,
+    "spec": "100% 亚麻 · 宽松版型",
+    "rating": 4.8,
+    "sales": "10万+",
     "image_path": "https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80",
-    "reason": "Breathable fabric and a relaxed cut make it easy to dress up or down."
+    "reason": "透气面料搭配宽松剪裁，通勤和休闲都容易搭配。",
+    "pros": ["透气亲肤", "不挑场景", "好搭配"],
+    "cons": ["需要熨烫", "浅色易脏"]
   },
   {
     "product_id": "SKU-2035",
-    "title": "Trail Knit Sneakers",
-    "brand": "Vela",
-    "category": "Footwear",
-    "sub_category": "Sneakers",
+    "title": "轻野针织运动鞋",
+    "brand": "维拉",
+    "category": "鞋履",
+    "sub_category": "运动鞋",
     "base_price": 124.00,
+    "spec": "针织鞋面 · 轻量缓震",
+    "rating": 4.7,
+    "sales": "8万+",
     "image_path": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=800&q=80",
-    "reason": "A cushioned all-day sneaker with enough grip for weekend errands."
+    "reason": "缓震脚感适合全天穿着，抓地力也足够应对周末出行。",
+    "pros": ["脚感轻", "成型快", "抓地稳定"],
+    "cons": ["雨天不防水", "鞋面偏软"]
   },
   {
     "product_id": "SKU-4412",
-    "title": "Compact Crossbody Tote",
-    "brand": "Kanso Goods",
-    "category": "Accessories",
-    "sub_category": "Bags",
+    "title": "轻便斜挎托特包",
+    "brand": "简素良品",
+    "category": "配饰",
+    "sub_category": "包袋",
     "base_price": 89.50,
+    "spec": "斜挎/手提 · 多分区",
+    "rating": 4.9,
+    "sales": "15万+",
     "image_path": "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?auto=format&fit=crop&w=800&q=80",
-    "reason": "Keeps essentials organized without adding bulk."
+    "reason": "容量刚好装下随身物品，分区清晰又不显笨重。",
+    "pros": ["容量实用", "分区清晰", "重量低"],
+    "cons": ["不适合电脑", "浅色需打理"]
   },
   {
     "product_id": "SKU-5020",
-    "title": "Insulated Travel Tumbler",
-    "brand": "Morrow",
-    "category": "Home",
-    "sub_category": "Drinkware",
+    "title": "保温随行杯",
+    "brand": "沐若",
+    "category": "家居",
+    "sub_category": "杯具",
     "base_price": 32.00,
+    "spec": "350ml · 不锈钢内胆",
+    "rating": 4.6,
+    "sales": "5万+",
     "image_path": "https://images.unsplash.com/photo-1523362628745-0c100150b504?auto=format&fit=crop&w=800&q=80",
-    "reason": "A practical add-on for commutes, gym bags, and gifting."
+    "reason": "适合通勤、健身包随身携带，也很适合作为实用小礼物。",
+    "pros": ["便携", "保温稳定", "价格友好"],
+    "cons": ["容量偏小", "杯口较窄"]
   }
 ]

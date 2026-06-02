@@ -32,6 +32,7 @@ def test_chat_endpoint_returns_grounded_product_cards():
     assert body["products"]
     assert body["products"][0]["product_id"] == "p_beauty_011"
     assert "商品库" in body["answer"]
+    assert "1." not in body["answer"]
 
 
 def test_chat_endpoint_handles_no_exact_match_without_hallucinating():
@@ -123,7 +124,8 @@ def test_chat_endpoint_orders_selected_cards_by_price_when_requested():
         "p_beauty_022",
         "p_beauty_012",
     ]
-    assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
+    assert "15g 体验装 89元；50g 标准装 268元" in body["products"][0]["price_summary"]
+    assert "卡片" in body["answer"]
     assert "p_beauty_002" not in [product["product_id"] for product in body["products"]]
 
 
@@ -140,5 +142,5 @@ def test_chat_endpoint_uses_requested_sku_price_for_specs():
     assert [product["product_id"] for product in body["products"]] == ["p_beauty_007"]
     assert body["products"][0]["price"] == 268.0
     assert body["products"][0]["price_label"] == "268元（50g 标准装）"
-    assert "价格：268元（50g 标准装）" in body["answer"]
-    assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
+    assert body["products"][0]["price_summary"] == "15g 体验装 89元；50g 标准装 268元"
+    assert "SKU价格" in body["answer"]

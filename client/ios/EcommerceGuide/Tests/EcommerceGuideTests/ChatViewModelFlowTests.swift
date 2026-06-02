@@ -69,7 +69,34 @@ final class ChatViewModelFlowTests: XCTestCase {
         guard case .cartStatus(_, let status) = viewModel.timeline.last else {
             return XCTFail("Expected cart status after add to cart")
         }
-        XCTAssertEqual(status, "Cotton Tee added to cart.")
+        XCTAssertEqual(status, "已将「Cotton Tee」加入购物车。")
+    }
+
+    func testComparisonEventAppendsComparisonTimelineItem() async throws {
+        let firstProduct = Product.fixture(id: "SUN-1", title: "First Sunscreen")
+        let secondProduct = Product.fixture(id: "SUN-2", title: "Second Sunscreen")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("Here is the comparison."),
+                .comparison([firstProduct, secondProduct]),
+                .done(messageID: "comparison-1")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "Compare the first two"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        guard case .comparison(_, let products)? = viewModel.timeline.first(where: { item in
+            if case .comparison = item { return true }
+            return false
+        }) else {
+            return XCTFail("Expected comparison timeline item")
+        }
+
+        XCTAssertEqual(products, [firstProduct, secondProduct])
     }
 
     func testStreamCompletionWithoutDoneClearsSendingState() async throws {
@@ -126,7 +153,7 @@ final class ChatViewModelFlowTests: XCTestCase {
             events.append(event)
         }
 
-        XCTAssertTrue(events.contains(.token("I found a few practical picks. ")))
+        XCTAssertTrue(events.contains(.token("我找到了几款实用的选择。 ")))
 
         guard case .products(let products)? = events.first(where: { event in
             if case .products = event { return true }
@@ -136,6 +163,14 @@ final class ChatViewModelFlowTests: XCTestCase {
         }
         XCTAssertEqual(products.count, 3)
 
+        guard case .comparison(let comparisonProducts)? = events.first(where: { event in
+            if case .comparison = event { return true }
+            return false
+        }) else {
+            return XCTFail("Expected mock service to emit a product comparison")
+        }
+        XCTAssertEqual(comparisonProducts.count, 2)
+
         guard case .cartUpdated(let cartItems, let summary)? = events.first(where: { event in
             if case .cartUpdated = event { return true }
             return false
@@ -143,7 +178,7 @@ final class ChatViewModelFlowTests: XCTestCase {
             return XCTFail("Expected mock service to emit a cart update")
         }
         XCTAssertEqual(cartItems.count, 1)
-        XCTAssertTrue(summary.hasPrefix("Cart updated with "))
+        XCTAssertTrue(summary.hasPrefix("已将「"))
 
         guard case .done(let messageID)? = events.last else {
             return XCTFail("Expected mock service to finish with done")
@@ -170,8 +205,8 @@ final class ChatViewModelFlowTests: XCTestCase {
         try await waitUntilNotSending(viewModel)
 
         XCTAssertEqual(service.attempts, 1)
-        XCTAssertEqual(viewModel.errorMessage, "The server returned an invalid response.")
-        XCTAssertTrue(viewModel.timeline.containsError("The server returned an invalid response."))
+        XCTAssertEqual(viewModel.errorMessage, "服务器返回了无效响应。")
+        XCTAssertTrue(viewModel.timeline.containsError("服务器返回了无效响应。"))
         XCTAssertEqual(viewModel.userMessages.map(\.text), ["Find trail shoes"])
 
         viewModel.retryLastMessage()
@@ -179,7 +214,7 @@ final class ChatViewModelFlowTests: XCTestCase {
 
         XCTAssertEqual(service.attempts, 2)
         XCTAssertNil(viewModel.errorMessage)
-        XCTAssertFalse(viewModel.timeline.containsError("The server returned an invalid response."))
+        XCTAssertFalse(viewModel.timeline.containsError("服务器返回了无效响应。"))
         XCTAssertEqual(viewModel.userMessages.map(\.text), ["Find trail shoes", "Find trail shoes"])
 
         guard case .message(let assistantMessage)? = viewModel.timeline.last else {

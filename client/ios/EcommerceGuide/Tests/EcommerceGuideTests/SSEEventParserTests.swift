@@ -152,6 +152,31 @@ final class SSEEventParserTests: XCTestCase {
         XCTAssertEqual(event, .cartStatus(summary: "Added to cart"))
     }
 
+    func testParsesComparisonEventWithProductMetadata() throws {
+        let event = try parseFrame([
+            "event: comparison",
+            "data: {\"type\":\"comparison\",\"products\":[{\"product_id\":\"SUN-1\",\"title\":\"珂润润浸保湿防晒乳\",\"brand\":\"珂润\",\"category\":\"防晒\",\"sub_category\":\"防晒乳\",\"base_price\":158,\"image_path\":\"images/sun-1.jpg\",\"spec\":\"SPF50+ PA+++ 60ml\",\"rating\":4.8,\"sales\":\"10万+\",\"pros\":[\"无酒精无香精\"],\"cons\":[\"轻微泛白\"]}]}",
+            ""
+        ])
+
+        XCTAssertEqual(event, .comparison([
+            Product(
+                id: "SUN-1",
+                title: "珂润润浸保湿防晒乳",
+                brand: "珂润",
+                category: "防晒",
+                subCategory: "防晒乳",
+                basePrice: Decimal(158),
+                imagePath: "images/sun-1.jpg",
+                spec: "SPF50+ PA+++ 60ml",
+                rating: 4.8,
+                sales: "10万+",
+                pros: ["无酒精无香精"],
+                cons: ["轻微泛白"]
+            )
+        ]))
+    }
+
     private func parseFrame(_ lines: [String]) throws -> ChatStreamEvent? {
         var result: ChatStreamEvent?
         for line in lines {
@@ -257,6 +282,8 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
                 answer += token
             case .products(let streamedProducts):
                 products = streamedProducts
+            case .comparison:
+                continue
             case .done:
                 sawDone = true
             case .cartUpdated, .cartStatus:

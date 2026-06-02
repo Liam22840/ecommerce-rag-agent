@@ -54,8 +54,25 @@ public final class ChatViewModel: ObservableObject {
 
         timeline.append(.cartStatus(
             id: UUID(),
-            text: "\(product.title) added to cart."
+            text: "已将「\(product.title)」加入购物车。"
         ))
+    }
+
+    public func updateCartItem(productID: String, delta: Int) {
+        guard let index = cartItems.firstIndex(where: { $0.product.id == productID }) else {
+            return
+        }
+
+        let nextQuantity = cartItems[index].quantity + delta
+        if nextQuantity > 0 {
+            cartItems[index].quantity = nextQuantity
+        } else {
+            cartItems.remove(at: index)
+        }
+    }
+
+    public func removeFromCart(productID: String) {
+        cartItems.removeAll { $0.product.id == productID }
     }
 
     public func cancelStreaming() {
@@ -119,6 +136,9 @@ public final class ChatViewModel: ObservableObject {
         case .products(let products):
             finishStreamingMessage()
             timeline.append(.products(id: UUID(), products: products))
+        case .comparison(let products):
+            finishStreamingMessage()
+            timeline.append(.comparison(id: UUID(), products: products))
         case .cartUpdated(let items, let summary):
             cartItems = items
             timeline.append(.cartStatus(id: UUID(), text: summary))
@@ -182,7 +202,7 @@ public final class ChatViewModel: ObservableObject {
         [
             .message(ChatMessage(
                 role: .assistant,
-                text: "Tell me what you are shopping for and I will compare the catalog, explain the tradeoffs, and keep your cart in view."
+                text: "你好，我是你的 AI 购物助手。告诉我你想买什么，我会帮你对比商品、解释取舍，并整理好购物车。"
             ))
         ]
     }
