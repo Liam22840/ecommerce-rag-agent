@@ -121,9 +121,9 @@ private struct ChatTimelineItemView: View {
                 productAction: productAction,
                 addToCartAction: addToCartAction
             )
-        case .comparison(_, let products):
+        case .comparison(_, let comparison):
             ProductComparisonView(
-                products: products,
+                comparison: comparison,
                 productAction: productAction,
                 pickAction: addToCartAction
             )

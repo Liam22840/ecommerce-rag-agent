@@ -159,7 +159,7 @@ final class SSEEventParserTests: XCTestCase {
             ""
         ])
 
-        XCTAssertEqual(event, .comparison([
+        XCTAssertEqual(event, .comparison(ProductComparison(products: [
             Product(
                 id: "SUN-1",
                 title: "珂润润浸保湿防晒乳",
@@ -174,7 +174,24 @@ final class SSEEventParserTests: XCTestCase {
                 pros: ["无酒精无香精"],
                 cons: ["轻微泛白"]
             )
-        ]))
+        ])))
+    }
+
+    func testParsesStructuredComparisonEvent() throws {
+        let event = try parseFrame([
+            "event: comparison",
+            "data: {\"type\":\"comparison\",\"summary\":\"已按保湿对比。\",\"focus\":[\"保湿\"],\"winner_product_id\":\"SUN-1\",\"recommendation\":\"更推荐第一款。\",\"products\":[{\"product_id\":\"SUN-1\",\"title\":\"珂润润浸保湿防晒乳\",\"brand\":\"珂润\",\"category\":\"防晒\",\"sub_category\":\"防晒乳\",\"base_price\":158,\"image_path\":\"images/sun-1.jpg\"},{\"product_id\":\"SUN-2\",\"title\":\"安热沙小金瓶\",\"brand\":\"安热沙\",\"category\":\"防晒\",\"sub_category\":\"防晒乳\",\"base_price\":238,\"image_path\":\"images/sun-2.jpg\"}],\"rows\":[{\"dimension\":\"保湿\",\"winner_product_id\":\"SUN-1\",\"verdict\":\"第一款证据更强。\",\"values\":[{\"product_id\":\"SUN-1\",\"value\":\"含保湿描述\",\"evidence\":[\"商品描述: 保湿\"],\"confidence\":\"high\"},{\"product_id\":\"SUN-2\",\"value\":\"证据不足\",\"evidence\":[],\"confidence\":\"none\"}]}]}",
+            ""
+        ])
+
+        guard case .comparison(let comparison) = event else {
+            return XCTFail("Expected comparison event")
+        }
+        XCTAssertEqual(comparison.products.count, 2)
+        XCTAssertEqual(comparison.focus, ["保湿"])
+        XCTAssertEqual(comparison.winnerProductID, "SUN-1")
+        XCTAssertEqual(comparison.rows.first?.dimension, "保湿")
+        XCTAssertEqual(comparison.rows.first?.values.first?.evidence, ["商品描述: 保湿"])
     }
 
     private func parseFrame(_ lines: [String]) throws -> ChatStreamEvent? {

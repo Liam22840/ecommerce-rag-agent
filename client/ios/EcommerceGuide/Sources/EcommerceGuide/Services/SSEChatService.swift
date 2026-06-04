@@ -231,6 +231,11 @@ private struct StreamEventPayload: Decodable {
     let delta: String?
     let products: [Product]?
     let items: [Product]?
+    let focus: [String]?
+    let rows: [ComparisonRow]?
+    let winnerProductID: String?
+    let recommendation: String?
+    let clarification: String?
     let cartItems: [CartItemPayload]?
     let summary: String?
     let messageID: String?
@@ -243,6 +248,11 @@ private struct StreamEventPayload: Decodable {
         case delta
         case products
         case items
+        case focus
+        case rows
+        case winnerProductID = "winner_product_id"
+        case recommendation
+        case clarification
         case cartItems
         case cartItemsSnake = "cart_items"
         case summary
@@ -259,6 +269,11 @@ private struct StreamEventPayload: Decodable {
         self.delta = try container.decodeIfPresent(String.self, forKey: .delta)
         self.products = try container.decodeIfPresent([Product].self, forKey: .products)
         self.items = try? container.decodeIfPresent([Product].self, forKey: .items)
+        self.focus = try container.decodeIfPresent([String].self, forKey: .focus)
+        self.rows = try container.decodeIfPresent([ComparisonRow].self, forKey: .rows)
+        self.winnerProductID = try container.decodeIfPresent(String.self, forKey: .winnerProductID)
+        self.recommendation = try container.decodeIfPresent(String.self, forKey: .recommendation)
+        self.clarification = try container.decodeIfPresent(String.self, forKey: .clarification)
         self.cartItems = try container.decodeIfPresent([CartItemPayload].self, forKey: .cartItems)
             ?? container.decodeIfPresent([CartItemPayload].self, forKey: .cartItemsSnake)
             ?? (try? container.decodeIfPresent([CartItemPayload].self, forKey: .items))
@@ -274,7 +289,15 @@ private struct StreamEventPayload: Decodable {
         case "products":
             return .products(products ?? items ?? [])
         case "comparison", "compare", "product_comparison", "productComparison":
-            return .comparison(products ?? items ?? [])
+            return .comparison(ProductComparison(
+                products: products ?? items ?? [],
+                focus: focus ?? [],
+                rows: rows ?? [],
+                winnerProductID: winnerProductID,
+                recommendation: recommendation,
+                summary: summary,
+                clarification: clarification
+            ))
         case "cart", "cart_updated", "cartUpdated":
             let summary = summary ?? "购物车已更新。"
             guard let cartItems else {
@@ -326,21 +349,26 @@ private struct CartItemPayload: Codable {
 private struct ChatRequestPayload: Encodable {
     let conversationID: UUID
     let message: String
+    let compareProductIDs: [String]
     let attachments: [String]
     let clientContext: ClientContextPayload
 
     init(request: ChatRequest) {
         self.conversationID = request.conversationID
         self.message = request.message
+        self.compareProductIDs = request.compareProductIDs
         self.attachments = []
         self.clientContext = ClientContextPayload(
-            cartItems: request.cartItems.map(CartItemPayload.init(cartItem:))
+            cartItems: request.cartItems.map(CartItemPayload.init(cartItem:)),
+            recentProductIDs: request.recentProductIDs,
+            compareProductIDs: request.compareProductIDs
         )
     }
 
     enum CodingKeys: String, CodingKey {
         case conversationID = "conversation_id"
         case message
+        case compareProductIDs = "compare_product_ids"
         case attachments
         case clientContext = "client_context"
     }
@@ -348,8 +376,12 @@ private struct ChatRequestPayload: Encodable {
 
 private struct ClientContextPayload: Encodable {
     let cartItems: [CartItemPayload]
+    let recentProductIDs: [String]
+    let compareProductIDs: [String]
 
     enum CodingKeys: String, CodingKey {
         case cartItems = "cart_items"
+        case recentProductIDs = "recent_product_ids"
+        case compareProductIDs = "compare_product_ids"
     }
 }

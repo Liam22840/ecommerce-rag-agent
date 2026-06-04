@@ -78,7 +78,24 @@ final class ChatViewModelFlowTests: XCTestCase {
         let viewModel = ChatViewModel(
             service: ScriptedChatService(events: [
                 .token("Here is the comparison."),
-                .comparison([firstProduct, secondProduct]),
+                .comparison(ProductComparison(
+                    products: [firstProduct, secondProduct],
+                    focus: ["保湿"],
+                    rows: [
+                        ComparisonRow(
+                            dimension: "保湿",
+                            values: [
+                                ComparisonValue(productID: firstProduct.id, value: "Evidence A"),
+                                ComparisonValue(productID: secondProduct.id, value: "Evidence B")
+                            ],
+                            winnerProductID: firstProduct.id,
+                            verdict: "First has stronger evidence."
+                        )
+                    ],
+                    winnerProductID: firstProduct.id,
+                    recommendation: "Pick first.",
+                    summary: "Compared."
+                )),
                 .done(messageID: "comparison-1")
             ]),
             conversationID: UUID(),
@@ -89,14 +106,35 @@ final class ChatViewModelFlowTests: XCTestCase {
         viewModel.sendDraftMessage()
         try await waitUntilNotSending(viewModel)
 
-        guard case .comparison(_, let products)? = viewModel.timeline.first(where: { item in
+        guard case .comparison(_, let comparison)? = viewModel.timeline.first(where: { item in
             if case .comparison = item { return true }
             return false
         }) else {
             return XCTFail("Expected comparison timeline item")
         }
 
-        XCTAssertEqual(products, [firstProduct, secondProduct])
+        XCTAssertEqual(comparison.products, [firstProduct, secondProduct])
+        XCTAssertEqual(comparison.winnerProductID, firstProduct.id)
+    }
+
+    func testFollowupRequestIncludesRecentProductIDs() async throws {
+        let firstProduct = Product.fixture(id: "FACE-1", title: "First Cream")
+        let secondProduct = Product.fixture(id: "FACE-2", title: "Second Cream")
+        let service = ScriptedChatService(events: [
+            .products([firstProduct, secondProduct]),
+            .done(messageID: "assistant-1")
+        ])
+        let viewModel = ChatViewModel(service: service, conversationID: UUID(), timeline: [])
+
+        viewModel.draftMessage = "推荐面霜"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        viewModel.draftMessage = "第一个和第二个哪个更保湿"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(service.requests.last?.recentProductIDs, ["FACE-1", "FACE-2"])
     }
 
     func testStreamCompletionWithoutDoneClearsSendingState() async throws {
@@ -163,13 +201,14 @@ final class ChatViewModelFlowTests: XCTestCase {
         }
         XCTAssertEqual(products.count, 3)
 
-        guard case .comparison(let comparisonProducts)? = events.first(where: { event in
+        guard case .comparison(let comparison)? = events.first(where: { event in
             if case .comparison = event { return true }
             return false
         }) else {
             return XCTFail("Expected mock service to emit a product comparison")
         }
-        XCTAssertEqual(comparisonProducts.count, 2)
+        XCTAssertEqual(comparison.products.count, 2)
+        XCTAssertFalse(comparison.rows.isEmpty)
 
         guard case .cartUpdated(let cartItems, let summary)? = events.first(where: { event in
             if case .cartUpdated = event { return true }

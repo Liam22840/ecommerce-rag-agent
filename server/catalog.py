@@ -86,6 +86,10 @@ class ProductCatalog:
     def brands(self) -> set[str]:
         return {p["brand"] for p in self._products.values()}
 
+    @property
+    def products(self) -> list[dict[str, Any]]:
+        return list(self._products.values())
+
     def get(self, product_id: str) -> dict[str, Any] | None:
         return self._products.get(product_id)
 

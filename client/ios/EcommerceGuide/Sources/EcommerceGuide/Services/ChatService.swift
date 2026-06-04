@@ -4,11 +4,21 @@ public struct ChatRequest: Equatable, Sendable {
     public let conversationID: UUID
     public let message: String
     public let cartItems: [CartItem]
+    public let recentProductIDs: [String]
+    public let compareProductIDs: [String]
 
-    public init(conversationID: UUID, message: String, cartItems: [CartItem] = []) {
+    public init(
+        conversationID: UUID,
+        message: String,
+        cartItems: [CartItem] = [],
+        recentProductIDs: [String] = [],
+        compareProductIDs: [String] = []
+    ) {
         self.conversationID = conversationID
         self.message = message
         self.cartItems = cartItems
+        self.recentProductIDs = recentProductIDs
+        self.compareProductIDs = compareProductIDs
     }
 }
 
