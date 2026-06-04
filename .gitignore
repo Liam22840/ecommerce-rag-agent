@@ -5,11 +5,13 @@ docs/
 .env
 data/*
 !data/milvus.db
-!data/embedding_cache.jsonl
 __pycache__/
 *.pyc
 .pytest_cache/
 .build/
 .swiftpm/
+DerivedData/
+client/ios/DerivedData/
+client/ios/simulator-current.png
 xcuserdata/
 *.xcuserstate
