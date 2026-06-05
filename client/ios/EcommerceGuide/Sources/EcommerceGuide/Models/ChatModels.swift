@@ -27,7 +27,7 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
 public enum ChatTimelineItem: Identifiable, Equatable, Sendable {
     case message(ChatMessage)
     case products(id: UUID, products: [Product])
-    case comparison(id: UUID, products: [Product])
+    case comparison(id: UUID, comparison: ProductComparison)
     case cartStatus(id: UUID, text: String)
     case error(id: UUID, message: String)
 
@@ -47,8 +47,98 @@ public enum ChatTimelineItem: Identifiable, Equatable, Sendable {
 public enum ChatStreamEvent: Equatable, Sendable {
     case token(String)
     case products([Product])
-    case comparison([Product])
+    case comparison(ProductComparison)
     case cartUpdated([CartItem], summary: String)
     case cartStatus(summary: String)
     case done(messageID: String?)
+}
+
+public struct ProductComparison: Codable, Equatable, Sendable {
+    public let products: [Product]
+    public let focus: [String]
+    public let rows: [ComparisonRow]
+    public let winnerProductID: String?
+    public let recommendation: String?
+    public let summary: String?
+    public let clarification: String?
+
+    enum CodingKeys: String, CodingKey {
+        case products
+        case focus
+        case rows
+        case winnerProductID = "winner_product_id"
+        case recommendation
+        case summary
+        case clarification
+    }
+
+    public init(
+        products: [Product],
+        focus: [String] = [],
+        rows: [ComparisonRow] = [],
+        winnerProductID: String? = nil,
+        recommendation: String? = nil,
+        summary: String? = nil,
+        clarification: String? = nil
+    ) {
+        self.products = products
+        self.focus = focus
+        self.rows = rows
+        self.winnerProductID = winnerProductID
+        self.recommendation = recommendation
+        self.summary = summary
+        self.clarification = clarification
+    }
+}
+
+public struct ComparisonRow: Codable, Equatable, Sendable {
+    public let dimension: String
+    public let values: [ComparisonValue]
+    public let winnerProductID: String?
+    public let verdict: String
+
+    enum CodingKeys: String, CodingKey {
+        case dimension
+        case values
+        case winnerProductID = "winner_product_id"
+        case verdict
+    }
+
+    public init(
+        dimension: String,
+        values: [ComparisonValue],
+        winnerProductID: String? = nil,
+        verdict: String
+    ) {
+        self.dimension = dimension
+        self.values = values
+        self.winnerProductID = winnerProductID
+        self.verdict = verdict
+    }
+}
+
+public struct ComparisonValue: Codable, Equatable, Sendable {
+    public let productID: String
+    public let value: String
+    public let evidence: [String]
+    public let confidence: String
+
+    enum CodingKeys: String, CodingKey {
+        case productID = "product_id"
+        case value
+        case evidence
+        case confidence
+    }
+
+    public init(
+        productID: String,
+        value: String,
+        evidence: [String] = [],
+        confidence: String = "none"
+    ) {
+        self.productID = productID
+        self.value = value
+        self.evidence = evidence
+        self.confidence = confidence
+    }
 }

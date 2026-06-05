@@ -110,7 +110,8 @@ public final class ChatViewModel: ObservableObject {
         let request = ChatRequest(
             conversationID: conversationID,
             message: trimmedMessage,
-            cartItems: cartItems
+            cartItems: cartItems,
+            recentProductIDs: recentProductIDs
         )
 
         streamTask?.cancel()
@@ -138,7 +139,7 @@ public final class ChatViewModel: ObservableObject {
             timeline.append(.products(id: UUID(), products: products))
         case .comparison(let products):
             finishStreamingMessage()
-            timeline.append(.comparison(id: UUID(), products: products))
+            timeline.append(.comparison(id: UUID(), comparison: products))
         case .cartUpdated(let items, let summary):
             cartItems = items
             timeline.append(.cartStatus(id: UUID(), text: summary))
@@ -205,5 +206,30 @@ public final class ChatViewModel: ObservableObject {
                 text: "你好，我是你的 AI 购物助手。告诉我你想买什么，我会帮你对比商品、解释取舍，并整理好购物车。"
             ))
         ]
+    }
+
+    private var recentProductIDs: [String] {
+        var ids: [String] = []
+        for item in timeline.reversed() {
+            switch item {
+            case .products(_, let products):
+                ids.append(contentsOf: products.map(\.id))
+            case .comparison(_, let comparison):
+                ids.append(contentsOf: comparison.products.map(\.id))
+            case .message, .cartStatus, .error:
+                continue
+            }
+            if ids.count >= 10 {
+                break
+            }
+        }
+        var seen = Set<String>()
+        return ids.filter { id in
+            guard !seen.contains(id) else {
+                return false
+            }
+            seen.insert(id)
+            return true
+        }
     }
 }

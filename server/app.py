@@ -58,7 +58,13 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
-        return app.state.assistant.answer(message, request.effective_session_id, request.top_k)
+        return app.state.assistant.answer(
+            message,
+            request.effective_session_id,
+            request.top_k,
+            request.effective_compare_product_ids,
+            request.client_context.recent_product_ids,
+        )
 
     @app.post("/api/v1/chat/stream", include_in_schema=False)
     @app.post("/api/chat/stream")
@@ -66,7 +72,13 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
-        prepared = app.state.assistant.prepare(message, request.effective_session_id, request.top_k)
+        prepared = app.state.assistant.prepare(
+            message,
+            request.effective_session_id,
+            request.top_k,
+            request.effective_compare_product_ids,
+            request.client_context.recent_product_ids,
+        )
         return StreamingResponse(
             _sse_stream(app.state.assistant, prepared),
             media_type="text/event-stream; charset=utf-8",
@@ -87,7 +99,14 @@ def _sse_stream(assistant: ShoppingAssistant, prepared: PreparedChat) -> Iterato
     for token in assistant.stream_answer(prepared):
         yield _sse("token", {"type": "token", "token": token, "delta": token, "text": token})
     products = [_sse_product_dump(p) for p in prepared.products]
-    yield _sse("products", {"type": "products", "products": products, "items": products})
+    if prepared.comparison is not None:
+        comparison = _model_dump(prepared.comparison)
+        comparison["products"] = products
+        comparison["items"] = products
+        comparison["type"] = "comparison"
+        yield _sse("comparison", comparison)
+    else:
+        yield _sse("products", {"type": "products", "products": products, "items": products})
     yield _sse("done", {
         "type": "done",
         "ok": True,

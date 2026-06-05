@@ -34,7 +34,7 @@ public struct MockChatService: ChatService {
                     if recommendedProducts.count >= 2 {
                         try Task.checkCancellation()
                         try await Task.sleep(nanoseconds: tokenDelay)
-                        continuation.yield(.comparison(Array(recommendedProducts.prefix(2))))
+                        continuation.yield(.comparison(mockComparison(Array(recommendedProducts.prefix(2)))))
                     }
 
                     try Task.checkCancellation()
@@ -95,5 +95,32 @@ public struct MockChatService: ChatService {
         }
 
         return items
+    }
+
+    private func mockComparison(_ products: [Product]) -> ProductComparison {
+        ProductComparison(
+            products: products,
+            focus: ["价格", "实用性"],
+            rows: [
+                ComparisonRow(
+                    dimension: "价格",
+                    values: products.map {
+                        ComparisonValue(productID: $0.id, value: $0.formattedPrice, confidence: "high")
+                    },
+                    winnerProductID: products.min(by: { $0.basePrice < $1.basePrice })?.id,
+                    verdict: "按 mock 商品价格展示，低价商品更适合预算优先。"
+                ),
+                ComparisonRow(
+                    dimension: "卖点",
+                    values: products.map {
+                        ComparisonValue(productID: $0.id, value: $0.reason ?? $0.spec ?? "暂无卖点信息", confidence: "medium")
+                    },
+                    verdict: "商品卖点来自本地 mock fixtures。"
+                )
+            ],
+            winnerProductID: products.first?.id,
+            recommendation: products.first.map { "更推荐「\($0.title)」，它更贴近当前 mock 场景。" },
+            summary: "我把这几款商品做了一个快速对比。"
+        )
     }
 }
