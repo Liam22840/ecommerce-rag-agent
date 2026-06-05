@@ -14,7 +14,7 @@ public struct EcommerceGuideApp: App {
 
     public var body: some Scene {
         WindowGroup {
-            ChatScreen(viewModel: ChatViewModel(service: service))
+            ShoppingConciergeRootView(service: service)
         }
     }
 }

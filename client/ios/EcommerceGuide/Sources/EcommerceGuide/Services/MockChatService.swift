@@ -28,12 +28,19 @@ public struct MockChatService: ChatService {
 
                     try Task.checkCancellation()
                     try await Task.sleep(nanoseconds: tokenDelay * 2)
-                    continuation.yield(.products(Array(products.prefix(3))))
+                    let recommendedProducts = Array(products.prefix(3))
+                    continuation.yield(.products(recommendedProducts))
+
+                    if recommendedProducts.count >= 2 {
+                        try Task.checkCancellation()
+                        try await Task.sleep(nanoseconds: tokenDelay)
+                        continuation.yield(.comparison(Array(recommendedProducts.prefix(2))))
+                    }
 
                     try Task.checkCancellation()
                     try await Task.sleep(nanoseconds: tokenDelay * 2)
                     let updatedCart = mergeCartItems(request.cartItems, adding: products[0])
-                    continuation.yield(.cartUpdated(updatedCart, summary: "Cart updated with \(products[0].title)."))
+                    continuation.yield(.cartUpdated(updatedCart, summary: "已将「\(products[0].title)」加入购物车。"))
 
                     try Task.checkCancellation()
                     try await Task.sleep(nanoseconds: tokenDelay)
@@ -55,26 +62,26 @@ public struct MockChatService: ChatService {
     private func scriptedResponse(for message: String) -> [String] {
         let lowercased = message.lowercased()
 
-        if lowercased.contains("shoe") || lowercased.contains("sneaker") {
+        if lowercased.contains("shoe") || lowercased.contains("sneaker") || lowercased.contains("鞋") {
             return [
-                "I found a few practical picks. ",
-                "The sneakers are the strongest match, ",
-                "and I included two versatile add-ons that pair well with them."
+                "我找到了几款实用的选择。 ",
+                "其中运动鞋最符合你的需求， ",
+                "另外也搭配了两件好用的配套商品。"
             ]
         }
 
-        if lowercased.contains("gift") {
+        if lowercased.contains("gift") || lowercased.contains("礼物") || lowercased.contains("送礼") {
             return [
-                "Here are gift-friendly options with broad appeal. ",
-                "I prioritized items that feel polished, useful, ",
-                "and easy to size correctly."
+                "这里有几款适合送礼的商品。 ",
+                "我优先选择了质感好、实用性强， ",
+                "并且不容易选错规格的款式。"
             ]
         }
 
         return [
-            "I pulled together a short list based on your request. ",
-            "These balance everyday usefulness, price, ",
-            "and the product details available in the catalog."
+            "我根据你的需求整理了一份精选清单。 ",
+            "这些商品在日常实用性、价格， ",
+            "以及目录里的商品信息之间比较均衡。"
         ]
     }
 

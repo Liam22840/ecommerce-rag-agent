@@ -203,6 +203,8 @@ struct SSEEventParser {
                 ?? payload["text"] as? String
                 ?? ""
             return .token(token)
+        case "comparison", "compare", "product_comparison", "productComparison":
+            return nil
         case "done":
             return .done(messageID: payload["message_id"] as? String ?? payload["messageID"] as? String)
         case "meta", "metadata", "debug", "warning", "warnings":
@@ -271,8 +273,10 @@ private struct StreamEventPayload: Decodable {
             return .token(token ?? delta ?? text ?? "")
         case "products":
             return .products(products ?? items ?? [])
+        case "comparison", "compare", "product_comparison", "productComparison":
+            return .comparison(products ?? items ?? [])
         case "cart", "cart_updated", "cartUpdated":
-            let summary = summary ?? "Cart updated."
+            let summary = summary ?? "购物车已更新。"
             guard let cartItems else {
                 return .cartStatus(summary: summary)
             }

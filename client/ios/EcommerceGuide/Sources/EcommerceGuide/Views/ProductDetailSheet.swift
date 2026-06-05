@@ -10,20 +10,26 @@ struct ProductDetailSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 16) {
                     ProductImageView(product: product)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .frame(height: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
+                                .stroke(Color.black.opacity(0.04))
+                        }
+                        .shadow(color: GuideTheme.cardShadow, radius: 6, y: 2)
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 9) {
                         Text(product.brand)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(GuideTheme.secondaryInk)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(GuideTheme.tertiaryInk)
+                            .textCase(.uppercase)
 
                         Text(product.title)
                             .font(.title2.weight(.bold))
-                            .foregroundStyle(GuideTheme.ink)
+                            .foregroundStyle(GuideTheme.inkStrong)
                             .fixedSize(horizontal: false, vertical: true)
 
                         Text(product.formattedPrice)
@@ -46,17 +52,30 @@ struct ProductDetailSheet: View {
                     }
                     .font(.caption.weight(.medium))
                     .foregroundStyle(GuideTheme.secondaryInk)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(GuideTheme.assistantBubble)
+                    .clipShape(Capsule())
 
                     if let reason = product.reason, !reason.isEmpty {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Why it fits")
-                                .font(.headline)
-                                .foregroundStyle(GuideTheme.ink)
+                            Text("推荐理由")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(GuideTheme.inkStrong)
 
                             Text(reason)
-                                .font(.body)
+                                .font(.subheadline)
+                                .lineSpacing(2)
                                 .foregroundStyle(GuideTheme.secondaryInk)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(GuideTheme.panelBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
+                                .stroke(GuideTheme.line)
                         }
                     }
                 }
@@ -65,17 +84,20 @@ struct ProductDetailSheet: View {
             .background(GuideTheme.pageBackground)
             .safeAreaInset(edge: .bottom) {
                 Button(action: addToCartAction) {
-                    Label("Add to cart", systemImage: "cart.badge.plus")
+                    Label("加入购物车", systemImage: "cart.badge.plus")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .frame(height: 46)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(GuideTheme.accent)
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(GuideTheme.accent)
+                .clipShape(Capsule())
+                .shadow(color: GuideTheme.accentShadow, radius: 8, y: 3)
                 .padding(16)
-                .background(.regularMaterial)
+                .background(GuideTheme.panelBackground)
             }
-            .navigationTitle("Product details")
+            .navigationTitle("商品详情")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -83,7 +105,7 @@ struct ProductDetailSheet: View {
                     } label: {
                         Image(systemName: "xmark")
                     }
-                    .accessibilityLabel("Close")
+                    .accessibilityLabel("关闭")
                 }
             }
         }

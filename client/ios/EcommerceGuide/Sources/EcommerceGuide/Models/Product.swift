@@ -11,6 +11,11 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
     public let priceSummary: String?
     public let imagePath: String
     public let reason: String?
+    public let spec: String?
+    public let rating: Double?
+    public let sales: String?
+    public let pros: [String]
+    public let cons: [String]
 
     enum CodingKeys: String, CodingKey {
         case id = "product_id"
@@ -25,6 +30,11 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         case imagePath = "image_path"
         case reason
         case matchedReason = "matched_reason"
+        case spec
+        case rating
+        case sales
+        case pros
+        case cons
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +50,11 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         self.imagePath = try container.decode(String.self, forKey: .imagePath)
         self.reason = try container.decodeIfPresent(String.self, forKey: .reason)
             ?? container.decodeIfPresent(String.self, forKey: .matchedReason)
+        self.spec = try container.decodeIfPresent(String.self, forKey: .spec)
+        self.rating = try container.decodeIfPresent(Double.self, forKey: .rating)
+        self.sales = try container.decodeIfPresent(String.self, forKey: .sales)
+        self.pros = try container.decodeIfPresent([String].self, forKey: .pros) ?? []
+        self.cons = try container.decodeIfPresent([String].self, forKey: .cons) ?? []
     }
 
     private static func decodePrice(from container: KeyedDecodingContainer<CodingKeys>) throws -> Decimal {
@@ -90,6 +105,15 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         try container.encodeIfPresent(priceSummary, forKey: .priceSummary)
         try container.encode(imagePath, forKey: .imagePath)
         try container.encodeIfPresent(reason, forKey: .reason)
+        try container.encodeIfPresent(spec, forKey: .spec)
+        try container.encodeIfPresent(rating, forKey: .rating)
+        try container.encodeIfPresent(sales, forKey: .sales)
+        if !pros.isEmpty {
+            try container.encode(pros, forKey: .pros)
+        }
+        if !cons.isEmpty {
+            try container.encode(cons, forKey: .cons)
+        }
     }
 
     public init(
@@ -102,7 +126,12 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         priceLabel: String? = nil,
         priceSummary: String? = nil,
         imagePath: String,
-        reason: String? = nil
+        reason: String? = nil,
+        spec: String? = nil,
+        rating: Double? = nil,
+        sales: String? = nil,
+        pros: [String] = [],
+        cons: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -114,5 +143,10 @@ public struct Product: Identifiable, Codable, Equatable, Sendable {
         self.priceSummary = priceSummary
         self.imagePath = imagePath
         self.reason = reason
+        self.spec = spec
+        self.rating = rating
+        self.sales = sales
+        self.pros = pros
+        self.cons = cons
     }
 }

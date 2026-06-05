@@ -5,7 +5,7 @@ import SwiftUI
 struct EcommerceGuideHostApp: App {
     var body: some Scene {
         WindowGroup {
-            ChatScreen(viewModel: ChatViewModel(service: configuredService))
+            ShoppingConciergeRootView(service: configuredService)
         }
     }
 

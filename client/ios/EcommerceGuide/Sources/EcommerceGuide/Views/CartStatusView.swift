@@ -7,19 +7,19 @@ struct CartStatusView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(GuideTheme.accent)
+                .foregroundStyle(GuideTheme.success)
 
             Text(text)
-                .font(.subheadline)
-                .foregroundStyle(GuideTheme.ink)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(GuideTheme.inkStrong)
                 .lineLimit(2)
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(GuideTheme.accentSoft)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(GuideTheme.successSoft)
+        .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
     }
 }
 
@@ -35,24 +35,29 @@ struct ErrorRetryView: View {
 
             Text(message)
                 .font(.subheadline)
-                .foregroundStyle(GuideTheme.ink)
+                .foregroundStyle(GuideTheme.inkStrong)
                 .lineLimit(3)
 
             Spacer(minLength: 8)
 
             Button(action: retryAction) {
-                Label("Retry", systemImage: "arrow.clockwise")
-                    .font(.caption.weight(.semibold))
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 32, height: 32)
             }
-            .buttonStyle(.bordered)
-            .tint(GuideTheme.warning)
+            .buttonStyle(.plain)
+            .foregroundStyle(GuideTheme.warning)
+            .background(GuideTheme.warningSoft)
+            .clipShape(Circle())
+            .accessibilityLabel("重试")
         }
         .padding(12)
         .background(GuideTheme.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(GuideTheme.warning.opacity(0.35))
+            RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
+                .stroke(GuideTheme.warning.opacity(0.25))
         }
+        .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
     }
 }
