@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from server.comparison import ComparisonService
 from server.catalog import CatalogHit, ProductCatalog
 from server.intent import IntentParser, SearchFilters
-from server.llm import ArkChatClient
+from server.llm import ArkChatClient, ModelUnavailable
 from server.prompts import build_messages
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import ChatResponse, ProductCard, ProductComparison
@@ -26,17 +26,26 @@ class PreparedChat:
     messages: list[dict[str, str]]
 
 
+CHITCHAT_REPLY = (
+    "你好呀～我是你的购物助手。告诉我你想买什么就行，比如品类、预算或使用场景"
+    "（例如“两三百的敏感肌面霜”“适合通勤的降噪耳机”），我来帮你挑选和对比。"
+)
+
+
 class ShoppingAssistant:
     def __init__(
         self,
         catalog: ProductCatalog,
         retriever: ProductRetriever,
         llm: ArkChatClient | None = None,
+        intent_llm: ArkChatClient | None = None,
     ):
         self._catalog = catalog
         self._retriever = retriever
         self._llm = llm
-        self._parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
+        self._parser = IntentParser(
+            catalog.categories, catalog.sub_categories, catalog.brands, llm=intent_llm
+        )
         self._comparison = ComparisonService(catalog, llm=llm)
         self._recent_product_ids_by_session: dict[str, list[str]] = {}
 
@@ -56,7 +65,7 @@ class ShoppingAssistant:
         recent_product_ids = self._recent_product_ids(session_id, client_recent_product_ids or [])
         compare_product_ids = compare_product_ids or []
 
-        if self._comparison.is_comparison_query(query, compare_product_ids):
+        if len(compare_product_ids) >= 2 or filters.intent_type == "comparison":
             comparison = self._comparison.build(
                 query=query,
                 filters=filters,
@@ -75,6 +84,18 @@ class ShoppingAssistant:
                 products=products,
                 comparison=comparison,
                 grounded_answer=grounded_answer,
+                messages=[],
+            )
+
+        if filters.intent_type == "chitchat":
+            return PreparedChat(
+                query=query,
+                session_id=session_id,
+                filters=filters,
+                retrieval=RetrievalResult(hits=[], source="none"),
+                products=[],
+                comparison=None,
+                grounded_answer=CHITCHAT_REPLY,
                 messages=[],
             )
 
@@ -99,9 +120,13 @@ class ShoppingAssistant:
         )
 
     def _order_hits(self, hits: list[CatalogHit], filters: SearchFilters) -> list[CatalogHit]:
-        if not filters.prefer_low_price:
-            return hits
-        return sorted(hits, key=lambda hit: self._display_price(hit.product, filters))
+        if filters.sort_by == "price_asc":
+            return sorted(hits, key=lambda hit: self._display_price(hit.product, filters))
+        if filters.sort_by == "price_desc":
+            return sorted(hits, key=lambda hit: self._display_price(hit.product, filters), reverse=True)
+        if filters.sort_by == "rating_desc":
+            return sorted(hits, key=lambda hit: self._catalog.avg_rating(hit.product), reverse=True)
+        return hits
 
     def _display_price(self, product: dict, filters: SearchFilters) -> float:
         selected_sku = self._catalog.selected_price_sku(product, filters)
@@ -120,18 +145,37 @@ class ShoppingAssistant:
         prepared = self.prepare(query, session_id, top_k, compare_product_ids, client_recent_product_ids)
         warnings = list(prepared.retrieval.warnings)
 
+        answer_text = prepared.grounded_answer
+        if prepared.messages and self._llm is not None and self._llm.available:
+            try:
+                answer_text = self._llm.complete(prepared.messages)
+            except ModelUnavailable as exc:
+                warnings.append(f"LLM unavailable, using grounded fallback: {exc}")
+
         return ChatResponse(
-            answer=prepared.grounded_answer,
+            answer=answer_text,
             products=prepared.products,
             comparison=prepared.comparison,
             session_id=session_id,
             intent=prepared.filters.to_dict(),
             retrieval_source=prepared.retrieval.source,
-            degraded=bool(prepared.retrieval.warnings),
+            degraded=bool(warnings),
             warnings=warnings,
         )
 
     def stream_answer(self, prepared: PreparedChat) -> Iterator[str]:
+        # Comparison replies have no LLM messages; they stay on the deterministic narration.
+        if prepared.messages and self._llm is not None and self._llm.available:
+            streamed = False
+            try:
+                for token in self._llm.stream(prepared.messages):
+                    streamed = True
+                    yield token
+                return
+            except Exception:  # noqa: BLE001 - stream must degrade, not crash the response
+                if streamed:
+                    # Partial answer already sent; ending beats duplicating it with the fallback.
+                    return
         yield from _chunk_text(prepared.grounded_answer)
 
     def _recent_product_ids(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[str]:

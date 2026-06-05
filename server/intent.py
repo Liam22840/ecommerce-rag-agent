@@ -7,8 +7,10 @@ room for a later LLM/NLU parser to produce the same SearchFilters structure.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -60,6 +62,17 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
 
 BUYING_HINTS = ["推荐", "想买", "有哪些", "帮我找", "适合", "预算", "以内", "以下"]
 
+SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
+INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat"}
+
+# Rule-fallback comparison detection. Kept local (not imported from comparison.py,
+# which imports SearchFilters from here) so the rule path can set intent_type when the
+# LLM is unavailable, preserving comparison routing in degraded mode.
+COMPARISON_HINTS = [
+    "对比", "比较", "哪个更", "哪款更", "哪一个更", "更适合", "选哪个", "买哪个",
+    "二选一", "这两款", "这两个", "第一个", "第二个", "前两个",
+]
+
 
 @dataclass
 class SearchFilters:
@@ -69,6 +82,8 @@ class SearchFilters:
     sub_category: str | None = None
     brand: str | None = None
     prefer_low_price: bool = False
+    sort_by: str = "relevance"
+    intent_type: str = "product_search"
     required_terms: list[str] = field(default_factory=list)
     requested_specs: list[str] = field(default_factory=list)
     excluded_brands: list[str] = field(default_factory=list)
@@ -80,29 +95,104 @@ class SearchFilters:
 
 
 class IntentParser:
-    def __init__(self, categories: set[str], sub_categories: set[str], brands: set[str]):
+    def __init__(
+        self,
+        categories: set[str],
+        sub_categories: set[str],
+        brands: set[str],
+        llm: Any | None = None,
+    ):
         self._categories = categories
         self._sub_categories = sub_categories
         self._brands = brands
+        self._llm = llm
 
     def parse(self, message: str) -> SearchFilters:
+        rule = self._rule_parse(message)
+        if not self._should_use_llm():
+            return rule
+        llm = self._llm_parse(message)
+        if llm is None:
+            return rule
+        return self._merge(rule, llm, message)
+
+    def _rule_parse(self, message: str) -> SearchFilters:
         text = message.strip()
         filters = SearchFilters(raw_query=text)
         filters.max_price = _parse_max_price(text)
         filters.min_price = _parse_min_price(text)
         filters.sub_category = self._match_sub_category(text)
         filters.category = self._match_category(text)
-        if filters.category is None and filters.sub_category:
-            inferred = SUB_CATEGORY_TO_CATEGORY.get(filters.sub_category)
-            if inferred in self._categories:
-                filters.category = inferred
+        self._backfill_category(filters)
         filters.brand = self._match_brand(text)
         filters.prefer_low_price = _prefers_low_price(text)
+        if filters.prefer_low_price:
+            filters.sort_by = "price_asc"
+        # Rule-fallback comparison detection keeps comparison routing working when the
+        # LLM is unavailable; chitchat is not rule-detectable, so it stays product_search.
+        if _looks_like_comparison(text):
+            filters.intent_type = "comparison"
         filters.required_terms = _parse_required_terms(text)
         filters.requested_specs = _parse_requested_specs(text)
         filters.excluded_brands = self._match_excluded_brands(text)
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
+
+    def _should_use_llm(self) -> bool:
+        return bool(self._llm) and getattr(self._llm, "available", False)
+
+    def _llm_parse(self, message: str) -> SearchFilters | None:
+        try:
+            raw = self._llm.complete(
+                _intent_messages(message, self._categories, self._sub_categories, self._brands)
+            )
+            payload = _json_object(raw)
+        except Exception:  # noqa: BLE001 - LLM parse must degrade to the rule parser.
+            return None
+        if not payload:
+            return None
+        return self._filters_from_llm_payload(payload, message)
+
+    def _filters_from_llm_payload(self, payload: dict[str, Any], message: str) -> SearchFilters:
+        filters = SearchFilters(raw_query=message.strip())
+        filters.category = _coerce_in_set(payload.get("category"), self._categories)
+        filters.sub_category = _coerce_in_set(payload.get("sub_category"), self._sub_categories)
+        filters.brand = _coerce_in_set(payload.get("brand"), self._brands)
+        filters.max_price = _coerce_price(payload.get("max_price"))
+        filters.min_price = _coerce_price(payload.get("min_price"))
+        if filters.min_price is not None and filters.max_price is not None and filters.min_price > filters.max_price:
+            filters.min_price, filters.max_price = filters.max_price, filters.min_price
+        filters.sort_by = _coerce_enum(payload.get("sort_by"), SORT_BY_VALUES, "relevance")
+        filters.intent_type = _coerce_enum(payload.get("intent_type"), INTENT_TYPE_VALUES, "product_search")
+        filters.prefer_low_price = _coerce_bool(payload.get("prefer_low_price")) or filters.sort_by == "price_asc"
+        filters.required_terms = _coerce_str_list(payload.get("required_terms"))
+        filters.requested_specs = [_normalize_spec(s) for s in _coerce_str_list(payload.get("requested_specs"))]
+        filters.excluded_brands = [b for b in _coerce_str_list(payload.get("excluded_brands")) if b in self._brands]
+        filters.excluded_terms = _coerce_str_list(payload.get("excluded_terms"))
+        return filters
+
+    def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
+        merged = SearchFilters(raw_query=message.strip())
+        merged.category = llm.category or rule.category
+        merged.sub_category = llm.sub_category or rule.sub_category
+        merged.brand = llm.brand or rule.brand
+        merged.max_price = llm.max_price if llm.max_price is not None else rule.max_price
+        merged.min_price = llm.min_price if llm.min_price is not None else rule.min_price
+        merged.sort_by = llm.sort_by if llm.sort_by != "relevance" else rule.sort_by
+        merged.intent_type = llm.intent_type if llm.intent_type != "product_search" else rule.intent_type
+        merged.required_terms = _dedupe(rule.required_terms + llm.required_terms)
+        merged.requested_specs = _dedupe(rule.requested_specs + llm.requested_specs)
+        merged.excluded_brands = _dedupe(rule.excluded_brands + llm.excluded_brands)
+        merged.excluded_terms = _dedupe(rule.excluded_terms + llm.excluded_terms)
+        merged.prefer_low_price = rule.prefer_low_price or llm.prefer_low_price or merged.sort_by == "price_asc"
+        self._backfill_category(merged)
+        return merged
+
+    def _backfill_category(self, filters: SearchFilters) -> None:
+        if filters.category is None and filters.sub_category:
+            inferred = SUB_CATEGORY_TO_CATEGORY.get(filters.sub_category)
+            if inferred in self._categories:
+                filters.category = inferred
 
     def _match_category(self, text: str) -> str | None:
         for category in sorted(self._categories, key=len, reverse=True):
@@ -208,3 +298,115 @@ def _parse_requested_specs(text: str) -> list[str]:
 
 def _normalize_spec(value: str) -> str:
     return re.sub(r"\s+", "", value).lower()
+
+
+def _looks_like_comparison(text: str) -> bool:
+    return any(hint in text for hint in COMPARISON_HINTS)
+
+
+_INTENT_SYSTEM_PROMPT = (
+    "你是电商导购的查询意图解析器。只输出 JSON，不写任何解释或多余文字。"
+    "任务：把用户的中文购物查询解析成结构化筛选条件。\n"
+    "规则：\n"
+    "1. category、sub_category、brand 必须从给定的可选值列表里原样选取；找不到对应项时填 null，禁止自造。\n"
+    "2. 把口语词映射到列表里的官方词，例如 口红→唇釉、爽肤水→化妆水、洗面奶→洁面、蓝牙耳机→真无线耳机。\n"
+    "3. 价格区间：「200到500」→ min_price=200, max_price=500；「不超过1万/一万」→ max_price=10000；中文数字要换算成阿拉伯数字；没有约束填 null。\n"
+    "4. 否定：「不含X」「不要X牌」→ 写进 excluded_terms / excluded_brands（品牌必须是列表里的官方品牌词，否则不写）。\n"
+    "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余→product_search。\n"
+    "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
+    "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
+    "8. 列表字段没内容返回 []，标量没内容返回 null。\n"
+    '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
+    '"category":string|null,"sub_category":string|null,"brand":string|null,'
+    '"min_price":number|null,"max_price":number|null,'
+    '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
+    '"required_terms":[string],"requested_specs":[string],'
+    '"excluded_brands":[string],"excluded_terms":[string]}'
+)
+
+
+def _intent_messages(
+    query: str,
+    categories: set[str],
+    sub_categories: set[str],
+    brands: set[str],
+) -> list[dict[str, str]]:
+    user_payload = {
+        "query": query,
+        "categories": sorted(categories),
+        "sub_categories": sorted(sub_categories),
+        "brands": sorted(brands),
+    }
+    return [
+        {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+    ]
+
+
+# Deliberate local copy of comparison.py's JSON extractor: comparison.py imports
+# SearchFilters from this module, so importing back would be a circular import.
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+def _coerce_in_set(value: Any, allowed: set[str]) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value in allowed else None
+
+
+def _coerce_enum(value: Any, allowed: set[str], default: str) -> str:
+    if isinstance(value, str) and value.strip() in allowed:
+        return value.strip()
+    return default
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+def _coerce_price(value: Any) -> float | None:
+    if isinstance(value, bool):  # bool is an int subclass; reject explicitly
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    if price < 0:
+        return None
+    return price
+
+
+def _coerce_str_list(value: Any, max_items: int = 16, max_len: int = 20) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    items = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item and len(item) <= max_len:
+            items.append(item)
+    return _dedupe(items)[:max_items]
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))

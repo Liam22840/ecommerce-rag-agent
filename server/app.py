@@ -43,7 +43,10 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             model=settings.chat_model,
             timeout_seconds=settings.chat_timeout_seconds,
         )
-        assistant = ShoppingAssistant(catalog=catalog, retriever=retriever, llm=llm)
+        intent_llm = llm if settings.enable_llm_intent else None
+        assistant = ShoppingAssistant(
+            catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm
+        )
 
     app.state.settings = settings
     app.state.assistant = assistant

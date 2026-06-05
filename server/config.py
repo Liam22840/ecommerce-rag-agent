@@ -27,10 +27,14 @@ class Settings:
     embedding_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     embedding_model: str = "doubao-embedding-vision-251215"
     chat_timeout_seconds: float = 60.0
+    # Query-time embedding must fail fast: if the embedding endpoint is slow,
+    # degrade to lexical search (with a warning) rather than hang the request.
+    embedding_timeout_seconds: float = 10.0
     retrieval_top_k: int = 5
     vector_search_k: int = 24
     enable_vector_search: bool = True
     enable_llm: bool = True
+    enable_llm_intent: bool = True
 
     @classmethod
     def load(cls) -> "Settings":
@@ -46,6 +50,9 @@ class Settings:
             embedding_model=os.environ.get("ARK_EMBEDDING_MODEL", cls.embedding_model),
             chat_timeout_seconds=float(
                 os.environ.get("ARK_CHAT_TIMEOUT_SECONDS", cls.chat_timeout_seconds)
+            ),
+            embedding_timeout_seconds=float(
+                os.environ.get("RAG_EMBED_TIMEOUT_SECONDS", cls.embedding_timeout_seconds)
             ),
             retrieval_top_k=int(os.environ.get("RAG_TOP_K", cls.retrieval_top_k)),
             vector_search_k=int(os.environ.get("RAG_VECTOR_SEARCH_K", cls.vector_search_k)),

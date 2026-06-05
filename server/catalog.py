@@ -189,6 +189,15 @@ class ProductCatalog:
         return True
 
     @staticmethod
+    def avg_rating(product: dict[str, Any]) -> float:
+        ratings = [
+            float(review["rating"])
+            for review in product.get("rag_knowledge", {}).get("user_reviews", [])
+            if isinstance(review.get("rating"), int | float)
+        ]
+        return sum(ratings) / len(ratings) if ratings else 0.0
+
+    @staticmethod
     def lowest_price(product: dict[str, Any]) -> float:
         sku_prices = [
             float(sku["price"])
