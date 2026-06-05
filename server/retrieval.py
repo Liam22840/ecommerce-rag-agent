@@ -85,6 +85,8 @@ class ProductRetriever:
                 dataset_root=self._settings.dataset_root,
                 base_url=self._settings.embedding_base_url,
                 model=self._settings.embedding_model,
+                timeout=self._settings.embedding_timeout_seconds,
+                max_attempts=1,
             )
             self._store = MilvusStore(uri=str(self._settings.milvus_path), dim=self._settings.embedding_dim)
             self._store.ensure_collection()

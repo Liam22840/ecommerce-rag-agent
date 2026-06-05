@@ -26,6 +26,8 @@ class DoubaoEmbedder:
         base_url: str = DEFAULT_BASE_URL,
         model: str = DEFAULT_MODEL,
         retry_sleep: float = 2.0,
+        timeout: float = 60.0,
+        max_attempts: int = MAX_ATTEMPTS,
     ):
         self._api_key = api_key
         self._cache = cache
@@ -33,6 +35,8 @@ class DoubaoEmbedder:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._retry_sleep = retry_sleep
+        self._timeout = timeout
+        self._max_attempts = max_attempts
 
     def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
         """Return one embedding vector per chunk, in the same order as input."""
@@ -83,12 +87,12 @@ class DoubaoEmbedder:
         endpoint = f"{self._base_url}/embeddings/multimodal"
 
         last_err: Optional[Exception] = None
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        for attempt in range(1, self._max_attempts + 1):
             try:
-                resp = requests.post(endpoint, headers=headers, json=payload, timeout=60)
+                resp = requests.post(endpoint, headers=headers, json=payload, timeout=self._timeout)
             except requests.RequestException as e:
                 last_err = e
-                if attempt < MAX_ATTEMPTS:
+                if attempt < self._max_attempts:
                     time.sleep(self._retry_sleep)
                 continue
 
@@ -99,7 +103,7 @@ class DoubaoEmbedder:
                     f"Doubao API hard failure {resp.status_code}: {resp.text[:300]}"
                 )
             last_err = RuntimeError(f"{resp.status_code} {resp.text[:200]}")
-            if attempt < MAX_ATTEMPTS:
+            if attempt < self._max_attempts:
                 time.sleep(self._retry_sleep)
 
-        raise RuntimeError(f"Doubao API failed after {MAX_ATTEMPTS} attempts: {last_err}")
+        raise RuntimeError(f"Doubao API failed after {self._max_attempts} attempts: {last_err}")
