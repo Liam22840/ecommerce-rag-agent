@@ -151,6 +151,18 @@ def test_comparison_shaped_payload_ignored():
     assert f.sub_category == "洁面"  # known keys absent -> rule fallback values
 
 
+def test_llm_extracts_compare_refs():
+    resp = json.dumps({"intent_type": "comparison", "compare_refs": ["理肤泉", "薇诺娜"]})
+    f = _parser(resp).parse("理肤泉和薇诺娜哪个更适合敏感肌")
+    assert f.intent_type == "comparison"
+    assert f.compare_refs == ["理肤泉", "薇诺娜"]
+
+
+def test_compare_refs_default_empty_without_llm():
+    f = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS).parse("理肤泉和薇诺娜哪个好")
+    assert f.compare_refs == []
+
+
 def test_no_llm_uses_rule_path():
     f = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS).parse("推荐一款适合油皮的洗面奶")
     assert f.sub_category == "洁面"

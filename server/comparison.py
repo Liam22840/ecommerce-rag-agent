@@ -121,10 +121,15 @@ class ComparisonService:
         explicit_product_ids: list[str],
         recent_product_ids: list[str],
     ) -> ProductComparison:
-        product_ids, clarification = self._resolve_product_ids(
-            query=query,
-            explicit_product_ids=explicit_product_ids,
-            recent_product_ids=recent_product_ids,
+        # Original deterministic-only resolution (kept for teammate review):
+        # product_ids, clarification = self._resolve_product_ids(
+        #     query=query,
+        #     explicit_product_ids=explicit_product_ids,
+        #     recent_product_ids=recent_product_ids,
+        # )
+        # Replaced: try deterministic first, then map LLM-extracted references (no extra LLM call).
+        product_ids, clarification = self._resolve_compared_products(
+            query, filters, explicit_product_ids, recent_product_ids
         )
 
         if clarification:
@@ -147,9 +152,12 @@ class ComparisonService:
             self._price_row(products, filters),
             self._sku_row(products),
         ]
-        for spec in focus_specs:
-            if spec.evidence:
-                rows.append(self._evidence_row(products, spec))
+        # Original deterministic evidence rows (kept for teammate review):
+        # for spec in focus_specs:
+        #     if spec.evidence:
+        #         rows.append(self._evidence_row(products, spec))
+        # Replaced with LLM-judged evidence (falls back to _evidence_row per dimension):
+        rows.extend(self._evidence_rows(products, focus_specs, query))
 
         winner_product_id, recommendation = self._recommend(products, rows, query, filters)
         summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
@@ -200,6 +208,39 @@ class ComparisonService:
         if recent_ids:
             return [], "我还不能确定你要对比哪两款。可以说“第一个和第二个”，或直接点选两个商品。"
         return [], "我还没有可对比的商品上下文。请先让助手推荐商品，或直接输入两款商品名。"
+
+    def _resolve_compared_products(
+        self,
+        query: str,
+        filters: SearchFilters,
+        explicit_product_ids: list[str],
+        recent_product_ids: list[str],
+    ) -> tuple[list[str], str | None]:
+        """Confidence-ordered: explicit (structured) ids first, then the LLM-extracted
+        references mapped deterministically (precise), then the deterministic waterfall as
+        the fallback. No extra LLM call (references come from the parser's existing call)."""
+        valid_explicit = _dedupe([
+            pid for pid in explicit_product_ids if self._catalog.get(pid) is not None
+        ])
+        if len(valid_explicit) >= 2:
+            return valid_explicit[:3], None
+        # LLM references are more precise than the deterministic name matcher, so map them
+        # before falling to the full deterministic waterfall.
+        mapped = self._map_refs_to_products(filters.compare_refs, recent_product_ids)
+        if len(mapped) >= 2:
+            return mapped[:3], None
+        return self._resolve_product_ids(query, explicit_product_ids, recent_product_ids)
+
+    def _map_refs_to_products(self, refs: list[str], recent_product_ids: list[str]) -> list[str]:
+        if not refs:
+            return []
+        recent = [product for product in (self._catalog.get(pid) for pid in recent_product_ids) if product]
+        result: list[str] = []
+        for ref in refs:
+            product = _best_ref_match(ref, recent) or _best_ref_match(ref, self._catalog.products)
+            if product and product["product_id"] not in result:
+                result.append(product["product_id"])
+        return result
 
     def _resolve_ordinals(self, query: str, recent_product_ids: list[str]) -> list[str]:
         if not recent_product_ids:
@@ -313,6 +354,81 @@ class ComparisonService:
         else:
             verdict = f"两款在“{spec.label}”维度证据接近或不足，不能做绝对判断。"
         return ComparisonRow(dimension=spec.label, values=values, winner_product_id=winner, verdict=verdict)
+
+    def _evidence_rows(
+        self,
+        products: list[dict[str, Any]],
+        focus_specs: list[DimensionSpec],
+        query: str,
+    ) -> list[ComparisonRow]:
+        """LLM judges each evidence dimension; any dimension it can't judge falls back
+        to the deterministic _evidence_row."""
+        evidence_specs = [spec for spec in focus_specs if spec.evidence]
+        judged = self._llm_judge(products, evidence_specs, query)
+        return [judged.get(spec.label) or self._evidence_row(products, spec) for spec in evidence_specs]
+
+    def _llm_judge(
+        self,
+        products: list[dict[str, Any]],
+        evidence_specs: list[DimensionSpec],
+        query: str,
+    ) -> dict[str, ComparisonRow]:
+        if not evidence_specs or not self._llm or not getattr(self._llm, "available", False):
+            return {}
+        try:
+            raw = self._llm.complete(_evidence_judge_messages(query, products, evidence_specs))
+            payload = _json_object(raw)
+        except Exception:  # noqa: BLE001 - evidence judging must degrade to the deterministic scorer.
+            return {}
+        if not isinstance(payload.get("judgments"), list):
+            return {}
+        return self._rows_from_judgments(payload, products, evidence_specs)
+
+    def _rows_from_judgments(
+        self,
+        payload: dict[str, Any],
+        products: list[dict[str, Any]],
+        evidence_specs: list[DimensionSpec],
+    ) -> dict[str, ComparisonRow]:
+        product_ids = {product["product_id"] for product in products}
+        grounding = {
+            product["product_id"]: _normalize(" ".join(text for _, text, _ in _source_texts(product)))
+            for product in products
+        }
+        spec_labels = {spec.label for spec in evidence_specs}
+        rows: dict[str, ComparisonRow] = {}
+        for judgment in payload["judgments"]:
+            if not isinstance(judgment, dict):
+                continue
+            label = str(judgment.get("dimension", "")).strip()
+            if label not in spec_labels or label in rows:
+                continue
+            winner = judgment.get("winner_product_id")
+            if winner not in product_ids:
+                winner = None
+            reasons = judgment.get("reasons")
+            reasons = reasons if isinstance(reasons, dict) else {}
+            quotes = judgment.get("evidence")
+            quotes = quotes if isinstance(quotes, dict) else {}
+            raw_conf = judgment.get("confidence")
+            values = []
+            for product in products:
+                pid = product["product_id"]
+                reason = str(reasons.get(pid, "")).strip()
+                quote = str(quotes.get(pid, "")).strip()
+                grounded = bool(quote) and _normalize(quote) in grounding[pid]
+                values.append(ComparisonValue(
+                    product_id=pid,
+                    value=reason or (quote if grounded else f"商品库未提供足够“{label}”证据"),
+                    evidence=[quote] if grounded else [],
+                    confidence=_judge_confidence(raw_conf, reason, grounded),
+                ))
+            if winner:
+                verdict = f"按商品库证据，{self._title(winner, products)}在“{label}”维度更有支撑。"
+            else:
+                verdict = f"两款在“{label}”维度证据接近或不足，不能做绝对判断。"
+            rows[label] = ComparisonRow(dimension=label, values=values, winner_product_id=winner, verdict=verdict)
+        return rows
 
     def _recommend(
         self,
@@ -510,6 +626,33 @@ def _name_score(normalized_query: str, product: dict[str, Any]) -> float:
     return score
 
 
+def _best_ref_match(ref: str, pool: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Best product in pool for a reference word (brand or product name). Returns None when
+    several products tie for the top score (ambiguous) so the caller can fall back to a
+    clarification instead of guessing."""
+    normalized_ref = _normalize(ref)
+    if not normalized_ref:
+        return None
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for product in pool:
+        # _name_score already rewards the brand/title appearing in the ref; here we add the
+        # reverse direction: a short ref being a fragment of the brand/title.
+        score = _name_score(normalized_ref, product)
+        brand = _normalize(product.get("brand", ""))
+        title = _normalize(product.get("title", ""))
+        if brand and normalized_ref in brand:
+            score += 8
+        if title and normalized_ref in title:
+            score += 6
+        if score > 0:
+            scored.append((score, product))
+    if not scored:
+        return None
+    top = max(score for score, _ in scored)
+    winners = [product for score, product in scored if score == top]
+    return winners[0] if len(winners) == 1 else None
+
+
 def _title_tokens(normalized_title: str) -> list[str]:
     tokens = []
     for size in (6, 4, 3):
@@ -577,6 +720,49 @@ def _product_evidence_for_llm(product: dict[str, Any]) -> dict[str, Any]:
             for item in reviews
         ],
     }
+
+
+_EVIDENCE_JUDGE_SYSTEM = (
+    "你是电商导购的对比证据裁判。只输出 JSON，不写任何解释。"
+    "任务：对每个给定维度，只依据所给的商品证据（标题、描述、官方问答、用户评价），判断哪款商品在该维度更好。\n"
+    "规则：\n"
+    "1. 只能用提供的证据，禁止编造。要读懂评价语气：比如“噪音几乎没了/全没了”是好评，“有底噪/不好/一般”是差评。\n"
+    "2. winner_product_id 必须是给定的某个 product_id；证据接近或不足就填 null。\n"
+    "3. evidence 里每个商品引用一句你判断所依据的原文（尽量逐字照抄），没有合适证据就留空字符串。\n"
+    "4. 遵守每个维度的 preference：lower_is_better 表示越低/越少越好。\n"
+    "5. 不要判断价格或 SKU，这部分系统会单独处理。\n"
+    "6. reasons 每个商品用一句话说明理由；confidence 取 high|medium|low|none。\n"
+    '只输出如下 JSON：{"judgments":[{"dimension":"维度名","winner_product_id":"pid 或 null",'
+    '"reasons":{"pid":"一句话理由"},"evidence":{"pid":"原文引用"},"confidence":"high|medium|low|none"}]}'
+)
+
+
+def _evidence_judge_messages(
+    query: str,
+    products: list[dict[str, Any]],
+    specs: list["DimensionSpec"],
+) -> list[dict[str, str]]:
+    user_payload = {
+        "query": query,
+        "dimensions": [{"label": spec.label, "preference": spec.preference} for spec in specs],
+        "products": [_product_evidence_for_llm(product) for product in products],
+    }
+    return [
+        {"role": "system", "content": _EVIDENCE_JUDGE_SYSTEM},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+    ]
+
+
+def _judge_confidence(raw: Any, reason: str, grounded: bool) -> str:
+    if not reason and not grounded:
+        return "none"
+    conf = raw.strip() if isinstance(raw, str) else ""
+    if conf not in {"high", "medium", "low", "none"}:
+        conf = "medium"
+    # No verifiable quote -> don't over-claim.
+    if conf in {"high", "medium"} and not grounded:
+        conf = "low"
+    return conf
 
 
 def _json_object(raw: str) -> dict[str, Any]:

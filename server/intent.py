@@ -88,6 +88,7 @@ class SearchFilters:
     requested_specs: list[str] = field(default_factory=list)
     excluded_brands: list[str] = field(default_factory=list)
     excluded_terms: list[str] = field(default_factory=list)
+    compare_refs: list[str] = field(default_factory=list)
     raw_query: str = ""
 
     def to_dict(self) -> dict:
@@ -169,6 +170,7 @@ class IntentParser:
         filters.requested_specs = [_normalize_spec(s) for s in _coerce_str_list(payload.get("requested_specs"))]
         filters.excluded_brands = [b for b in _coerce_str_list(payload.get("excluded_brands")) if b in self._brands]
         filters.excluded_terms = _coerce_str_list(payload.get("excluded_terms"))
+        filters.compare_refs = _coerce_str_list(payload.get("compare_refs"))
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -184,6 +186,7 @@ class IntentParser:
         merged.requested_specs = _dedupe(rule.requested_specs + llm.requested_specs)
         merged.excluded_brands = _dedupe(rule.excluded_brands + llm.excluded_brands)
         merged.excluded_terms = _dedupe(rule.excluded_terms + llm.excluded_terms)
+        merged.compare_refs = llm.compare_refs  # references are only extracted by the LLM
         merged.prefer_low_price = rule.prefer_low_price or llm.prefer_low_price or merged.sort_by == "price_asc"
         self._backfill_category(merged)
         return merged
@@ -315,13 +318,14 @@ _INTENT_SYSTEM_PROMPT = (
     "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余→product_search。\n"
     "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
-    "8. 列表字段没内容返回 []，标量没内容返回 null。\n"
+    "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品。用用户原话里最具体的指代词（带型号/系列，如「理肤泉特安」而不是只写「理肤泉」；「薇诺娜舒敏」而不是「薇诺娜」），如「理肤泉特安和薇诺娜舒敏」→[\"理肤泉特安\",\"薇诺娜舒敏\"]，「那个兰蔻的」→[\"兰蔻\"]；否则填 []。\n"
+    "9. 列表字段没内容返回 []，标量没内容返回 null。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
     '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
     '"required_terms":[string],"requested_specs":[string],'
-    '"excluded_brands":[string],"excluded_terms":[string]}'
+    '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string]}'
 )
 
 
