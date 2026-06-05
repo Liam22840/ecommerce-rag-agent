@@ -20,6 +20,29 @@ def _client() -> TestClient:
     return TestClient(create_app(settings=settings))
 
 
+def test_health_endpoint():
+    resp = _client().get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_chat_endpoint_rejects_blank_message():
+    resp = _client().post("/api/chat", json={"message": "   "})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "message cannot be empty"
+
+
+def test_stream_endpoint_rejects_blank_message():
+    resp = _client().post("/api/chat/stream", json={"message": "   "})
+    assert resp.status_code == 400
+
+
+def test_product_detail_returns_404_for_unknown_id():
+    resp = _client().get("/api/products/does_not_exist")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "product not found"
+
+
 def test_chat_endpoint_returns_grounded_product_cards():
     client = _client()
 

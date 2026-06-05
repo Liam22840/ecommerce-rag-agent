@@ -1,0 +1,221 @@
+"""Tests for hybrid retrieval: vector path, degradation, merge, and source labels."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from server.catalog import CatalogHit, ProductCatalog
+from server.config import Settings
+from server.intent import IntentParser, SearchFilters
+from server.retrieval import ProductRetriever, RetrievalResult
+
+
+DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
+
+
+class FakeEmbedder:
+    def __init__(self, vector=None, error: Exception | None = None):
+        self._vector = vector if vector is not None else [0.1, 0.2]
+        self._error = error
+        self.calls: list[str] = []
+
+    def embed_text(self, text: str) -> list[float]:
+        self.calls.append(text)
+        if self._error is not None:
+            raise self._error
+        return self._vector
+
+
+class FakeStore:
+    def __init__(self, raw_hits: list[dict]):
+        self._raw_hits = raw_hits
+        self.calls: list[tuple] = []
+
+    def search(self, vector, k: int) -> list[dict]:
+        self.calls.append((vector, k))
+        return self._raw_hits
+
+
+def _lexical_settings() -> Settings:
+    return Settings(
+        dataset_root=DATASET_ROOT,
+        embedding_api_key=None,
+        enable_vector_search=False,
+    )
+
+
+def _retriever_with_vector(catalog, raw_hits, embedder=None) -> ProductRetriever:
+    """Build a lexical-only retriever then inject fake vector components."""
+    retriever = ProductRetriever(catalog, _lexical_settings())
+    retriever._vector_ready = True
+    retriever._embedder = embedder or FakeEmbedder()
+    retriever._store = FakeStore(raw_hits)
+    retriever._startup_warning = None
+    return retriever
+
+
+def _filters(catalog, query: str) -> SearchFilters:
+    parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
+    return parser.parse(query)
+
+
+# --- startup warnings -----------------------------------------------------------
+
+def test_disabled_vector_search_records_startup_warning():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())
+
+    result = retriever.retrieve("推荐一款适合油皮的洗面奶", _filters(catalog, "推荐一款适合油皮的洗面奶"), limit=3)
+
+    assert any("disabled by configuration" in w for w in result.warnings)
+    assert result.source == "lexical"
+
+
+def test_enabled_vector_search_without_api_key_warns():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    settings = Settings(dataset_root=DATASET_ROOT, embedding_api_key=None, enable_vector_search=True)
+
+    retriever = ProductRetriever(catalog, settings)
+
+    assert retriever._vector_ready is False
+    assert "ARK_EMBEDDING_API_KEY" in (retriever._startup_warning or "")
+
+
+def test_vector_init_failure_is_caught_and_warned(mocker):
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    settings = Settings(dataset_root=DATASET_ROOT, embedding_api_key="x", enable_vector_search=True)
+    mocker.patch("server.retrieval.DoubaoEmbedder", side_effect=RuntimeError("boom"))
+
+    retriever = ProductRetriever(catalog, settings)
+
+    assert retriever._vector_ready is False
+    assert "initialization failed" in (retriever._startup_warning or "")
+    assert "boom" in retriever._startup_warning
+
+
+# --- lexical-only behaviour -----------------------------------------------------
+
+def test_lexical_only_returns_hits_with_lexical_source():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())
+    retriever._startup_warning = None  # isolate from the disabled-warning noise
+
+    result = retriever.retrieve("推荐一款适合油皮的洗面奶", _filters(catalog, "推荐一款适合油皮的洗面奶"), limit=3)
+
+    assert result.source == "lexical"
+    assert result.warnings == []
+    assert result.hits
+    assert result.hits[0].product["sub_category"] == "洁面"
+
+
+def test_no_matches_yields_none_source():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())
+    retriever._startup_warning = None
+
+    query = "200 元以下的蓝牙耳机有哪些？"
+    result = retriever.retrieve(query, _filters(catalog, query), limit=3)
+
+    assert result.hits == []
+    assert result.source == "none"
+
+
+# --- vector path ----------------------------------------------------------------
+
+def test_vector_hit_with_no_lexical_overlap_is_vector_source():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    raw = [{"product_id": "p_beauty_011", "score": 0.5, "text": "向量片段"}]
+    retriever = _retriever_with_vector(catalog, raw)
+
+    # "zzzzz" has no lexical overlap, so only the vector hit survives.
+    result = retriever.retrieve("zzzzz", SearchFilters(), limit=3)
+
+    assert result.source == "vector"
+    assert [hit.product["product_id"] for hit in result.hits] == ["p_beauty_011"]
+    assert result.hits[0].source == "vector"
+    assert "向量片段" in result.hits[0].snippets
+    assert retriever._embedder.calls == ["zzzzz"]
+
+
+def test_vector_and_lexical_overlap_is_hybrid_and_scores_merge():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    raw = [{"product_id": "p_beauty_011", "score": 1.0, "text": "向量片段"}]
+    retriever = _retriever_with_vector(catalog, raw)
+
+    query = "推荐一款适合油皮的洗面奶"
+    result = retriever.retrieve(query, _filters(catalog, query), limit=3)
+
+    assert result.source == "hybrid"
+    top = next(hit for hit in result.hits if hit.product["product_id"] == "p_beauty_011")
+    # vector contributes score 1.0 * 20 on top of the lexical score, and merging
+    # flips the hit's source to hybrid.
+    assert top.score > 20.0
+    assert top.source == "hybrid"
+
+
+def test_vector_hits_failing_filters_are_dropped():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    raw = [
+        {"product_id": "p_beauty_011", "score": 0.9, "text": "片段"},
+        {"product_id": "does_not_exist", "score": 0.9, "text": "片段"},
+    ]
+    retriever = _retriever_with_vector(catalog, raw)
+
+    # max_price below every product price drops the real vector hit too.
+    result = retriever.retrieve("zzzzz", SearchFilters(max_price=1.0), limit=3)
+
+    assert result.hits == []
+    assert result.source == "none"
+
+
+def test_vector_search_exception_degrades_to_lexical():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = _retriever_with_vector(
+        catalog, raw_hits=[], embedder=FakeEmbedder(error=RuntimeError("embed down"))
+    )
+
+    query = "推荐一款适合油皮的洗面奶"
+    result = retriever.retrieve(query, _filters(catalog, query), limit=3)
+
+    assert result.source == "lexical"
+    assert any("vector search unavailable" in w for w in result.warnings)
+    assert "embed down" in " ".join(result.warnings)
+    assert result.hits  # lexical fallback still produced results
+
+
+# --- _merge_hit -----------------------------------------------------------------
+
+def test_merge_hit_inserts_new_product():
+    merged: dict = {}
+    hit = CatalogHit(product={"product_id": "p1"}, score=3.0, snippets=["a"], source="lexical")
+    ProductRetriever._merge_hit(merged, hit)
+    assert merged["p1"] is hit
+
+
+def test_merge_hit_accumulates_score_marks_hybrid_and_unions_snippets():
+    merged: dict = {}
+    base = CatalogHit(product={"product_id": "p1"}, score=2.0, snippets=["a"], source="lexical")
+    ProductRetriever._merge_hit(merged, base)
+    incoming = CatalogHit(product={"product_id": "p1"}, score=5.0, snippets=["a", "b"], source="vector")
+
+    ProductRetriever._merge_hit(merged, incoming)
+
+    assert merged["p1"].score == 7.0
+    assert merged["p1"].source == "hybrid"
+    assert merged["p1"].snippets == ["a", "b"]
+
+
+def test_merge_hit_same_source_keeps_source():
+    merged: dict = {}
+    base = CatalogHit(product={"product_id": "p1"}, score=2.0, snippets=[], source="lexical")
+    ProductRetriever._merge_hit(merged, base)
+    ProductRetriever._merge_hit(
+        merged, CatalogHit(product={"product_id": "p1"}, score=1.0, snippets=[], source="lexical")
+    )
+    assert merged["p1"].source == "lexical"
+    assert merged["p1"].score == 3.0
+
+
+def test_retrieval_result_dataclass_defaults_warnings():
+    result = RetrievalResult(hits=[], source="none")
+    assert result.warnings == []

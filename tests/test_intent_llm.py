@@ -156,6 +156,31 @@ def test_no_llm_uses_rule_path():
     assert f.sub_category == "洁面"
 
 
+def test_unavailable_llm_is_not_called():
+    parser = _parser(json.dumps({"sub_category": "唇釉"}), available=False)
+    f = parser.parse("推荐一款适合油皮的洗面奶")
+    assert f.sub_category == "洁面"  # rule path; LLM skipped despite a canned response
+
+
+def test_json_embedded_in_prose_is_extracted():
+    resp = '好的，解析结果如下：{"sub_category": "化妆水"} 以上。'
+    f = _parser(resp).parse("爽肤水")
+    assert f.sub_category == "化妆水"
+
+
+def test_coerce_bool_string_true_sets_prefer_low_price():
+    resp = json.dumps({"sub_category": "面霜", "prefer_low_price": "true"})
+    f = _parser(resp).parse("推荐面霜")
+    assert f.prefer_low_price is True
+
+
+def test_sort_by_price_asc_forces_prefer_low_price():
+    resp = json.dumps({"sub_category": "面霜", "sort_by": "price_asc", "prefer_low_price": False})
+    f = _parser(resp).parse("推荐面霜")
+    assert f.sort_by == "price_asc"
+    assert f.prefer_low_price is True
+
+
 # --- avg_rating + sort_by ------------------------------------------------------
 
 def test_avg_rating_helper():

@@ -44,3 +44,29 @@ def test_parses_requested_specs():
     filters = _parser().parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
 
     assert filters.requested_specs == ["50g"]
+
+
+def test_parses_min_price_above_and_not_below():
+    assert _parser().parse("1000元以上的手机").min_price == 1000.0
+    assert _parser().parse("不低于500的耳机").min_price == 500.0
+
+
+def test_parses_excluded_terms_from_negation():
+    filters = _parser().parse("推荐一个面霜，不要香精")
+    assert "香精" in filters.excluded_terms
+
+
+def test_parses_storage_and_volume_specs():
+    assert _parser().parse("256GB 的手机").requested_specs == ["256gb"]
+    assert _parser().parse("来瓶500ml的汽水").requested_specs == ["500ml"]
+
+
+def test_rule_detects_comparison_intent():
+    filters = _parser().parse("这两款耳机哪个更好")
+    assert filters.intent_type == "comparison"
+
+
+def test_category_matched_via_alias_without_official_word():
+    # "数码" is an alias for the 数码电子 category, which isn't spelled out.
+    filters = _parser().parse("推荐点数码好物")
+    assert filters.category == "数码电子"
