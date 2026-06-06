@@ -129,17 +129,35 @@ def test_rewritten_query_empty_when_absent_or_nonstring():
     assert _parser(json.dumps({"rewritten_query": 123})).parse("推荐面霜").rewritten_query == ""
 
 
-def test_intent_messages_include_previous_turn_only_when_provided():
+def test_exclude_seen_extracted_and_defaults_false():
+    assert _parser(json.dumps({"sub_category": "面霜", "exclude_seen": True})).parse("换一批").exclude_seen is True
+    assert _parser(json.dumps({"sub_category": "面霜"})).parse("推荐面霜").exclude_seen is False
+
+
+def test_recall_product_ids_extracted_and_default_empty():
+    resp = json.dumps({"intent_type": "product_search", "recall_product_ids": ["p_beauty_007"]})
+    assert _parser(resp).parse("回到最开始那个").recall_product_ids == ["p_beauty_007"]
+    assert _parser(json.dumps({"sub_category": "面霜"})).parse("推荐面霜").recall_product_ids == []
+
+
+def test_session_products_passed_to_llm_when_present():
+    fake = FakeLLM(json.dumps({}))
+    parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS, llm=fake)
+    parser.parse("回到最开始那个", session_products=[{"id": "p_beauty_007", "title": "薇诺娜", "price": 89}])
+    assert "session_products" in fake.calls[0][1]["content"]
+
+
+def test_intent_messages_include_recent_turns_only_when_provided():
     fake = FakeLLM(json.dumps({"sub_category": "面霜"}))
     parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS, llm=fake)
 
-    parser.parse("便宜点的", previous_filters=SearchFilters(sub_category="面霜"))
+    parser.parse("便宜点的", history=[{"query": "推荐面霜", "sub_category": "面霜"}])
     parser.parse("推荐面霜")
 
-    with_previous = fake.calls[0][1]["content"]
-    without_previous = fake.calls[1][1]["content"]
-    assert "previous_turn" in with_previous
-    assert "previous_turn" not in without_previous
+    with_history = fake.calls[0][1]["content"]
+    without_history = fake.calls[1][1]["content"]
+    assert "recent_turns" in with_history
+    assert "recent_turns" not in without_history
 
 
 # --- Validation / coercion edge cases ------------------------------------------
@@ -298,3 +316,18 @@ def test_intent_type_comparison_routes_to_comparison():
         json={"message": "对比一下", "compare_product_ids": ["p_beauty_007", "p_beauty_012"]},
     ).json()
     assert body["comparison"] is not None
+
+
+def test_llm_relative_cheaper_emits_tighter_max_price_with_carry():
+    # The LLM, given the prior turn, resolves "便宜一点的" into a concrete tighter price.
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜",
+        "max_price": 80, "prefer_low_price": True,
+    })
+    f = _parser(resp).parse(
+        "便宜一点的",
+        previous_filters=SearchFilters(category="美妆护肤", sub_category="面霜"),
+    )
+    assert f.sub_category == "面霜"
+    assert f.max_price == 80.0
+    assert f.prefer_low_price is True

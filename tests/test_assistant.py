@@ -54,12 +54,20 @@ class FakeLLM:
             raise self._stream_error
 
 
-def _assistant(llm=None) -> ShoppingAssistant:
-    settings = Settings(dataset_root=DATASET_ROOT, embedding_api_key=None, enable_vector_search=False)
+def _settings(**overrides) -> Settings:
+    base = dict(dataset_root=DATASET_ROOT, embedding_api_key=None, enable_vector_search=False)
+    base.update(overrides)
+    return Settings(**base)
+
+
+def _assistant(llm=None, intent_llm=None, settings=None) -> ShoppingAssistant:
+    settings = settings or _settings()
     catalog = ProductCatalog.load(DATASET_ROOT)
     retriever = ProductRetriever(catalog, settings)
     retriever._startup_warning = None  # isolate degraded flag from the lexical-mode warning
-    return ShoppingAssistant(catalog=catalog, retriever=retriever, llm=llm)
+    return ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm, settings=settings
+    )
 
 
 # --- answer(): LLM availability matrix -----------------------------------------
@@ -158,53 +166,53 @@ def test_stream_answer_uses_grounded_when_no_llm():
 
 # --- session memory ------------------------------------------------------------
 
-def test_remember_recent_products_dedupes_and_prepends():
+def test_recent_product_ids_orders_most_recent_first_preserving_within_turn_order():
+    assistant = _assistant(llm=None)
+    creams = [p.product_id for p in assistant.prepare("推荐面霜", session_id="s", top_k=3).products]
+    phones = [p.product_id for p in assistant.prepare("推荐手机", session_id="s", top_k=3).products]
+
+    recent = assistant._recent_product_ids("s", [])
+
+    # Last turn's products come first, in display order (so comparison's 第一个/第二个 resolve),
+    # then the earlier turn's products.
+    assert recent[: len(phones)] == phones
+    assert recent.index(phones[0]) < recent.index(creams[0])
+
+
+def test_recent_product_ids_dedupes_when_product_reshown():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)  # same products shown again
+
+    recent = assistant._recent_product_ids("s", [])
+    assert len(recent) == len(set(recent))
+
+
+def test_recent_product_ids_puts_client_ids_first():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+
+    merged = assistant._recent_product_ids("s", ["X"])
+    assert merged[0] == "X"
+
+
+def test_remember_shown_products_ignores_empty_session_or_products():
     assistant = _assistant(llm=None)
 
-    assistant._remember_recent_products("s", ["a", "b"])
-    assistant._remember_recent_products("s", ["c", "b"])
-
-    # Newest first, deduped across calls.
-    assert assistant._sessions["s"].recent_product_ids == ["c", "b", "a"]
-
-
-def test_remember_recent_products_caps_at_ten():
-    assistant = _assistant(llm=None)
-
-    assistant._remember_recent_products("s", [f"id{n}" for n in range(15)])
-
-    stored = assistant._sessions["s"].recent_product_ids
-    assert len(stored) == 10
-    assert stored == [f"id{n}" for n in range(10)]
-
-
-def test_remember_recent_products_ignores_empty_session_or_ids():
-    assistant = _assistant(llm=None)
-
-    assistant._remember_recent_products("", ["a"])
-    assistant._remember_recent_products(None, ["a"])
-    assistant._remember_recent_products("s", [])
+    assistant._remember_shown_products("", [])
+    assistant._remember_shown_products(None, [])
 
     assert assistant._sessions == {}
 
 
-def test_recent_product_ids_merges_client_and_stored():
-    assistant = _assistant(llm=None)
-    assistant._remember_recent_products("s", ["b", "a"])
-
-    merged = assistant._recent_product_ids("s", ["x", "b"])
-
-    assert merged == ["x", "b", "a"]
-
-
-def test_remember_filters_round_trips_and_skips_empty_session():
+def test_remember_turn_round_trips_and_skips_empty_session():
     assistant = _assistant(llm=None)
     filters = SearchFilters(sub_category="面霜", category="美妆护肤")
 
-    assistant._remember_filters("s", filters)
+    assistant._remember_turn("s", "推荐面霜", filters, [])
     assert assistant._previous_filters("s") is filters
 
-    assistant._remember_filters("", filters)
+    assistant._remember_turn("", "推荐面霜", filters, [])
     assert assistant._previous_filters("") is None
 
 
@@ -254,6 +262,143 @@ def test_prepare_falls_back_to_raw_query_when_no_rewrite():
     assert spy.queries == ["三百以内的面霜"]
 
 
+# --- multi-round history + relative refinements --------------------------------
+
+class _SeqLLM:
+    """Intent LLM that returns a different canned JSON per call (turn-by-turn)."""
+
+    available = True
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+
+    def complete(self, messages):
+        return self._responses.pop(0) if self._responses else "{}"
+
+
+class _ScriptedLLM:
+    """Intent LLM whose next response is settable. Defaults to '{}' so untouched turns fall
+    back to the rule parser; set `next_response` right before a turn that needs a canned JSON
+    (useful when the value depends on ids produced by earlier turns, e.g. recall)."""
+
+    available = True
+
+    def __init__(self):
+        self.next_response = "{}"
+        self.calls: list = []
+
+    def complete(self, messages):
+        self.calls.append(messages)
+        return self.next_response
+
+
+def _assistant_with_intent(intent_llm) -> ShoppingAssistant:
+    return _assistant(intent_llm=intent_llm)
+
+
+def test_remember_turn_records_and_caps_to_history_turns():
+    assistant = _assistant(llm=None)  # default history_turns = 3
+    for n in range(7):
+        assistant._remember_turn("s", f"q{n}", SearchFilters(sub_category="面霜"), [])
+    turns = assistant._sessions["s"].turns
+    assert [turn.query for turn in turns] == [f"q{n}" for n in range(4, 7)]
+
+
+def test_history_summaries_include_shown_prices():
+    assistant = _assistant(llm=None)
+    assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+    history = assistant._history_summaries("s")
+    assert history and history[-1]["sub_category"] == "面霜"
+    assert history[-1]["shown"] and all("price" in item for item in history[-1]["shown"])
+
+
+def test_previous_filters_reads_the_last_turn():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assistant.prepare("推荐手机", session_id="s", top_k=3)
+    assert assistant._previous_filters("s").sub_category == "智能手机"
+
+
+def test_exclude_seen_drops_already_shown_products():
+    intent_llm = _SeqLLM([
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜", "max_price": 100}),
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜", "exclude_seen": True}),
+    ])
+    assistant = _assistant_with_intent(intent_llm)
+    assistant.prepare("100以内的面霜", session_id="s", top_k=5)  # shows the two ≤100 creams (007, 008)
+
+    prepared = assistant.prepare("换一批", session_id="s", top_k=5)
+    ids = [product.product_id for product in prepared.products]
+    assert "p_beauty_007" not in ids and "p_beauty_008" not in ids
+    assert ids == ["p_beauty_012"]  # the only unseen 面霜
+
+
+def test_result_status_no_improvement_when_results_already_seen():
+    assistant = _assistant(llm=None)
+    assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+    repeat = assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+    assert repeat.result_status == "no_improvement"
+    assert "最匹配" in repeat.grounded_answer
+
+
+def test_result_status_no_results_when_empty():
+    assistant = _assistant(llm=None)
+    prepared = assistant.prepare("便宜点的", session_id="fresh", top_k=3)
+    assert prepared.products == []
+    assert prepared.result_status == "no_results"
+
+
+def test_result_status_exhausted_when_all_seen_excluded():
+    intent_llm = _SeqLLM([
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜"}),
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜", "exclude_seen": True}),
+    ])
+    assistant = _assistant_with_intent(intent_llm)
+    assistant.prepare("推荐面霜", session_id="s", top_k=5)  # shows all 3 面霜
+
+    prepared = assistant.prepare("换一批", session_id="s", top_k=5)
+    assert prepared.products == []
+    assert prepared.result_status == "exhausted"
+    assert "没有更多" in prepared.grounded_answer
+
+
+# --- session-wide product recall (backtracking) --------------------------------
+
+def test_shown_products_accumulate_deduped_and_session_wide():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assistant.prepare("推荐手机", session_id="s", top_k=3)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)  # repeat: no duplicates
+
+    shown = assistant._session_products("s")
+    ids = [item["id"] for item in shown]
+    assert len(ids) == len(set(ids))  # deduped
+    cats = {item["sub_category"] for item in shown}
+    assert "面霜" in cats and "智能手机" in cats  # whole session, not just last turn
+    # first-shown order: face creams (turn 1) precede phones (turn 2)
+    first_phone = next(i for i, item in enumerate(shown) if item["sub_category"] == "智能手机")
+    assert shown[0]["sub_category"] == "面霜" and first_phone > 0
+
+
+def test_recall_returns_exact_products_by_id():
+    intent_llm = FakeLLM(complete_result=json.dumps(
+        {"intent_type": "product_search", "recall_product_ids": ["p_beauty_012"]}
+    ))
+    assistant = _assistant_with_intent(intent_llm)
+    prepared = assistant.prepare("回到最开始那个", session_id="s", top_k=5)
+    assert [product.product_id for product in prepared.products] == ["p_beauty_012"]
+
+
+def test_recall_ignores_ids_not_in_catalog():
+    intent_llm = FakeLLM(complete_result=json.dumps(
+        {"intent_type": "product_search", "recall_product_ids": ["p_nope_999"]}
+    ))
+    assistant = _assistant_with_intent(intent_llm)
+    prepared = assistant.prepare("回到那个", session_id="s", top_k=5)
+    # Invalid id is dropped, so it falls through to normal retrieval (never returns the bad id).
+    assert all(product.product_id != "p_nope_999" for product in prepared.products)
+
+
 # --- small helpers -------------------------------------------------------------
 
 def test_chunk_text_splits_into_fixed_windows():
@@ -262,8 +407,156 @@ def test_chunk_text_splits_into_fixed_windows():
 
 
 def test_chunk_text_empty_string_yields_nothing():
-    assert list(_chunk_text("")) == []
+    assert list(_chunk_text("", chunk_size=18)) == []
 
 
 def test_dedupe_ids_drops_empties_and_duplicates_preserving_order():
     assert dedupe_ids(["a", "", "b", "a", "c", "b"]) == ["a", "b", "c"]
+
+
+# --- config knobs actually drive memory behaviour ------------------------------
+
+def test_history_turns_setting_controls_the_window():
+    assistant = _assistant(settings=_settings(history_turns=1))
+    for n in range(4):
+        assistant._remember_turn("s", f"q{n}", SearchFilters(sub_category="面霜"), [])
+    assert [turn.query for turn in assistant._sessions["s"].turns] == ["q3"]
+
+
+def test_shown_summary_cap_limits_items_per_turn():
+    assistant = _assistant(settings=_settings(shown_summary_cap=1))
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)  # 3 creams shown
+    history = assistant._history_summaries("s")
+    assert len(history[-1]["shown"]) == 1
+
+
+def test_recent_products_cap_limits_derived_recency():
+    assistant = _assistant(settings=_settings(recent_products_cap=2))
+    assistant.prepare("推荐手机", session_id="s", top_k=5)  # several phones shown
+    assert len(assistant._recent_product_ids("s", [])) == 2
+
+
+def test_session_products_cap_evicts_least_recently_shown():
+    assistant = _assistant(settings=_settings(session_products_cap=2))
+    cream = assistant.prepare("推荐面霜", session_id="s", top_k=1).products[0].product_id
+    phone = assistant.prepare("推荐手机", session_id="s", top_k=1).products[0].product_id
+    shoe = assistant.prepare("推荐跑鞋", session_id="s", top_k=1).products[0].product_id
+
+    ids = [item["id"] for item in assistant._session_products("s")]
+    assert cream not in ids          # oldest, least-recently-shown — evicted
+    assert phone in ids and shoe in ids
+
+
+def test_reshowing_a_product_saves_it_from_eviction():
+    assistant = _assistant(settings=_settings(session_products_cap=2))
+    cream = assistant.prepare("推荐面霜", session_id="s", top_k=1).products[0].product_id
+    phone = assistant.prepare("推荐手机", session_id="s", top_k=1).products[0].product_id
+    assistant.prepare("推荐面霜", session_id="s", top_k=1)  # re-show cream -> now most recent
+    shoe = assistant.prepare("推荐跑鞋", session_id="s", top_k=1).products[0].product_id
+
+    ids = [item["id"] for item in assistant._session_products("s")]
+    assert cream in ids and shoe in ids
+    assert phone not in ids          # phone is now the least-recently-shown
+
+
+# --- backtracking depth + recall interactions ----------------------------------
+
+def test_backtracking_recalls_a_product_beyond_the_turn_window():
+    llm = _ScriptedLLM()  # "{}" -> rule parses the searches
+    assistant = _assistant(intent_llm=llm)
+    for query in ["推荐面霜", "推荐手机", "推荐耳机", "推荐跑鞋"]:
+        assistant.prepare(query, session_id="s", top_k=2)
+
+    first = assistant._session_products("s")[0]
+    assert first["sub_category"] == "面霜"
+    assert len(assistant._sessions["s"].turns) == 3  # its turn fell out of the window
+
+    llm.next_response = json.dumps(
+        {"intent_type": "product_search", "recall_product_ids": [first["id"]]}
+    )
+    prepared = assistant.prepare("回到我最开始看的那个面霜", session_id="s", top_k=5)
+    assert [product.product_id for product in prepared.products] == [first["id"]]
+
+
+def test_refining_after_a_recall_carries_from_the_recall_turn():
+    llm = _ScriptedLLM()
+    assistant = _assistant(intent_llm=llm)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assistant.prepare("推荐手机", session_id="s", top_k=3)
+    cream = assistant._session_products("s")[0]["id"]
+
+    llm.next_response = json.dumps(
+        {"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜",
+         "recall_product_ids": [cream]}
+    )
+    assistant.prepare("回到那个面霜", session_id="s", top_k=5)  # records a 面霜 turn
+
+    llm.next_response = json.dumps({"intent_type": "product_search", "sort_by": "price_asc", "prefer_low_price": True})
+    refined = assistant.prepare("便宜点的", session_id="s", top_k=5)
+    assert refined.filters.sub_category == "面霜"  # carried off the recall turn, not 手机
+
+
+# --- multi-feature journeys + cross-branch memory ------------------------------
+
+def test_chitchat_turn_preserves_all_memory():
+    llm = _SeqLLM([
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜"}),
+        json.dumps({"intent_type": "chitchat"}),
+        json.dumps({"intent_type": "product_search", "sort_by": "price_asc"}),
+    ])
+    assistant = _assistant(intent_llm=llm)
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    shown_before = list(assistant._session_products("s"))
+
+    assistant.prepare("你好你是谁", session_id="s", top_k=3)  # chitchat
+    assert assistant._session_products("s") == shown_before        # untouched
+    assert assistant._previous_filters("s").sub_category == "面霜"  # window intact
+
+    after = assistant.prepare("便宜点的", session_id="s", top_k=3)
+    assert after.filters.sub_category == "面霜"
+
+
+def test_comparison_updates_product_memory_but_not_the_turn_window():
+    assistant = _assistant(llm=None)  # rule routes "第一个和第二个" to comparison
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    turns_before = len(assistant._sessions["s"].turns)
+
+    assistant.prepare("第一个和第二个哪个更保湿", session_id="s", top_k=3)
+    assert len(assistant._sessions["s"].turns) == turns_before          # no search turn added
+    assert assistant._previous_filters("s").sub_category == "面霜"        # refinement context unchanged
+
+
+def test_exclude_seen_with_backstop_carry_drops_seen_within_carried_category():
+    llm = _SeqLLM([
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜", "max_price": 100}),
+        json.dumps({"intent_type": "product_search", "exclude_seen": True}),  # no category -> backstop carries
+    ])
+    assistant = _assistant(intent_llm=llm)
+    assistant.prepare("100以内的面霜", session_id="s", top_k=5)  # shows 007, 008
+
+    prepared = assistant.prepare("换一批", session_id="s", top_k=5)
+    assert prepared.filters.sub_category == "面霜"  # carried by the deterministic backstop
+    ids = [product.product_id for product in prepared.products]
+    assert "p_beauty_007" not in ids and "p_beauty_008" not in ids
+    assert ids == ["p_beauty_012"]
+
+
+def test_two_sessions_do_not_share_any_memory():
+    assistant = _assistant(intent_llm=None)
+    assistant.prepare("推荐面霜", session_id="A", top_k=3)
+    assistant.prepare("推荐手机", session_id="B", top_k=3)
+
+    a_cats = {item["sub_category"] for item in assistant._session_products("A")}
+    b_cats = {item["sub_category"] for item in assistant._session_products("B")}
+    assert a_cats == {"面霜"} and b_cats == {"智能手机"}
+    assert assistant._previous_filters("A").sub_category == "面霜"
+    assert assistant._previous_filters("B").sub_category == "智能手机"
+
+
+def test_degraded_mode_carries_category_across_a_refinement_chain():
+    assistant = _assistant(llm=None)  # no intent LLM -> deterministic backstop only
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    first = assistant.prepare("便宜点的", session_id="s", top_k=3)
+    second = assistant.prepare("再给我看看别的价位", session_id="s", top_k=3)
+    assert first.filters.sub_category == "面霜"
+    assert second.filters.sub_category == "面霜"

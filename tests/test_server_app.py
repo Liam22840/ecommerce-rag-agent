@@ -62,6 +62,19 @@ def test_chat_carries_search_context_across_turns():
     assert all(product["sub_category"] == "面霜" for product in body["products"])
 
 
+def test_cheaper_refinement_says_nothing_cheaper_instead_of_relisting():
+    client = _client()
+    session_id = "cheaper-1"
+
+    client.post("/api/chat", json={"session_id": session_id, "message": "三百以内的面霜"})
+    # "便宜一点的" carries 面霜 but the shown creams are already the cheapest -> honest answer,
+    # not a silent re-list of the same products as if they were new.
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "便宜一点的"}).json()
+    assert second["intent"]["sub_category"] == "面霜"
+    assert "没有更便宜" in second["answer"]
+    assert all(product["sub_category"] == "面霜" for product in second["products"])
+
+
 def test_chat_endpoint_returns_grounded_product_cards():
     client = _client()
 
@@ -430,3 +443,46 @@ def test_stream_endpoint_emits_structured_comparison_event():
     assert '"winner_product_id"' in body
     assert '"price_summary"' in body
     assert "event: done" in body
+
+
+# --- comparison ordinal resolution against the unified recency memory ----------
+
+def test_comparison_前两个_resolves_to_last_results_first_two():
+    client = _client()
+    session_id = "cmp-front2"
+
+    first = client.post("/api/chat", json={"session_id": session_id, "message": "推荐几款跑步鞋"}).json()
+    shoes = [product["product_id"] for product in first["products"]]
+    assert len(shoes) >= 2
+
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "前两个哪个更好"}).json()
+    compared = [product["product_id"] for product in second["products"]]
+    assert compared == shoes[:2]
+
+
+def test_comparison_ordinal_refers_to_the_most_recent_search():
+    client = _client()
+    session_id = "cmp-recency"
+
+    # Two searches in different categories; the ordinal must point at the *latest* result.
+    client.post("/api/chat", json={"session_id": session_id, "message": "推荐面霜"})
+    shoes = client.post("/api/chat", json={"session_id": session_id, "message": "推荐几款跑步鞋"}).json()
+    shoe_ids = [product["product_id"] for product in shoes["products"]]
+    assert len(shoe_ids) >= 2
+
+    compared = client.post(
+        "/api/chat", json={"session_id": session_id, "message": "第一个和第二个哪个更好"}
+    ).json()
+    compared_ids = [product["product_id"] for product in compared["products"]]
+    assert compared_ids == shoe_ids[:2]  # the shoes (latest), not the earlier creams
+    assert all(product["category"] == "服饰运动" for product in compared["products"])
+
+
+def test_comparison_without_enough_context_asks_for_clarification():
+    client = _client()
+    # A comparison intent with nothing shown yet -> clarification, no products.
+    body = client.post(
+        "/api/chat", json={"session_id": "cmp-empty", "message": "第一个和第二个哪个更好"}
+    ).json()
+    assert body["products"] == []
+    assert body["comparison"] is not None
