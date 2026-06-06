@@ -125,6 +125,18 @@ def test_empty_catalog_is_rejected():
         ProductCatalog({})
 
 
+def test_brand_aliases_canonicalised_at_load():
+    # Same company entered under two names ("Nike"/"耐克") is merged at load so a brand filter on
+    # one name finds the products stored under the other (otherwise "Nike的跑鞋" returns nothing).
+    catalog = _catalog(
+        _product("p1", brand="Nike", sub_category="跑步鞋"),
+        _product("p2", brand="耐克", sub_category="篮球鞋"),
+    )
+    assert "Nike" not in catalog.brands
+    assert catalog.brands == {"耐克"}
+    assert catalog.get("p1")["brand"] == "耐克"
+
+
 def test_get_and_require_behaviour():
     catalog = _catalog(_product("p1"))
     assert catalog.get("p1")["product_id"] == "p1"

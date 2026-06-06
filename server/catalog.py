@@ -17,6 +17,17 @@ REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
     "保湿": ["保湿", "补水", "锁水", "滋润"],
 }
 
+# Same company entered under two names in the dataset, which splits its products across two
+# "brands" and makes a brand filter on one name miss products stored under the other (e.g.
+# "Nike的跑鞋" finds nothing because the shoes are under "耐克"). Merge each alias onto one
+# canonical name (the variant the dataset uses for more products) so the brand list the LLM
+# sees, the brand filter, and the cards all agree. The raw dataset on disk is never modified.
+BRAND_ALIASES: dict[str, str] = {
+    "Nike": "耐克",
+    "苹果": "Apple 苹果",
+    "北面": "The North Face",
+}
+
 STRONG_SENSITIVE_SIGNALS = [
     "专为敏感肌",
     "专为干性敏感肌",
@@ -59,6 +70,10 @@ class ProductCatalog:
         if not products:
             raise ValueError("product catalog is empty")
         self._products = products
+        for product in self._products.values():
+            canonical = BRAND_ALIASES.get(product.get("brand", ""))
+            if canonical:
+                product["brand"] = canonical
 
     @classmethod
     def load(cls, dataset_root: Path) -> "ProductCatalog":
