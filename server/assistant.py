@@ -92,7 +92,11 @@ class ShoppingAssistant:
         self._llm = llm
         self._settings = settings or Settings()
         self._parser = IntentParser(
-            catalog.categories, catalog.sub_categories, catalog.brands, llm=intent_llm
+            catalog.categories,
+            catalog.sub_categories,
+            catalog.brands,
+            llm=intent_llm,
+            approx_price_tolerance=self._settings.approx_price_tolerance,
         )
         self._comparison = ComparisonService(catalog, llm=llm)
         self._sessions: dict[str, SessionState] = {}

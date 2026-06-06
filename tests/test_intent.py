@@ -1,3 +1,5 @@
+import json
+
 from server.intent import IntentParser
 
 
@@ -6,6 +8,28 @@ def _parser() -> IntentParser:
         categories={"美妆护肤", "数码电子", "服饰运动", "食品饮料"},
         sub_categories={"洁面", "真无线耳机", "跑步鞋", "智能手机"},
         brands={"珊珂", "华为", "Apple 苹果"},
+    )
+
+
+class _FixedLLM:
+    """Stub intent LLM that always returns the same parsed payload."""
+
+    available = True
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def complete(self, _messages):
+        return json.dumps(self._payload)
+
+
+def _llm_parser(payload: dict) -> IntentParser:
+    return IntentParser(
+        categories={"美妆护肤"},
+        sub_categories={"面霜"},
+        brands=set(),
+        llm=_FixedLLM(payload),
+        approx_price_tolerance=0.15,
     )
 
 
@@ -40,6 +64,27 @@ def test_excluded_brand_clears_contradictory_positive_brand():
 
     assert "华为" in filters.excluded_brands
     assert filters.brand is None
+
+
+def test_approximate_price_widens_zero_width_band():
+    # Regression: the LLM collapses "三百左右" to min==max==300, which matches nothing; an
+    # approximate marker must widen it to a tolerance band.
+    parser = _llm_parser({"sub_category": "面霜", "min_price": 300, "max_price": 300})
+
+    filters = parser.parse("三百左右的面霜")
+
+    assert filters.min_price == 255.0
+    assert filters.max_price == 345.0
+
+
+def test_exact_price_band_is_not_widened():
+    # Without an approximate marker, an explicit min==max stays exact.
+    parser = _llm_parser({"sub_category": "面霜", "min_price": 300, "max_price": 300})
+
+    filters = parser.parse("正好三百块的面霜")
+
+    assert filters.min_price == 300.0
+    assert filters.max_price == 300.0
 
 
 def test_parses_low_price_preference():

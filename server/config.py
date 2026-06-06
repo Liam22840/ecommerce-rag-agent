@@ -43,6 +43,9 @@ class Settings:
     shown_summary_cap: int = 5
     # Character window used when streaming the deterministic fallback answer token-by-token.
     stream_chunk_size: int = 18
+    # Tolerance band applied to an approximate price ("三百左右") when it would otherwise
+    # collapse to a zero-width min==max band (±fraction of the stated price).
+    approx_price_tolerance: float = 0.15
     enable_vector_search: bool = True
     enable_llm: bool = True
     enable_llm_intent: bool = True
@@ -72,6 +75,9 @@ class Settings:
             recent_products_cap=int(os.environ.get("RAG_RECENT_PRODUCTS_CAP", cls.recent_products_cap)),
             shown_summary_cap=int(os.environ.get("RAG_SHOWN_SUMMARY_CAP", cls.shown_summary_cap)),
             stream_chunk_size=int(os.environ.get("RAG_STREAM_CHUNK_SIZE", cls.stream_chunk_size)),
+            approx_price_tolerance=float(
+                os.environ.get("RAG_APPROX_PRICE_TOLERANCE", cls.approx_price_tolerance)
+            ),
             enable_vector_search=_bool_env("ENABLE_VECTOR_SEARCH", True),
             enable_llm=_bool_env("ENABLE_LLM", True),
             enable_llm_intent=_bool_env("ENABLE_LLM_INTENT", True),

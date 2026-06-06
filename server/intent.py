@@ -113,11 +113,13 @@ class IntentParser:
         sub_categories: set[str],
         brands: set[str],
         llm: Any | None = None,
+        approx_price_tolerance: float = 0.15,
     ):
         self._categories = categories
         self._sub_categories = sub_categories
         self._brands = brands
         self._llm = llm
+        self._approx_price_tolerance = approx_price_tolerance
 
     def parse(
         self,
@@ -143,7 +145,22 @@ class IntentParser:
         # emits a brand it simultaneously excluded, which would otherwise match nothing.
         if base.brand and base.brand in base.excluded_brands:
             base.brand = None
+        self._widen_approximate_price(base, message)
         return base
+
+    def _widen_approximate_price(self, filters: SearchFilters, message: str) -> None:
+        # Fallback for when the LLM (or the rule parser, which never expands) collapsed an
+        # approximate price ("三百左右") to a zero-width band (min==max) that matches nothing:
+        # when the user signalled approximation, widen it to a tolerance band around the price.
+        if (
+            filters.min_price is not None
+            and filters.min_price == filters.max_price
+            and _is_approximate_price(message)
+        ):
+            centre = filters.min_price
+            delta = centre * self._approx_price_tolerance
+            filters.min_price = max(0.0, centre - delta)
+            filters.max_price = centre + delta
 
     def _rule_parse(self, message: str) -> SearchFilters:
         text = message.strip()
@@ -317,6 +334,13 @@ def _parse_min_price(text: str) -> float | None:
         r"(?:不低于|大于|高于|>=|≥)\s*(\d+(?:\.\d+)?)",
     ]
     return _first_number(patterns, text)
+
+
+_APPROX_PRICE_MARKERS = ("左右", "上下", "附近", "大概", "大约", "差不多", "约莫")
+
+
+def _is_approximate_price(text: str) -> bool:
+    return any(marker in text for marker in _APPROX_PRICE_MARKERS)
 
 
 def _first_number(patterns: list[str], text: str) -> float | None:
