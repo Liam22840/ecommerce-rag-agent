@@ -35,24 +35,6 @@ from server.comparison.resolver import _asks_for_current_two, _best_ref_match, _
 from server.comparison.text import _source_texts
 
 
-COMPARE_HINTS = [
-    "对比",
-    "比较",
-    "哪个更",
-    "哪款更",
-    "哪一个更",
-    "更适合",
-    "选哪个",
-    "买哪个",
-    "二选一",
-    "a和b",
-    "a 和 b",
-    "第一",
-    "第二",
-    "这两款",
-    "这两个",
-]
-
 ORDINALS = {
     "第一个": 0,
     "第一款": 0,
@@ -78,12 +60,6 @@ class ComparisonService:
     def __init__(self, catalog: ProductCatalog, llm: Any | None = None):
         self._catalog = catalog
         self._llm = llm
-
-    def is_comparison_query(self, query: str, explicit_product_ids: list[str]) -> bool:
-        if len(explicit_product_ids) >= 2:
-            return True
-        normalized = normalize(query)
-        return any(hint in normalized for hint in COMPARE_HINTS)
 
     def build(
         self,

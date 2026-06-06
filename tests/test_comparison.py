@@ -255,15 +255,6 @@ def test_evidence_returns_zero_without_term_matches():
     assert snippets == []
 
 
-# --- ComparisonService.is_comparison_query --------------------------------------
-
-def test_is_comparison_query_by_ids_and_hints():
-    svc = ComparisonService(_catalog(_product("p1"), _product("p2")))
-    assert svc.is_comparison_query("随便", ["p1", "p2"]) is True  # two ids
-    assert svc.is_comparison_query("这两款哪个更好", []) is True  # hint
-    assert svc.is_comparison_query("推荐一款耳机", []) is False
-
-
 # --- ComparisonService resolution / build --------------------------------------
 
 def test_resolve_ordinals_maps_phrases_and_digit_pairs():
