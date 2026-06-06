@@ -9,8 +9,7 @@ from typing import Any
 
 from server.intent import SUB_CATEGORY_ALIASES, SearchFilters
 from server.schemas import ProductCard, SkuPrice
-from server.textutil import dedupe as _dedupe
-from server.textutil import normalize_spec as _normalize_spec_text
+from server.textutil import dedupe, normalize_spec
 
 
 REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
@@ -243,7 +242,7 @@ class ProductCatalog:
     ) -> dict[str, Any] | None:
         if filters and filters.requested_specs:
             for item in self.sku_prices(product):
-                normalized_label = _normalize_spec_text(item["label"])
+                normalized_label = normalize_spec(item["label"])
                 if all(spec in normalized_label for spec in filters.requested_specs):
                     return item
         return self.lowest_price_sku(product)
@@ -275,8 +274,8 @@ class ProductCatalog:
     def matches_requested_specs(self, product: dict[str, Any], requested_specs: list[str]) -> bool:
         if not requested_specs:
             return True
-        normalized_title = _normalize_spec_text(product.get("title", ""))
-        normalized_skus = [_normalize_spec_text(item["label"]) for item in self.sku_prices(product)]
+        normalized_title = normalize_spec(product.get("title", ""))
+        normalized_skus = [normalize_spec(item["label"]) for item in self.sku_prices(product)]
         return all(
             spec in normalized_title or any(spec in label for label in normalized_skus)
             for spec in requested_specs
@@ -321,7 +320,7 @@ class ProductCatalog:
 
         if not query_terms and (filters.category or filters.sub_category or filters.max_price):
             score += 1
-        return score, _dedupe(snippets)[:3]
+        return score, dedupe(snippets)[:3]
 
     def _required_term_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
         if not filters.required_terms:
@@ -392,4 +391,4 @@ def _query_terms(query: str, filters: SearchFilters) -> list[str]:
     for token in ["油皮", "干皮", "敏感肌", "保湿", "控油", "轻量", "续航", "拍照", "降噪", "防水", "户外"]:
         if token in query:
             terms.append(token)
-    return _dedupe([term for term in terms if term])
+    return dedupe([term for term in terms if term])

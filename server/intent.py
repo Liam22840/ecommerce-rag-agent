@@ -1,8 +1,8 @@
-"""Lightweight intent and constraint parsing.
+"""Intent and constraint parsing.
 
-The parser is deliberately rule-based for the first backend milestone. It gives
-the service deterministic filters for price/category constraints, while leaving
-room for a later LLM/NLU parser to produce the same SearchFilters structure.
+A deterministic rule pass extracts price/category constraints, and when an LLM is
+available it refines the result; both produce the same SearchFilters structure and
+the rule pass is the fallback when the model is unavailable.
 """
 
 from __future__ import annotations
@@ -12,10 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from server.prompts import intent_messages
-from server.textutil import dedupe
-from server.textutil import json_object
-from server.textutil import normalize_spec
-from server.textutil import trim
+from server.textutil import dedupe, json_object, normalize_spec, trim
 
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -64,8 +61,6 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
     "碳酸饮料": "食品饮料",
     "坚果/零食": "食品饮料",
 }
-
-BUYING_HINTS = ["推荐", "想买", "有哪些", "帮我找", "适合", "预算", "以内", "以下"]
 
 SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
 INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat"}

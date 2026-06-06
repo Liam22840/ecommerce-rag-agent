@@ -5,16 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from server.assistant import (
-    ShoppingAssistant,
-    _chunk_text,
-    _dedupe_ids,
-)
+from server.assistant import ShoppingAssistant, _chunk_text
 from server.catalog import ProductCatalog
 from server.config import Settings
 from server.intent import SearchFilters
 from server.llm import ModelUnavailable
 from server.retrieval import ProductRetriever, RetrievalResult
+from server.textutil import dedupe_ids
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -269,4 +266,4 @@ def test_chunk_text_empty_string_yields_nothing():
 
 
 def test_dedupe_ids_drops_empties_and_duplicates_preserving_order():
-    assert _dedupe_ids(["a", "", "b", "a", "c", "b"]) == ["a", "b", "c"]
+    assert dedupe_ids(["a", "", "b", "a", "c", "b"]) == ["a", "b", "c"]

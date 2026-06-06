@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from server.textutil import dedupe_ids as _dedupe_ids
+from server.textutil import dedupe_ids
 
 
 class ChatRequest(BaseModel):
@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
 
     @property
     def effective_compare_product_ids(self) -> list[str]:
-        return _dedupe_ids(self.compare_product_ids + self.client_context.compare_product_ids)
+        return dedupe_ids(self.compare_product_ids + self.client_context.compare_product_ids)
 
 
 class ClientContext(BaseModel):
