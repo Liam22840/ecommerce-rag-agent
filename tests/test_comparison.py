@@ -271,6 +271,36 @@ def test_resolve_names_matches_title_in_query():
     assert svc._resolve_names("我要超静降噪豆Pro", ["p1", "p2"]) == ["p1"]
 
 
+def test_build_trusts_validated_llm_compare_ids():
+    # LLM is primary: it resolves the referenced products to ids (it sees session_products
+    # newest-first), and the service trusts them after validating against the catalog.
+    svc = ComparisonService(_catalog(_product("p1"), _product("p2"), _product("p3")))
+
+    comparison = svc.build(
+        "对比这两个",
+        SearchFilters(intent_type="comparison", compare_product_ids=["p1", "p3"]),
+        explicit_product_ids=[],
+        recent_product_ids=["p1", "p2", "p3"],
+    )
+
+    assert {product.product_id for product in comparison.products} == {"p1", "p3"}
+
+
+def test_ordinals_resolve_against_recency_as_fallback():
+    # Fallback when the LLM gives no compare ids: the deterministic ordinal resolver counts
+    # against the recency-ordered list (most recent first), so "第一个和第二个" = the latest two.
+    svc = ComparisonService(_catalog(_product("p_new1"), _product("p_new2"), _product("p_old1")))
+
+    comparison = svc.build(
+        "第一个和第二个对比下",
+        SearchFilters(intent_type="comparison"),
+        explicit_product_ids=[],
+        recent_product_ids=["p_new1", "p_new2", "p_old1"],
+    )
+
+    assert {product.product_id for product in comparison.products} == {"p_new1", "p_new2"}
+
+
 def test_build_clarifies_when_no_context():
     svc = ComparisonService(_catalog(_product("p1"), _product("p2")))
     comparison = svc.build("哪个更好", SearchFilters(), explicit_product_ids=[], recent_product_ids=[])

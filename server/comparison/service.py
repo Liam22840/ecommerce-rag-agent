@@ -158,8 +158,10 @@ class ComparisonService:
         valid_explicit = self._valid_catalog_ids(explicit_product_ids)
         if len(valid_explicit) >= 2:
             return valid_explicit[:3], None
-        # LLM resolved the referenced products to exact ids (generalising over phrasing the
-        # ordinal/name dictionary can't). Trust them only after validating against the catalog.
+        # LLM resolved the referenced products to exact ids (it sees session_products in
+        # most-recent-first order, so "第一个/第二个" map to the latest search). Trust them only
+        # after validating against the catalog; the deterministic ordinal/name waterfall below is
+        # the fallback when the LLM is unavailable or couldn't resolve them.
         llm_ids = self._valid_catalog_ids(filters.compare_product_ids)
         if len(llm_ids) >= 2:
             return llm_ids[:3], None

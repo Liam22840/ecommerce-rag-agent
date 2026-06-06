@@ -467,7 +467,8 @@ def test_backtracking_recalls_a_product_beyond_the_turn_window():
     for query in ["推荐面霜", "推荐手机", "推荐耳机", "推荐跑鞋"]:
         assistant.prepare(query, session_id="s", top_k=2)
 
-    first = assistant._session_products("s")[0]
+    # session_products is newest-first, so the earliest-shown 面霜 is at the tail.
+    first = assistant._session_products("s")[-1]
     assert first["sub_category"] == "面霜"
     assert len(assistant._sessions["s"].turns) == 3  # its turn fell out of the window
 
@@ -483,7 +484,7 @@ def test_refining_after_a_recall_carries_from_the_recall_turn():
     assistant = _assistant(intent_llm=llm)
     assistant.prepare("推荐面霜", session_id="s", top_k=3)
     assistant.prepare("推荐手机", session_id="s", top_k=3)
-    cream = assistant._session_products("s")[0]["id"]
+    cream = assistant._session_products("s")[-1]["id"]  # newest-first: earliest 面霜 is last
 
     llm.next_response = json.dumps(
         {"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜",

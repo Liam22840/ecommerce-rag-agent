@@ -350,12 +350,18 @@ class ShoppingAssistant:
     def _session(self, session_id: str | None) -> SessionState:
         return self._sessions.setdefault(session_id or "", SessionState())
 
-    def _recent_product_ids(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[str]:
-        # Recency view derived from the single shown-products log: most recent turn first, and
-        # within a turn in display order — so comparison's "第一个/前两个" resolve correctly.
-        # Client-provided ids stay in front (restart-resilience: the app remembers what it showed).
+    def _shown_by_recency(self, session_id: str | None) -> list[dict]:
+        # Single source of truth for the "most recent turn first, display order within a turn"
+        # ordering. The intent prompt ("最近展示的排在最前") and the deterministic ordinal
+        # fallback both rely on this exact order, so it lives in one place to avoid drift.
         shown = self._session(session_id).shown_products
-        ordered = sorted(shown, key=lambda item: (-item["last_seq"], item["position"]))
+        return sorted(shown, key=lambda item: (-item["last_seq"], item["position"]))
+
+    def _recent_product_ids(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[str]:
+        # Recency view derived from the single shown-products log so comparison's "第一个/前两个"
+        # resolve correctly. Client-provided ids stay in front (restart-resilience: the app
+        # remembers what it showed).
+        ordered = self._shown_by_recency(session_id)
         derived = [item["id"] for item in ordered][: self._settings.recent_products_cap]
         return dedupe_ids(client_recent_product_ids + derived)
 
@@ -411,11 +417,12 @@ class ShoppingAssistant:
         state.shown_products = [item for item in state.shown_products if item["id"] in keep]
 
     def _session_products(self, session_id: str | None) -> list[dict] | None:
-        # Compact view for the intent LLM (drops the internal seq/position bookkeeping).
-        shown = self._session(session_id).shown_products
-        if not shown:
+        # Compact view for the intent LLM (drops the internal seq/position bookkeeping), in the
+        # shared recency order so the LLM resolves "第一个/第二个" against the latest search.
+        ordered = self._shown_by_recency(session_id)
+        if not ordered:
             return None
-        return [{key: entry[key] for key in _SHOWN_FIELDS} for entry in shown]
+        return [{key: entry[key] for key in _SHOWN_FIELDS} for entry in ordered]
 
     def _history_summaries(self, session_id: str | None) -> list[dict] | None:
         turns = self._session(session_id).turns[-self._settings.history_turns :]

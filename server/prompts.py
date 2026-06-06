@@ -80,10 +80,11 @@ INTENT_SYSTEM_PROMPT = (
     " recent_turns 里已展示的最低价以下）。只能用 recent_turns 里真实出现过的信息，不要编造；若本轮是新品类或无关话题，就忽略 recent_turns。\n"
     "11. rewritten_query：本轮依赖上文时，结合 recent_turns 改写成一句可独立检索的完整中文查询；本轮本身已完整，或属于 chitchat/comparison 时填 null。\n"
     "12. exclude_seen：用户想看和刚才展示过的不一样的商品（看过的别再给）时设为 true，否则 false。\n"
-    "13. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列）。用户指回其中某个/某些之前看过的商品时，"
-    "定位到对应商品并把其 id 原样填进 recall_product_ids；否则填 []。\n"
+    "13. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列，最近展示的排在最前）。"
+    "用户指回之前看过的某个/某些商品时，定位到对应商品并把其 id 原样填进 recall_product_ids；否则填 []。\n"
     "14. intent_type=comparison 且用户要对比的是 session_products 里展示过的商品时，定位到对应商品，把要对比的 id（通常两个）"
-    "原样填进 compare_product_ids；定位不到具体 id 的点名商品仍走 compare_refs；否则 compare_product_ids 填 []。\n"
+    "原样填进 compare_product_ids。用序号指代（如「第一个」）时按 session_products 顺序数（第一个=列表最前=最近展示的第一款），"
+    "定位到对应 id；定位不到具体 id 的点名商品仍走 compare_refs；否则 compare_product_ids 填 []。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
