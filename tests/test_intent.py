@@ -33,6 +33,15 @@ def test_parses_brand_exclusion_for_future_advanced_cases():
     assert "华为" in filters.excluded_brands
 
 
+def test_excluded_brand_clears_contradictory_positive_brand():
+    # Regression: "不要华为的" matches 华为 as both a bare substring (positive brand) and an
+    # exclusion; the contradictory positive brand must be dropped so the filter isn't impossible.
+    filters = _parser().parse("推荐手机，不要华为的")
+
+    assert "华为" in filters.excluded_brands
+    assert filters.brand is None
+
+
 def test_parses_low_price_preference():
     filters = _parser().parse("推荐一个适合敏感肌的保湿护肤品，cheaper is better")
 

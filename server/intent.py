@@ -137,7 +137,13 @@ class IntentParser:
             base = rule
         # Deterministic carry-over backstop: rescues the common refinement case even
         # when the LLM is unavailable or omits the carry. LLM proposes, this disposes.
-        return self._apply_session_context(base, previous_filters)
+        base = self._apply_session_context(base, previous_filters)
+        # Safety net for either source contradicting itself: a brand can't be both wanted and
+        # excluded. The rule parser already avoids this; this also catches the LLM if it ever
+        # emits a brand it simultaneously excluded, which would otherwise match nothing.
+        if base.brand and base.brand in base.excluded_brands:
+            base.brand = None
+        return base
 
     def _rule_parse(self, message: str) -> SearchFilters:
         text = message.strip()
@@ -147,7 +153,9 @@ class IntentParser:
         filters.sub_category = self._match_sub_category(text)
         filters.category = self._match_category(text)
         self._backfill_category(filters)
-        filters.brand = self._match_brand(text)
+        # Exclusions first, so a negated brand ("不要华为") is never matched as a wanted brand.
+        filters.excluded_brands = self._match_excluded_brands(text)
+        filters.brand = self._match_brand(text, filters.excluded_brands)
         filters.prefer_low_price = _prefers_low_price(text)
         if filters.prefer_low_price:
             filters.sort_by = "price_asc"
@@ -157,7 +165,6 @@ class IntentParser:
             filters.intent_type = "comparison"
         filters.required_terms = _parse_required_terms(text)
         filters.requested_specs = _parse_requested_specs(text)
-        filters.excluded_brands = self._match_excluded_brands(text)
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
 
@@ -280,9 +287,10 @@ class IntentParser:
                 return sub_category
         return None
 
-    def _match_brand(self, text: str) -> str | None:
+    def _match_brand(self, text: str, excluded: list[str] | None = None) -> str | None:
+        excluded = excluded or []
         for brand in sorted(self._brands, key=len, reverse=True):
-            if brand and brand in text:
+            if brand and brand in text and brand not in excluded:
                 return brand
         return None
 
