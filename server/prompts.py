@@ -67,12 +67,18 @@ INTENT_SYSTEM_PROMPT = (
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
     "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品。用用户原话里最具体的指代词（带型号/系列，如「理肤泉特安」而不是只写「理肤泉」；「薇诺娜舒敏」而不是「薇诺娜」），如「理肤泉特安和薇诺娜舒敏」→[\"理肤泉特安\",\"薇诺娜舒敏\"]，「那个兰蔻的」→[\"兰蔻\"]；否则填 []。\n"
     "9. 列表字段没内容返回 []，标量没内容返回 null。\n"
+    "10. 如果给了 previous_turn（上一轮的解析结果），且本轮是在它基础上的追问/改写"
+    "（例如只说“便宜点的”“有没有大容量的”“换个牌子”而没有重新指明品类），就继承 previous_turn 的"
+    " category、sub_category、required_terms（本轮明确改了的除外）；如果本轮是新的品类或与上一轮无关的话题，则忽略 previous_turn。\n"
+    "11. rewritten_query：当本轮是依赖上下文的追问时，结合 previous_turn 改写成一句可独立检索的完整中文查询"
+    "（例如上一轮是“面霜”，本轮“便宜点的”→“更便宜的面霜”）；如果本轮本身已是完整查询，或属于 chitchat/comparison，rewritten_query 填 null。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
     '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
     '"required_terms":[string],"requested_specs":[string],'
-    '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string]}'
+    '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string],'
+    '"rewritten_query":string|null}'
 )
 
 
@@ -81,6 +87,7 @@ def intent_messages(
     categories: set[str],
     sub_categories: set[str],
     brands: set[str],
+    previous: dict | None = None,
 ) -> list[dict[str, str]]:
     user_payload = {
         "query": query,
@@ -88,6 +95,8 @@ def intent_messages(
         "sub_categories": sorted(sub_categories),
         "brands": sorted(brands),
     }
+    if previous:
+        user_payload["previous_turn"] = previous
     return [
         {"role": "system", "content": INTENT_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},

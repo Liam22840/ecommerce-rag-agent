@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from server.assistant import (
@@ -11,8 +12,9 @@ from server.assistant import (
 )
 from server.catalog import ProductCatalog
 from server.config import Settings
+from server.intent import SearchFilters
 from server.llm import ModelUnavailable
-from server.retrieval import ProductRetriever
+from server.retrieval import ProductRetriever, RetrievalResult
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -166,7 +168,7 @@ def test_remember_recent_products_dedupes_and_prepends():
     assistant._remember_recent_products("s", ["c", "b"])
 
     # Newest first, deduped across calls.
-    assert assistant._recent_product_ids_by_session["s"] == ["c", "b", "a"]
+    assert assistant._sessions["s"].recent_product_ids == ["c", "b", "a"]
 
 
 def test_remember_recent_products_caps_at_ten():
@@ -174,7 +176,7 @@ def test_remember_recent_products_caps_at_ten():
 
     assistant._remember_recent_products("s", [f"id{n}" for n in range(15)])
 
-    stored = assistant._recent_product_ids_by_session["s"]
+    stored = assistant._sessions["s"].recent_product_ids
     assert len(stored) == 10
     assert stored == [f"id{n}" for n in range(10)]
 
@@ -186,7 +188,7 @@ def test_remember_recent_products_ignores_empty_session_or_ids():
     assistant._remember_recent_products(None, ["a"])
     assistant._remember_recent_products("s", [])
 
-    assert assistant._recent_product_ids_by_session == {}
+    assert assistant._sessions == {}
 
 
 def test_recent_product_ids_merges_client_and_stored():
@@ -196,6 +198,63 @@ def test_recent_product_ids_merges_client_and_stored():
     merged = assistant._recent_product_ids("s", ["x", "b"])
 
     assert merged == ["x", "b", "a"]
+
+
+def test_remember_filters_round_trips_and_skips_empty_session():
+    assistant = _assistant(llm=None)
+    filters = SearchFilters(sub_category="面霜", category="美妆护肤")
+
+    assistant._remember_filters("s", filters)
+    assert assistant._previous_filters("s") is filters
+
+    assistant._remember_filters("", filters)
+    assert assistant._previous_filters("") is None
+
+
+def test_comparison_turn_does_not_overwrite_carried_filters():
+    assistant = _assistant(llm=None)
+
+    assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+    before = assistant._previous_filters("s")
+    assert before is not None and before.sub_category == "面霜"
+
+    # A comparison turn reads recent products but must not overwrite the search context.
+    assistant.prepare("第一个和第二个对比一下", session_id="s", top_k=3)
+    assert assistant._previous_filters("s") is before
+
+
+class _SpyRetriever:
+    """Records the query string handed to retrieve()."""
+
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def retrieve(self, query, filters, limit):
+        self.queries.append(query)
+        return RetrievalResult(hits=[], source="none")
+
+
+def test_prepare_uses_rewritten_query_for_retrieval():
+    intent_llm = FakeLLM(
+        complete_result=json.dumps({"intent_type": "product_search", "rewritten_query": "更便宜的面霜"})
+    )
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=intent_llm)
+
+    assistant.prepare("便宜点的", session_id="s", top_k=3)
+
+    assert spy.queries == ["更便宜的面霜"]
+
+
+def test_prepare_falls_back_to_raw_query_when_no_rewrite():
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=None)
+
+    assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+
+    assert spy.queries == ["三百以内的面霜"]
 
 
 # --- small helpers -------------------------------------------------------------

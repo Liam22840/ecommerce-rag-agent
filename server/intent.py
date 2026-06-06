@@ -12,9 +12,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from server.prompts import intent_messages
-from server.textutil import dedupe as _dedupe
-from server.textutil import json_object as _json_object
-from server.textutil import normalize_spec as _normalize_spec
+from server.textutil import dedupe
+from server.textutil import json_object
+from server.textutil import normalize_spec
+from server.textutil import trim
 
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -94,6 +95,9 @@ class SearchFilters:
     excluded_terms: list[str] = field(default_factory=list)
     compare_refs: list[str] = field(default_factory=list)
     raw_query: str = ""
+    # LLM-rewritten standalone retrieval query for context-dependent follow-ups;
+    # empty means "use raw_query".
+    rewritten_query: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -112,14 +116,18 @@ class IntentParser:
         self._brands = brands
         self._llm = llm
 
-    def parse(self, message: str) -> SearchFilters:
+    def parse(
+        self, message: str, previous_filters: SearchFilters | None = None
+    ) -> SearchFilters:
         rule = self._rule_parse(message)
-        if not self._should_use_llm():
-            return rule
-        llm = self._llm_parse(message)
-        if llm is None:
-            return rule
-        return self._merge(rule, llm, message)
+        if self._should_use_llm():
+            llm = self._llm_parse(message, previous_filters)
+            base = rule if llm is None else self._merge(rule, llm, message)
+        else:
+            base = rule
+        # Deterministic carry-over backstop: rescues the common refinement case even
+        # when the LLM is unavailable or omits the carry. LLM proposes, this disposes.
+        return self._apply_session_context(base, previous_filters)
 
     def _rule_parse(self, message: str) -> SearchFilters:
         text = message.strip()
@@ -146,12 +154,20 @@ class IntentParser:
     def _should_use_llm(self) -> bool:
         return bool(self._llm) and getattr(self._llm, "available", False)
 
-    def _llm_parse(self, message: str) -> SearchFilters | None:
+    def _llm_parse(
+        self, message: str, previous_filters: SearchFilters | None = None
+    ) -> SearchFilters | None:
         try:
             raw = self._llm.complete(
-                intent_messages(message, self._categories, self._sub_categories, self._brands)
+                intent_messages(
+                    message,
+                    self._categories,
+                    self._sub_categories,
+                    self._brands,
+                    previous=_previous_summary(previous_filters),
+                )
             )
-            payload = _json_object(raw)
+            payload = json_object(raw)
         except Exception:  # noqa: BLE001 - LLM parse must degrade to the rule parser.
             return None
         if not payload:
@@ -171,10 +187,11 @@ class IntentParser:
         filters.intent_type = _coerce_enum(payload.get("intent_type"), INTENT_TYPE_VALUES, "product_search")
         filters.prefer_low_price = _coerce_bool(payload.get("prefer_low_price")) or filters.sort_by == "price_asc"
         filters.required_terms = _coerce_str_list(payload.get("required_terms"))
-        filters.requested_specs = [_normalize_spec(s) for s in _coerce_str_list(payload.get("requested_specs"))]
+        filters.requested_specs = [normalize_spec(s) for s in _coerce_str_list(payload.get("requested_specs"))]
         filters.excluded_brands = [b for b in _coerce_str_list(payload.get("excluded_brands")) if b in self._brands]
         filters.excluded_terms = _coerce_str_list(payload.get("excluded_terms"))
         filters.compare_refs = _coerce_str_list(payload.get("compare_refs"))
+        filters.rewritten_query = _coerce_query(payload.get("rewritten_query"))
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -186,14 +203,38 @@ class IntentParser:
         merged.min_price = llm.min_price if llm.min_price is not None else rule.min_price
         merged.sort_by = llm.sort_by if llm.sort_by != "relevance" else rule.sort_by
         merged.intent_type = llm.intent_type if llm.intent_type != "product_search" else rule.intent_type
-        merged.required_terms = _dedupe(rule.required_terms + llm.required_terms)
-        merged.requested_specs = _dedupe(rule.requested_specs + llm.requested_specs)
-        merged.excluded_brands = _dedupe(rule.excluded_brands + llm.excluded_brands)
-        merged.excluded_terms = _dedupe(rule.excluded_terms + llm.excluded_terms)
+        merged.required_terms = dedupe(rule.required_terms + llm.required_terms)
+        merged.requested_specs = dedupe(rule.requested_specs + llm.requested_specs)
+        merged.excluded_brands = dedupe(rule.excluded_brands + llm.excluded_brands)
+        merged.excluded_terms = dedupe(rule.excluded_terms + llm.excluded_terms)
         merged.compare_refs = llm.compare_refs  # references are only extracted by the LLM
         merged.prefer_low_price = rule.prefer_low_price or llm.prefer_low_price or merged.sort_by == "price_asc"
+        merged.rewritten_query = llm.rewritten_query  # rewrite is only produced by the LLM
         self._backfill_category(merged)
         return merged
+
+    def _apply_session_context(
+        self, filters: SearchFilters, previous_filters: SearchFilters | None
+    ) -> SearchFilters:
+        """Deterministic carry-over backstop. When the current turn is a product search that
+        names no category or sub_category, treat it as a refinement of the previous turn and
+        inherit the prior topic anchor (category / sub_category / sellpoints). Never overrides
+        a value the current turn set, and deliberately does not carry brand / price / sort
+        (those are commonly changed in a refining turn and are the LLM's job to carry). This is
+        the entire carry-over behaviour in degraded mode and a safety net when the LLM omits it."""
+        if previous_filters is None:
+            return filters
+        if filters.intent_type != "product_search":
+            return filters
+        if filters.category or filters.sub_category:
+            return filters
+        if not (previous_filters.category or previous_filters.sub_category):
+            return filters
+        filters.category = previous_filters.category
+        filters.sub_category = previous_filters.sub_category
+        filters.required_terms = dedupe(previous_filters.required_terms + filters.required_terms)
+        self._backfill_category(filters)
+        return filters
 
     def _backfill_category(self, filters: SearchFilters) -> None:
         if filters.category is None and filters.sub_category:
@@ -299,7 +340,7 @@ def _parse_requested_specs(text: str) -> list[str]:
     specs = []
     pattern = r"\d+(?:\.\d+)?\s*(?:g|kg|克|千克|ml|mL|ML|l|L|升|毫升|片|枚|粒|支|瓶|包|盒|寸|英寸|gb|GB|tb|TB)"
     for match in re.finditer(pattern, text):
-        specs.append(_normalize_spec(match.group(0)))
+        specs.append(normalize_spec(match.group(0)))
     return list(dict.fromkeys(specs))
 
 
@@ -352,4 +393,25 @@ def _coerce_str_list(value: Any, max_items: int = 16, max_len: int = 20) -> list
         item = item.strip()
         if item and len(item) <= max_len:
             items.append(item)
-    return _dedupe(items)[:max_items]
+    return dedupe(items)[:max_items]
+
+
+def _coerce_query(value: Any, max_len: int = 80) -> str:
+    if not isinstance(value, str):
+        return ""
+    return trim(value, max_len)
+
+
+def _previous_summary(filters: SearchFilters | None) -> dict[str, Any] | None:
+    """Compact prior-turn context handed to the intent LLM so it can resolve follow-ups."""
+    if filters is None:
+        return None
+    return {
+        "raw_query": filters.raw_query,
+        "category": filters.category,
+        "sub_category": filters.sub_category,
+        "brand": filters.brand,
+        "min_price": filters.min_price,
+        "max_price": filters.max_price,
+        "required_terms": filters.required_terms,
+    }

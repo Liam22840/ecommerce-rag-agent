@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Iterator
 
 from server.comparison import ComparisonService
@@ -17,7 +17,7 @@ from server.prompts import (
 )
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import ChatResponse, ProductCard, ProductComparison
-from server.textutil import dedupe_ids as _dedupe_ids
+from server.textutil import dedupe_ids
 
 
 @dataclass
@@ -30,6 +30,15 @@ class PreparedChat:
     comparison: ProductComparison | None
     grounded_answer: str
     messages: list[dict[str, str]]
+
+
+@dataclass
+class SessionState:
+    """Per-session short-term memory: products shown so far and the last product-search
+    filters, so follow-up turns can resolve references and inherit search context."""
+
+    recent_product_ids: list[str] = field(default_factory=list)
+    last_filters: SearchFilters | None = None
 
 
 class ShoppingAssistant:
@@ -47,7 +56,7 @@ class ShoppingAssistant:
             catalog.categories, catalog.sub_categories, catalog.brands, llm=intent_llm
         )
         self._comparison = ComparisonService(catalog, llm=llm)
-        self._recent_product_ids_by_session: dict[str, list[str]] = {}
+        self._sessions: dict[str, SessionState] = {}
 
     @property
     def catalog(self) -> ProductCatalog:
@@ -61,7 +70,7 @@ class ShoppingAssistant:
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
     ) -> PreparedChat:
-        filters = self._parser.parse(query)
+        filters = self._parser.parse(query, previous_filters=self._previous_filters(session_id))
         recent_product_ids = self._recent_product_ids(session_id, client_recent_product_ids or [])
         compare_product_ids = compare_product_ids or []
 
@@ -104,13 +113,17 @@ class ShoppingAssistant:
                 messages=chitchat_messages(query),
             )
 
-        retrieval = self._retriever.retrieve(query=query, filters=filters, limit=top_k)
+        # The rewrite folds carried context into a standalone retrieval query; the answer
+        # itself still replies to what the user actually typed (raw query below).
+        search_query = filters.rewritten_query or query
+        retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=top_k)
         hits = self._order_hits(retrieval.hits, filters)
         products = [
             self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters), filters=filters)
             for hit in hits
         ]
         self._remember_recent_products(session_id, [product.product_id for product in products])
+        self._remember_filters(session_id, filters)
         grounded_answer = self._grounded_answer(query, filters, hits)
         messages = build_messages(query, filters, hits, self._catalog)
         return PreparedChat(
@@ -182,15 +195,26 @@ class ShoppingAssistant:
                     return
         yield from _chunk_text(prepared.grounded_answer)
 
+    def _session(self, session_id: str | None) -> SessionState:
+        return self._sessions.setdefault(session_id or "", SessionState())
+
     def _recent_product_ids(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[str]:
-        stored = self._recent_product_ids_by_session.get(session_id or "", [])
-        return _dedupe_ids(client_recent_product_ids + stored)
+        stored = self._session(session_id).recent_product_ids
+        return dedupe_ids(client_recent_product_ids + stored)
 
     def _remember_recent_products(self, session_id: str | None, product_ids: list[str]) -> None:
         if not session_id or not product_ids:
             return
-        existing = self._recent_product_ids_by_session.get(session_id, [])
-        self._recent_product_ids_by_session[session_id] = _dedupe_ids(product_ids + existing)[:10]
+        state = self._session(session_id)
+        state.recent_product_ids = dedupe_ids(product_ids + state.recent_product_ids)[:10]
+
+    def _previous_filters(self, session_id: str | None) -> SearchFilters | None:
+        return self._session(session_id).last_filters
+
+    def _remember_filters(self, session_id: str | None, filters: SearchFilters) -> None:
+        if not session_id:
+            return
+        self._session(session_id).last_filters = filters
 
     def _comparison_answer(self, comparison: ProductComparison) -> str:
         if comparison.clarification:

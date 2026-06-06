@@ -90,6 +90,58 @@ def test_merge_validated_llm_category_survives_unmapped_subcategory():
     assert f.category == "美妆护肤"  # 唇釉 is not in SUB_CATEGORY_TO_CATEGORY; came from LLM
 
 
+# --- Session context carry-over + rewrite --------------------------------------
+
+def test_refinement_carries_previous_topic_with_llm():
+    previous = SearchFilters(category="美妆护肤", sub_category="面霜", required_terms=["保湿"])
+    resp = json.dumps({"intent_type": "product_search", "sort_by": "price_asc"})
+    f = _parser(resp).parse("便宜点的", previous_filters=previous)
+    assert f.sub_category == "面霜"        # inherited from previous turn
+    assert f.category == "美妆护肤"
+    assert "保湿" in f.required_terms       # sellpoints carried (unioned)
+    assert f.prefer_low_price is True       # this turn's own constraint applied
+
+
+def test_new_topic_drops_previous_context():
+    previous = SearchFilters(category="美妆护肤", sub_category="面霜")
+    resp = json.dumps({"intent_type": "product_search", "sub_category": "智能手机"})
+    f = _parser(resp).parse("推荐个手机", previous_filters=previous)
+    assert f.sub_category == "智能手机"     # current turn names its own topic
+    assert f.category == "数码电子"          # previous 面霜 dropped
+
+
+def test_deterministic_carry_over_without_llm():
+    previous = SearchFilters(category="美妆护肤", sub_category="面霜")
+    f = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS).parse("便宜点的", previous_filters=previous)
+    assert f.sub_category == "面霜"          # degraded-mode backstop still carries
+    assert f.category == "美妆护肤"
+    assert f.prefer_low_price is True
+
+
+def test_rewritten_query_extracted():
+    resp = json.dumps({"sub_category": "面霜", "rewritten_query": "更便宜的面霜"})
+    f = _parser(resp).parse("便宜点的")
+    assert f.rewritten_query == "更便宜的面霜"
+
+
+def test_rewritten_query_empty_when_absent_or_nonstring():
+    assert _parser(json.dumps({"sub_category": "面霜"})).parse("推荐面霜").rewritten_query == ""
+    assert _parser(json.dumps({"rewritten_query": 123})).parse("推荐面霜").rewritten_query == ""
+
+
+def test_intent_messages_include_previous_turn_only_when_provided():
+    fake = FakeLLM(json.dumps({"sub_category": "面霜"}))
+    parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS, llm=fake)
+
+    parser.parse("便宜点的", previous_filters=SearchFilters(sub_category="面霜"))
+    parser.parse("推荐面霜")
+
+    with_previous = fake.calls[0][1]["content"]
+    without_previous = fake.calls[1][1]["content"]
+    assert "previous_turn" in with_previous
+    assert "previous_turn" not in without_previous
+
+
 # --- Validation / coercion edge cases ------------------------------------------
 
 def test_invalid_json_falls_back_to_rules():

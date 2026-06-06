@@ -43,6 +43,25 @@ def test_product_detail_returns_404_for_unknown_id():
     assert resp.json()["detail"] == "product not found"
 
 
+def test_chat_carries_search_context_across_turns():
+    client = _client()
+    session_id = "carry-1"
+
+    first = client.post("/api/chat", json={"session_id": session_id, "message": "三百以内的面霜"})
+    assert first.status_code == 200
+    assert first.json()["intent"]["sub_category"] == "面霜"
+
+    # "便宜点的" names no category; the deterministic carry-over keeps the face-cream context
+    # (this runs with enable_llm=False, so it exercises the degraded-mode backstop).
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "便宜点的"})
+    assert second.status_code == 200
+    body = second.json()
+    assert body["intent"]["sub_category"] == "面霜"
+    assert body["intent"]["prefer_low_price"] is True
+    assert body["products"]
+    assert all(product["sub_category"] == "面霜" for product in body["products"])
+
+
 def test_chat_endpoint_returns_grounded_product_cards():
     client = _client()
 
