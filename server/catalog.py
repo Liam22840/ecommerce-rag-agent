@@ -98,6 +98,17 @@ class ProductCatalog:
     def sub_categories(self) -> set[str]:
         return {p["sub_category"] for p in self._products.values()}
 
+    def scope_summary(self) -> str:
+        """Human-readable "what we actually stock", grouped sub-categories under each category.
+        Lets the chitchat responder decline precisely (e.g. we have phones/laptops but not the
+        power banks that also fall under 数码电子)."""
+        groups: dict[str, list[str]] = {}
+        for product in self._products.values():
+            subs = groups.setdefault(product["category"], [])
+            if product["sub_category"] not in subs:
+                subs.append(product["sub_category"])
+        return "；".join(f"{cat}（{'、'.join(subs)}）" for cat, subs in groups.items())
+
     @property
     def brands(self) -> set[str]:
         return {p["brand"] for p in self._products.values()}

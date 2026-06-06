@@ -161,17 +161,18 @@ CHITCHAT_SYSTEM = (
     "你是电商导购助手。用户这句话要么与具体购物需求无关（打招呼、道谢、闲聊、问你是谁或你能做什么等），"
     "要么想买的是本店并不经营的商品。请用一两句友好、简短的中文回应："
     "属于闲聊就自然把话题引导回购物（可以问他想买什么品类、预算或使用场景）；"
-    "如果用户想买的品类不在本店经营范围内，就礼貌说明本店暂不提供该类商品、只售下列品类，"
-    "并欢迎他在这些品类里选购，不要假装能卖、也不要追问这件商品的细节（如预算、型号等）。"
+    "如果用户想买的东西不在本店在售的细分品类里，就礼貌说明本店暂不提供该商品、只售下列品类，"
+    "并欢迎他在这些品类里选购，不要假装能卖、也不要追问这件商品的细节（如容量、型号、预算等）。"
+    "注意：只有下面明确列出的细分品类才算有货；即使某样东西属于同一个大类，只要不在列出的细分品类里，也算没有。"
     "不要回答与购物无关的专业问题（医疗、法律、金融、时政等），礼貌说明你只负责帮挑选商品。"
     "纯文本中文，不要使用任何 Markdown 标记。"
 )
 
 
-def chitchat_messages(query: str, categories: set[str] | None = None) -> list[dict[str, str]]:
+def chitchat_messages(query: str, scope: str | None = None) -> list[dict[str, str]]:
     system = CHITCHAT_SYSTEM
-    if categories:
-        system += "\n本店经营品类：" + "、".join(sorted(categories)) + "。"
+    if scope:
+        system += "\n本店在售品类：" + scope + "。"
     return [{"role": "system", "content": system}, {"role": "user", "content": query}]
 
 

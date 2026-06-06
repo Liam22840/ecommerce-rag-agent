@@ -174,7 +174,7 @@ class ShoppingAssistant:
             products=[],
             comparison=None,
             grounded_answer=CHITCHAT_REPLY,
-            messages=chitchat_messages(query, self._catalog.categories),
+            messages=chitchat_messages(query, self._catalog.scope_summary()),
         )
 
     def _prepare_search(
