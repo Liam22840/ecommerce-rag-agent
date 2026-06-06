@@ -70,7 +70,8 @@ INTENT_SYSTEM_PROMPT = (
     "3. 价格区间：「200到500」→ min_price=200, max_price=500；「不超过1万/一万」→ max_price=10000；中文数字要换算成阿拉伯数字；没有约束填 null。"
     "约数价格要展开成一个合理区间而不是精确值（如「三百左右」→ min_price=255, max_price=345），只有明确说「正好/刚好」时才用精确值。\n"
     "4. 否定：「不含X」「不要X牌」→ 写进 excluded_terms / excluded_brands（品牌必须是列表里的官方品牌词，否则不写）。\n"
-    "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余→product_search。\n"
+    "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余购物需求→product_search。"
+    "若用户想要的商品明显不属于本目录的任何 category/sub_category（既无法归类，也不是承接上文的追问或“随便看看”这类泛需求），也按 chitchat 处理，礼貌说明暂不提供该品类，不要硬塞不相关的商品。\n"
     "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
     "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品，用其原话里最具体的指代（带型号/系列，如「理肤泉特安」而非只写「理肤泉」）；否则填 []。\n"
@@ -155,15 +156,21 @@ CHITCHAT_REPLY = (
 )
 
 CHITCHAT_SYSTEM = (
-    "你是电商导购助手。用户这句话与具体购物需求无关（打招呼、道谢、闲聊、问你是谁或你能做什么等）。"
-    "请用一两句友好、简短的中文回应，并自然地把话题引导回购物（可以问他想买什么品类、预算或使用场景）。"
+    "你是电商导购助手。用户这句话要么与具体购物需求无关（打招呼、道谢、闲聊、问你是谁或你能做什么等），"
+    "要么想买的是本店并不经营的商品。请用一两句友好、简短的中文回应："
+    "属于闲聊就自然把话题引导回购物（可以问他想买什么品类、预算或使用场景）；"
+    "如果用户想买的品类不在本店经营范围内，就礼貌说明本店暂不提供该类商品、只售下列品类，"
+    "并欢迎他在这些品类里选购，不要假装能卖、也不要追问这件商品的细节（如预算、型号等）。"
     "不要回答与购物无关的专业问题（医疗、法律、金融、时政等），礼貌说明你只负责帮挑选商品。"
     "纯文本中文，不要使用任何 Markdown 标记。"
 )
 
 
-def chitchat_messages(query: str) -> list[dict[str, str]]:
-    return [{"role": "system", "content": CHITCHAT_SYSTEM}, {"role": "user", "content": query}]
+def chitchat_messages(query: str, categories: set[str] | None = None) -> list[dict[str, str]]:
+    system = CHITCHAT_SYSTEM
+    if categories:
+        system += "\n本店经营品类：" + "、".join(sorted(categories)) + "。"
+    return [{"role": "system", "content": system}, {"role": "user", "content": query}]
 
 
 # --- Comparison narration ------------------------------------------------------
