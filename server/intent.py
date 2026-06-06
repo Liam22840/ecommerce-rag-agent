@@ -93,6 +93,11 @@ class SearchFilters:
     # LLM-rewritten standalone retrieval query for context-dependent follow-ups;
     # empty means "use raw_query".
     rewritten_query: str = ""
+    # LLM-set flag for novelty refinements ("还有别的/换一批"): drop already-shown products.
+    exclude_seen: bool = False
+    # LLM-picked product ids (copied from session_products) for backtracking recall
+    # ("回到最开始那个"); validated against the catalog before use.
+    recall_product_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -112,11 +117,18 @@ class IntentParser:
         self._llm = llm
 
     def parse(
-        self, message: str, previous_filters: SearchFilters | None = None
+        self,
+        message: str,
+        previous_filters: SearchFilters | None = None,
+        history: list[dict[str, Any]] | None = None,
+        session_products: list[dict[str, Any]] | None = None,
     ) -> SearchFilters:
+        # `previous_filters` drives the deterministic backstop (last turn only); `history`
+        # is the few-round refinement context; `session_products` is the whole-session list
+        # of shown products the LLM uses to resolve backtracking ("回到最开始那个").
         rule = self._rule_parse(message)
         if self._should_use_llm():
-            llm = self._llm_parse(message, previous_filters)
+            llm = self._llm_parse(message, history, session_products)
             base = rule if llm is None else self._merge(rule, llm, message)
         else:
             base = rule
@@ -150,7 +162,10 @@ class IntentParser:
         return bool(self._llm) and getattr(self._llm, "available", False)
 
     def _llm_parse(
-        self, message: str, previous_filters: SearchFilters | None = None
+        self,
+        message: str,
+        history: list[dict[str, Any]] | None = None,
+        session_products: list[dict[str, Any]] | None = None,
     ) -> SearchFilters | None:
         try:
             raw = self._llm.complete(
@@ -159,7 +174,8 @@ class IntentParser:
                     self._categories,
                     self._sub_categories,
                     self._brands,
-                    previous=_previous_summary(previous_filters),
+                    history=history,
+                    session_products=session_products,
                 )
             )
             payload = json_object(raw)
@@ -187,6 +203,8 @@ class IntentParser:
         filters.excluded_terms = _coerce_str_list(payload.get("excluded_terms"))
         filters.compare_refs = _coerce_str_list(payload.get("compare_refs"))
         filters.rewritten_query = _coerce_query(payload.get("rewritten_query"))
+        filters.exclude_seen = _coerce_bool(payload.get("exclude_seen"))
+        filters.recall_product_ids = _coerce_str_list(payload.get("recall_product_ids"))
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -205,6 +223,8 @@ class IntentParser:
         merged.compare_refs = llm.compare_refs  # references are only extracted by the LLM
         merged.prefer_low_price = rule.prefer_low_price or llm.prefer_low_price or merged.sort_by == "price_asc"
         merged.rewritten_query = llm.rewritten_query  # rewrite is only produced by the LLM
+        merged.exclude_seen = llm.exclude_seen  # novelty flag is only produced by the LLM
+        merged.recall_product_ids = llm.recall_product_ids  # recall ids only come from the LLM
         self._backfill_category(merged)
         return merged
 
@@ -395,18 +415,3 @@ def _coerce_query(value: Any, max_len: int = 80) -> str:
     if not isinstance(value, str):
         return ""
     return trim(value, max_len)
-
-
-def _previous_summary(filters: SearchFilters | None) -> dict[str, Any] | None:
-    """Compact prior-turn context handed to the intent LLM so it can resolve follow-ups."""
-    if filters is None:
-        return None
-    return {
-        "raw_query": filters.raw_query,
-        "category": filters.category,
-        "sub_category": filters.sub_category,
-        "brand": filters.brand,
-        "min_price": filters.min_price,
-        "max_price": filters.max_price,
-        "required_terms": filters.required_terms,
-    }

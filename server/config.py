@@ -32,6 +32,17 @@ class Settings:
     embedding_timeout_seconds: float = 10.0
     retrieval_top_k: int = 5
     vector_search_k: int = 24
+    # Short-term session memory:
+    #  - history_turns: recent product-search turns kept and fed to the intent LLM (refinement context)
+    #  - session_products_cap: distinct products remembered across the whole session (for "go back to" recall)
+    #  - recent_products_cap: recent product ids for "第一个/前两个" reference resolution
+    #  - shown_summary_cap: how many shown items to summarise per remembered turn
+    history_turns: int = 3
+    session_products_cap: int = 40
+    recent_products_cap: int = 10
+    shown_summary_cap: int = 5
+    # Character window used when streaming the deterministic fallback answer token-by-token.
+    stream_chunk_size: int = 18
     enable_vector_search: bool = True
     enable_llm: bool = True
     enable_llm_intent: bool = True
@@ -56,8 +67,14 @@ class Settings:
             ),
             retrieval_top_k=int(os.environ.get("RAG_TOP_K", cls.retrieval_top_k)),
             vector_search_k=int(os.environ.get("RAG_VECTOR_SEARCH_K", cls.vector_search_k)),
+            history_turns=int(os.environ.get("RAG_HISTORY_TURNS", cls.history_turns)),
+            session_products_cap=int(os.environ.get("RAG_SESSION_PRODUCTS_CAP", cls.session_products_cap)),
+            recent_products_cap=int(os.environ.get("RAG_RECENT_PRODUCTS_CAP", cls.recent_products_cap)),
+            shown_summary_cap=int(os.environ.get("RAG_SHOWN_SUMMARY_CAP", cls.shown_summary_cap)),
+            stream_chunk_size=int(os.environ.get("RAG_STREAM_CHUNK_SIZE", cls.stream_chunk_size)),
             enable_vector_search=_bool_env("ENABLE_VECTOR_SEARCH", True),
             enable_llm=_bool_env("ENABLE_LLM", True),
+            enable_llm_intent=_bool_env("ENABLE_LLM_INTENT", True),
         )
 
 

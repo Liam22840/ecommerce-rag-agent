@@ -26,6 +26,7 @@ SYSTEM_PROMPT = """你是一个电商智能导购助手。
 商品名、品牌、类目、规格、SKU 和价格都必须使用商品事实中的结构化字段。
 价格必须优先照抄 price_label；需要解释多规格时照抄 price_summary。
 禁止把 title 里的规格和 lowest_price 混在一起表达；如果 title 中的规格不同于 lowest_price_sku，只能说“xx元起（最低价SKU）”，并列出 SKU 价格明细。
+当 result_status 不是 ok 时，按字段含义如实说明，不要把上一轮已展示的商品当作新推荐再列一遍；no_cheaper 时点出 context.cheapest_shown 作为当前最低价。这些情况都顺势建议换品类或调整条件。
 用纯文本回答，不要使用任何 Markdown 标记（不要出现 **、*、#、`、列表符号等）；需要分条时直接用“1. 2. 3.”和换行。
 """
 
@@ -35,17 +36,22 @@ def build_messages(
     filters: SearchFilters,
     hits: list[CatalogHit],
     catalog: ProductCatalog,
+    result_status: str = "ok",
+    context: dict | None = None,
 ) -> list[dict[str, str]]:
     facts = [catalog.product_facts(hit.product, filters) for hit in hits]
     user_payload = {
         "user_query": query,
         "parsed_filters": filters.to_dict(),
         "candidate_products": facts,
+        "result_status": result_status,
         "instruction": (
             "请基于候选商品回答。最多推荐3款。不要提到不存在的优惠、库存或平台活动。"
             "所有商品事实和价格必须来自 candidate_products，不允许自行推断或改写 SKU 价格。"
         ),
     }
+    if context:
+        user_payload["context"] = context
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
@@ -59,26 +65,29 @@ INTENT_SYSTEM_PROMPT = (
     "任务：把用户的中文购物查询解析成结构化筛选条件。\n"
     "规则：\n"
     "1. category、sub_category、brand 必须从给定的可选值列表里原样选取；找不到对应项时填 null，禁止自造。\n"
-    "2. 把口语词映射到列表里的官方词，例如 口红→唇釉、爽肤水→化妆水、洗面奶→洁面、蓝牙耳机→真无线耳机。\n"
+    "2. 把口语词按词义映射到 categories/sub_categories/brands 里给出的官方词（如 口红→唇釉）；拿不准就就近匹配，不要新造。\n"
     "3. 价格区间：「200到500」→ min_price=200, max_price=500；「不超过1万/一万」→ max_price=10000；中文数字要换算成阿拉伯数字；没有约束填 null。\n"
     "4. 否定：「不含X」「不要X牌」→ 写进 excluded_terms / excluded_brands（品牌必须是列表里的官方品牌词，否则不写）。\n"
     "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余→product_search。\n"
     "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
-    "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品。用用户原话里最具体的指代词（带型号/系列，如「理肤泉特安」而不是只写「理肤泉」；「薇诺娜舒敏」而不是「薇诺娜」），如「理肤泉特安和薇诺娜舒敏」→[\"理肤泉特安\",\"薇诺娜舒敏\"]，「那个兰蔻的」→[\"兰蔻\"]；否则填 []。\n"
+    "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品，用其原话里最具体的指代（带型号/系列，如「理肤泉特安」而非只写「理肤泉」）；否则填 []。\n"
     "9. 列表字段没内容返回 []，标量没内容返回 null。\n"
-    "10. 如果给了 previous_turn（上一轮的解析结果），且本轮是在它基础上的追问/改写"
-    "（例如只说“便宜点的”“有没有大容量的”“换个牌子”而没有重新指明品类），就继承 previous_turn 的"
-    " category、sub_category、required_terms（本轮明确改了的除外）；如果本轮是新的品类或与上一轮无关的话题，则忽略 previous_turn。\n"
-    "11. rewritten_query：当本轮是依赖上下文的追问时，结合 previous_turn 改写成一句可独立检索的完整中文查询"
-    "（例如上一轮是“面霜”，本轮“便宜点的”→“更便宜的面霜”）；如果本轮本身已是完整查询，或属于 chitchat/comparison，rewritten_query 填 null。\n"
+    "10. 给了 recent_turns（最近几轮的解析结果，以及当时展示过的商品和价格）时，如果本轮是承接上文的追问"
+    "（改写、追加条件、对刚才结果提相对要求、或指回之前提过的商品），就结合 recent_turns 把本轮理解成具体筛选条件："
+    "继承仍然适用的 category/sub_category/required_terms，并把相对要求落到已有字段上（例如想更便宜，就把 max_price 设到"
+    " recent_turns 里已展示的最低价以下）。只能用 recent_turns 里真实出现过的信息，不要编造；若本轮是新品类或无关话题，就忽略 recent_turns。\n"
+    "11. rewritten_query：本轮依赖上文时，结合 recent_turns 改写成一句可独立检索的完整中文查询；本轮本身已完整，或属于 chitchat/comparison 时填 null。\n"
+    "12. exclude_seen：用户想看和刚才展示过的不一样的商品（看过的别再给）时设为 true，否则 false。\n"
+    "13. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列）。用户指回其中某个/某些之前看过的商品时，"
+    "定位到对应商品并把其 id 原样填进 recall_product_ids；否则填 []。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
     '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
     '"required_terms":[string],"requested_specs":[string],'
     '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string],'
-    '"rewritten_query":string|null}'
+    '"rewritten_query":string|null,"exclude_seen":boolean,"recall_product_ids":[string]}'
 )
 
 
@@ -87,7 +96,8 @@ def intent_messages(
     categories: set[str],
     sub_categories: set[str],
     brands: set[str],
-    previous: dict | None = None,
+    history: list[dict] | None = None,
+    session_products: list[dict] | None = None,
 ) -> list[dict[str, str]]:
     user_payload = {
         "query": query,
@@ -95,8 +105,10 @@ def intent_messages(
         "sub_categories": sorted(sub_categories),
         "brands": sorted(brands),
     }
-    if previous:
-        user_payload["previous_turn"] = previous
+    if history:
+        user_payload["recent_turns"] = history
+    if session_products:
+        user_payload["session_products"] = session_products
     return [
         {"role": "system", "content": INTENT_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},

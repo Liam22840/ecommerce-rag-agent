@@ -45,7 +45,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         )
         intent_llm = llm if settings.enable_llm_intent else None
         assistant = ShoppingAssistant(
-            catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm
+            catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm, settings=settings
         )
 
     app.state.settings = settings
