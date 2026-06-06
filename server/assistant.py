@@ -199,12 +199,17 @@ class ShoppingAssistant:
             hits = [hit for hit in hits if hit.product["product_id"] not in seen]
         hits = hits[:top_k]
         products = [
-            self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters), filters=filters)
+            self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters, self._catalog), filters=filters)
             for hit in hits
         ]
         prev_floor = self._previous_floor(session_id)
         result_status = self._result_status(filters, products, recent_product_ids, prev_floor)
         context = self._status_context(result_status, products, prev_floor)
+        # Required attributes no longer hard-filter; flag any that nothing retrieved clearly
+        # evidences, so the answer says so honestly instead of implying every card matches.
+        unmet = self._catalog.unmet_required_terms(hits, filters)
+        if unmet:
+            context = {**(context or {}), "unmet_terms": unmet}
         return self._search_prepared(
             query, session_id, filters, hits, products, retrieval, result_status, context
         )
@@ -476,10 +481,14 @@ class ShoppingAssistant:
             return f"没有在商品库中找到完全匹配“{condition}”的商品。可以放宽预算、换一个类目，或补充你更看重的功能。"
 
         order_note = "，并按价格从低到高排列" if filters.prefer_low_price else ""
-        lines = [f"我按你的条件从商品库里筛选出以下{len(hits[:3])}款{order_note}："]
+        unmet = (context or {}).get("unmet_terms")
+        if unmet:
+            lines = [f"没有在商品库里找到明确标注“{'、'.join(unmet)}”的商品，以下是最接近的{len(hits[:3])}款{order_note}："]
+        else:
+            lines = [f"我按你的条件从商品库里筛选出以下{len(hits[:3])}款{order_note}："]
         for idx, hit in enumerate(hits[:3], start=1):
             product = hit.product
-            reason = _reason(hit, filters)
+            reason = _reason(hit, filters, self._catalog)
             price_label = self._catalog.price_label(product, filters)
             price_summary = self._catalog.price_summary(product)
             line = f"{idx}. {product['title']}，{product['brand']}，价格：{price_label}。"
@@ -491,7 +500,7 @@ class ShoppingAssistant:
         return "\n".join(lines)
 
 
-def _reason(hit: CatalogHit, filters: SearchFilters) -> str:
+def _reason(hit: CatalogHit, filters: SearchFilters, catalog: ProductCatalog) -> str:
     reasons = []
     product = hit.product
     if filters.sub_category and product["sub_category"] == filters.sub_category:
@@ -501,7 +510,10 @@ def _reason(hit: CatalogHit, filters: SearchFilters) -> str:
     if filters.max_price is not None:
         reasons.append(f"价格在{filters.max_price:g}元以内")
     for term in filters.required_terms:
-        reasons.append(f"匹配{term}需求")
+        # Only credit the attribute when the product actually evidences it (not just because
+        # it was requested) — required_terms no longer hard-filter, so a card may not match.
+        if catalog.evidences_required_term(product, term):
+            reasons.append(f"匹配{term}需求")
     if filters.prefer_low_price:
         reasons.append("优先低价")
     if hit.snippets:

@@ -181,9 +181,9 @@ class ProductCatalog:
         haystack = self._haystack(product)
         if filters.requested_specs and not self.matches_requested_specs(product, filters.requested_specs):
             return False
-        for term in filters.required_terms:
-            if not self._matches_required_term(product, term, haystack):
-                return False
+        # required_terms are NOT a hard gate: a product that satisfies the attribute but phrases
+        # it differently shouldn't be silently dropped. They rank via _required_term_score, and
+        # the answer narrates honestly when nothing clearly evidences them.
         for term in filters.excluded_terms:
             if term and term in haystack:
                 return False
@@ -300,7 +300,7 @@ class ProductCatalog:
         if filters.brand and product["brand"] == filters.brand:
             score += 5
 
-        score += self._required_term_score(product, filters)
+        score += self._required_term_score(product, filters, haystack)
 
         for term in query_terms:
             term_l = term.lower()
@@ -322,25 +322,41 @@ class ProductCatalog:
             score += 1
         return score, dedupe(snippets)[:3]
 
-    def _required_term_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
+    def _required_term_score(self, product: dict[str, Any], filters: SearchFilters, haystack: str) -> float:
         if not filters.required_terms:
             return 0.0
 
         score = 0.0
-        haystack = self._haystack(product)
         title = product["title"]
         description = product.get("rag_knowledge", {}).get("marketing_description", "")
 
-        if "敏感肌" in filters.required_terms:
-            score += self._sensitive_relevance_score(product, haystack) * 4
-
-        if "保湿" in filters.required_terms:
-            if "保湿" in title or "补水" in title:
-                score += 5
-            if any(term in description for term in ["保湿", "补水", "锁水", "滋润"]):
-                score += 4
+        for term in filters.required_terms:
+            if term == "敏感肌":
+                score += self._sensitive_relevance_score(product, haystack) * 4
+            elif term == "保湿":
+                if "保湿" in title or "补水" in title:
+                    score += 5
+                if any(t in description for t in ["保湿", "补水", "锁水", "滋润"]):
+                    score += 4
+            elif self._matches_required_term(product, term, haystack):
+                score += 8  # generic evidence boost, in line with the curated weights above
 
         return score
+
+    def evidences_required_term(self, product: dict[str, Any], term: str) -> bool:
+        """Does the product clearly evidence a required attribute? Used to rank and to narrate
+        honestly — NOT to exclude (see matches_filters)."""
+        return self._matches_required_term(product, term, self._haystack(product))
+
+    def unmet_required_terms(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
+        """Required attributes that none of the hits clearly evidence — for honest narration."""
+        if not filters.required_terms:
+            return []
+        evidence = [(hit.product, self._haystack(hit.product)) for hit in hits]  # one haystack per hit
+        return [
+            term for term in filters.required_terms
+            if not any(self._matches_required_term(product, term, haystack) for product, haystack in evidence)
+        ]
 
     def _matches_required_term(self, product: dict[str, Any], term: str, haystack: str) -> bool:
         if term == "敏感肌":

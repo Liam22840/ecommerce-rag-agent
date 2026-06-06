@@ -192,9 +192,12 @@ def test_chat_endpoint_uses_requested_sku_price_for_specs():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert [product["product_id"] for product in body["products"]] == ["p_beauty_007"]
-    assert body["products"][0]["price"] == 268.0
-    assert body["products"][0]["price_label"] == "268元（50g 标准装）"
+    by_id = {product["product_id"]: product for product in body["products"]}
+    # The sensitive 50g cream still surfaces; its price reflects the requested 50g SKU, not the
+    # cheapest体验装 (required_terms no longer hard-filter, so other 50g creams may appear too).
+    assert "p_beauty_007" in by_id
+    assert by_id["p_beauty_007"]["price"] == 268.0
+    assert by_id["p_beauty_007"]["price_label"] == "268元（50g 标准装）"
     assert "价格：268元（50g 标准装）" in body["answer"]
     assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
 

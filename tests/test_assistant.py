@@ -560,3 +560,21 @@ def test_degraded_mode_carries_category_across_a_refinement_chain():
     second = assistant.prepare("再给我看看别的价位", session_id="s", top_k=3)
     assert first.filters.sub_category == "面霜"
     assert second.filters.sub_category == "面霜"
+
+
+# --- required attributes: rank, don't gate; flag honestly when unmet -----------
+
+def test_unmet_required_term_surfaces_closest_and_flags_honestly():
+    # The LLM asks for 防水 on a 面霜 search; no face cream evidences it.
+    intent_llm = _SeqLLM([
+        json.dumps({"intent_type": "product_search", "category": "美妆护肤",
+                    "sub_category": "面霜", "required_terms": ["防水"]}),
+    ])
+    assistant = _assistant(intent_llm=intent_llm)
+
+    prepared = assistant.prepare("防水的面霜", session_id="s", top_k=3)
+
+    assert prepared.products  # creams still surface — not silently dropped
+    assert "没有" in prepared.grounded_answer and "防水" in prepared.grounded_answer  # honest line
+    # no card claims the unmet attribute
+    assert all("匹配防水需求" not in (product.matched_reason or "") for product in prepared.products)

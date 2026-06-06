@@ -104,14 +104,18 @@ def test_lexical_search_respects_budget_filter():
     assert hits == []
 
 
-def test_sensitive_skin_search_requires_positive_sensitive_fit():
+def test_sensitive_skin_search_ranks_evidenced_first_without_dropping_others():
     catalog = ProductCatalog.load(DATASET_ROOT)
     parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
     filters = parser.parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
 
     hits = catalog.search_lexical("推荐50g适合敏感肌的保湿霜，cheaper is better", filters, limit=5)
+    ids = [hit.product["product_id"] for hit in hits]
 
-    assert [hit.product["product_id"] for hit in hits] == ["p_beauty_007"]
+    # required_terms no longer hard-filter: the sensitive-evidenced cream ranks first, but the
+    # other 50g cream still surfaces (ranked below) rather than being silently dropped.
+    assert ids[0] == "p_beauty_007"
+    assert "p_beauty_008" in ids
 
 
 # --- construction / loading ----------------------------------------------------
@@ -267,23 +271,30 @@ def test_avg_rating_ignores_non_numeric_ratings():
     assert ProductCatalog.avg_rating(product) == 4.0
 
 
-def test_sensitive_skin_strong_signal_matches():
-    catalog = _catalog(_product(desc="专为敏感肌打造，温和不刺激"))
+def test_required_terms_no_longer_hard_filter():
+    # A product that doesn't evidence the attribute is NOT dropped — required_terms rank, not gate.
+    catalog = _catalog(_product(title="普通面霜", desc="温和"))
     product = catalog.require("p1")
     assert catalog.matches_filters(product, SearchFilters(required_terms=["敏感肌"])) is True
 
 
-def test_sensitive_skin_weak_only_signal_is_excluded():
-    # "敏感肌需先" is a weak/negative cue with no strong signal -> filtered out.
+def test_sensitive_skin_strong_signal_is_evidenced():
+    catalog = _catalog(_product(desc="专为敏感肌打造，温和不刺激"))
+    product = catalog.require("p1")
+    assert catalog.evidences_required_term(product, "敏感肌") is True
+
+
+def test_sensitive_skin_weak_only_signal_is_not_evidenced():
+    # "敏感肌需先" is a weak/negative cue with no strong signal -> not evidenced (ranks low, not dropped).
     catalog = _catalog(_product(title="普通面霜", desc="敏感肌需先做耐受测试"))
     product = catalog.require("p1")
-    assert catalog.matches_filters(product, SearchFilters(required_terms=["敏感肌"])) is False
+    assert catalog.evidences_required_term(product, "敏感肌") is False
 
 
-def test_required_term_moisturizing_alias_matches():
+def test_required_term_moisturizing_alias_is_evidenced():
     catalog = _catalog(_product(title="补水面霜", desc="深层补水锁水"))
     product = catalog.require("p1")
-    assert catalog.matches_filters(product, SearchFilters(required_terms=["保湿"])) is True
+    assert catalog.evidences_required_term(product, "保湿") is True
 
 
 def test_product_facts_truncates_faq_and_reviews_to_three():
