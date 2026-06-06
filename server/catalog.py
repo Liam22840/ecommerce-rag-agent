@@ -9,6 +9,8 @@ from typing import Any
 
 from server.intent import SUB_CATEGORY_ALIASES, SearchFilters
 from server.schemas import ProductCard, SkuPrice
+from server.textutil import dedupe as _dedupe
+from server.textutil import normalize_spec as _normalize_spec_text
 
 
 REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
@@ -391,17 +393,3 @@ def _query_terms(query: str, filters: SearchFilters) -> list[str]:
         if token in query:
             terms.append(token)
     return _dedupe([term for term in terms if term])
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen = set()
-    out = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def _normalize_spec_text(value: str) -> str:
-    return "".join(str(value).lower().split())

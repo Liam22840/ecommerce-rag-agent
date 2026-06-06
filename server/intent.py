@@ -7,10 +7,14 @@ room for a later LLM/NLU parser to produce the same SearchFilters structure.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from server.prompts import intent_messages
+from server.textutil import dedupe as _dedupe
+from server.textutil import json_object as _json_object
+from server.textutil import normalize_spec as _normalize_spec
 
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -145,7 +149,7 @@ class IntentParser:
     def _llm_parse(self, message: str) -> SearchFilters | None:
         try:
             raw = self._llm.complete(
-                _intent_messages(message, self._categories, self._sub_categories, self._brands)
+                intent_messages(message, self._categories, self._sub_categories, self._brands)
             )
             payload = _json_object(raw)
         except Exception:  # noqa: BLE001 - LLM parse must degrade to the rule parser.
@@ -299,69 +303,8 @@ def _parse_requested_specs(text: str) -> list[str]:
     return list(dict.fromkeys(specs))
 
 
-def _normalize_spec(value: str) -> str:
-    return re.sub(r"\s+", "", value).lower()
-
-
 def _looks_like_comparison(text: str) -> bool:
     return any(hint in text for hint in COMPARISON_HINTS)
-
-
-_INTENT_SYSTEM_PROMPT = (
-    "你是电商导购的查询意图解析器。只输出 JSON，不写任何解释或多余文字。"
-    "任务：把用户的中文购物查询解析成结构化筛选条件。\n"
-    "规则：\n"
-    "1. category、sub_category、brand 必须从给定的可选值列表里原样选取；找不到对应项时填 null，禁止自造。\n"
-    "2. 把口语词映射到列表里的官方词，例如 口红→唇釉、爽肤水→化妆水、洗面奶→洁面、蓝牙耳机→真无线耳机。\n"
-    "3. 价格区间：「200到500」→ min_price=200, max_price=500；「不超过1万/一万」→ max_price=10000；中文数字要换算成阿拉伯数字；没有约束填 null。\n"
-    "4. 否定：「不含X」「不要X牌」→ 写进 excluded_terms / excluded_brands（品牌必须是列表里的官方品牌词，否则不写）。\n"
-    "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余→product_search。\n"
-    "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
-    "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
-    "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品。用用户原话里最具体的指代词（带型号/系列，如「理肤泉特安」而不是只写「理肤泉」；「薇诺娜舒敏」而不是「薇诺娜」），如「理肤泉特安和薇诺娜舒敏」→[\"理肤泉特安\",\"薇诺娜舒敏\"]，「那个兰蔻的」→[\"兰蔻\"]；否则填 []。\n"
-    "9. 列表字段没内容返回 []，标量没内容返回 null。\n"
-    '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
-    '"category":string|null,"sub_category":string|null,"brand":string|null,'
-    '"min_price":number|null,"max_price":number|null,'
-    '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
-    '"required_terms":[string],"requested_specs":[string],'
-    '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string]}'
-)
-
-
-def _intent_messages(
-    query: str,
-    categories: set[str],
-    sub_categories: set[str],
-    brands: set[str],
-) -> list[dict[str, str]]:
-    user_payload = {
-        "query": query,
-        "categories": sorted(categories),
-        "sub_categories": sorted(sub_categories),
-        "brands": sorted(brands),
-    }
-    return [
-        {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-    ]
-
-
-# Deliberate local copy of comparison.py's JSON extractor: comparison.py imports
-# SearchFilters from this module, so importing back would be a circular import.
-def _json_object(raw: str) -> dict[str, Any]:
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            return {}
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
 
 
 def _coerce_in_set(value: Any, allowed: set[str]) -> str | None:
@@ -410,7 +353,3 @@ def _coerce_str_list(value: Any, max_items: int = 16, max_len: int = 20) -> list
         if item and len(item) <= max_len:
             items.append(item)
     return _dedupe(items)[:max_items]
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    return list(dict.fromkeys(items))

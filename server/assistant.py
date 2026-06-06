@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from collections.abc import Iterator
 
@@ -10,9 +9,15 @@ from server.comparison import ComparisonService
 from server.catalog import CatalogHit, ProductCatalog
 from server.intent import IntentParser, SearchFilters
 from server.llm import ArkChatClient, ModelUnavailable
-from server.prompts import build_messages
+from server.prompts import (
+    CHITCHAT_REPLY,
+    build_messages,
+    chitchat_messages,
+    comparison_narration_messages,
+)
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import ChatResponse, ProductCard, ProductComparison
+from server.textutil import dedupe_ids as _dedupe_ids
 
 
 @dataclass
@@ -25,29 +30,6 @@ class PreparedChat:
     comparison: ProductComparison | None
     grounded_answer: str
     messages: list[dict[str, str]]
-
-
-CHITCHAT_REPLY = (
-    "你好呀～我是你的购物助手。告诉我你想买什么就行，比如品类、预算或使用场景"
-    "（例如“两三百的敏感肌面霜”“适合通勤的降噪耳机”），我来帮你挑选和对比。"
-)
-
-_CHITCHAT_SYSTEM = (
-    "你是电商导购助手。用户这句话与具体购物需求无关（打招呼、道谢、闲聊、问你是谁或你能做什么等）。"
-    "请用一两句友好、简短的中文回应，并自然地把话题引导回购物（可以问他想买什么品类、预算或使用场景）。"
-    "不要回答与购物无关的专业问题（医疗、法律、金融、时政等），礼貌说明你只负责帮挑选商品。"
-    "纯文本中文，不要使用任何 Markdown 标记。"
-)
-
-_COMPARISON_NARRATION_SYSTEM = (
-    "你是电商导购助手。下面给你的是系统已经算好的商品对比结果，请用自然、简洁的中文把结论讲给用户，帮他做决定。\n"
-    "要求：\n"
-    "1. 不要改变“总体更推荐”的结论，也不要推翻任何逐维度结论。\n"
-    "2. 只能用给到的信息，不要编造商品库里没有的参数、功效或评价。\n"
-    "3. 价格直接照抄给的“价格”字段。\n"
-    "4. 先给结论（更推荐哪个、为什么），再点出主要差异；2 到 4 句话即可。\n"
-    "5. 纯文本中文，不要使用任何 Markdown 标记。"
-)
 
 
 class ShoppingAssistant:
@@ -94,7 +76,7 @@ class ShoppingAssistant:
             grounded_answer = self._comparison_answer(comparison)
             # Let the LLM narrate the (deterministic) comparison result; the template above is
             # the fallback. No messages for a clarification — there is nothing to narrate.
-            messages = [] if comparison.clarification else self._comparison_narration_messages(comparison)
+            messages = [] if comparison.clarification else comparison_narration_messages(comparison)
             retrieval = RetrievalResult(hits=[], source="lexical")
             self._remember_recent_products(session_id, [product.product_id for product in products])
             return PreparedChat(
@@ -119,7 +101,7 @@ class ShoppingAssistant:
                 products=[],
                 comparison=None,
                 grounded_answer=CHITCHAT_REPLY,
-                messages=self._chitchat_messages(query),
+                messages=chitchat_messages(query),
             )
 
         retrieval = self._retriever.retrieve(query=query, filters=filters, limit=top_k)
@@ -227,31 +209,6 @@ class ShoppingAssistant:
         lines.append("以上对比仅使用当前商品库的结构化字段、描述、问答和评价证据；证据不足处不会做绝对判断。")
         return "\n".join(lines)
 
-    def _chitchat_messages(self, query: str) -> list[dict[str, str]]:
-        return [{"role": "system", "content": _CHITCHAT_SYSTEM}, {"role": "user", "content": query}]
-
-    def _comparison_narration_messages(self, comparison: ProductComparison) -> list[dict[str, str]]:
-        id_to_title = {product.product_id: product.title for product in comparison.products}
-        rows = [
-            {
-                "维度": row.dimension,
-                "本维度更优": id_to_title.get(row.winner_product_id, "不明显"),
-                "各商品": {id_to_title.get(v.product_id, v.product_id): v.value for v in row.values},
-            }
-            for row in comparison.rows
-        ]
-        payload = {
-            "商品": [{"名称": product.title, "价格": product.price_label} for product in comparison.products],
-            "对比维度": comparison.focus,
-            "逐维度结论": rows,
-            "总体更推荐": id_to_title.get(comparison.winner_product_id, "无明显赢家"),
-            "系统结论": comparison.recommendation,
-        }
-        return [
-            {"role": "system", "content": _COMPARISON_NARRATION_SYSTEM},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ]
-
     def _grounded_answer(
         self,
         query: str,
@@ -307,13 +264,3 @@ def _reason(hit: CatalogHit, filters: SearchFilters) -> str:
 def _chunk_text(text: str, chunk_size: int = 18) -> Iterator[str]:
     for idx in range(0, len(text), chunk_size):
         yield text[idx: idx + chunk_size]
-
-
-def _dedupe_ids(product_ids: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for product_id in product_ids:
-        if product_id and product_id not in seen:
-            seen.add(product_id)
-            result.append(product_id)
-    return result

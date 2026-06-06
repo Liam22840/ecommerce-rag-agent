@@ -9,7 +9,13 @@ from typing import Any
 
 from server.catalog import ProductCatalog
 from server.intent import SearchFilters
+from server.prompts import DIMENSION_EXTRACTION_SYSTEM, EVIDENCE_JUDGE_SYSTEM
 from server.schemas import ComparisonRow, ComparisonValue, ProductComparison
+from server.textutil import dedupe as _dedupe
+from server.textutil import dedupe_int as _dedupe_int
+from server.textutil import json_object as _json_object
+from server.textutil import normalize as _normalize
+from server.textutil import trim as _trim
 
 
 COMPARE_HINTS = [
@@ -121,13 +127,6 @@ class ComparisonService:
         explicit_product_ids: list[str],
         recent_product_ids: list[str],
     ) -> ProductComparison:
-        # Original deterministic-only resolution (kept for teammate review):
-        # product_ids, clarification = self._resolve_product_ids(
-        #     query=query,
-        #     explicit_product_ids=explicit_product_ids,
-        #     recent_product_ids=recent_product_ids,
-        # )
-        # Replaced: try deterministic first, then map LLM-extracted references (no extra LLM call).
         product_ids, clarification = self._resolve_compared_products(
             query, filters, explicit_product_ids, recent_product_ids
         )
@@ -152,11 +151,6 @@ class ComparisonService:
             self._price_row(products, filters),
             self._sku_row(products),
         ]
-        # Original deterministic evidence rows (kept for teammate review):
-        # for spec in focus_specs:
-        #     if spec.evidence:
-        #         rows.append(self._evidence_row(products, spec))
-        # Replaced with LLM-judged evidence (falls back to _evidence_row per dimension):
         rows.extend(self._evidence_rows(products, focus_specs, query))
 
         winner_product_id, recommendation = self._recommend(products, rows, query, filters)
@@ -665,15 +659,7 @@ def _title_tokens(normalized_title: str) -> list[str]:
 
 def _dimension_extraction_messages(query: str, products: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [
-        {
-            "role": "system",
-            "content": (
-                "你是电商导购的对比维度抽取器。只输出 JSON，不写解释。"
-                "任务：从用户问题中抽取用户真正关心的对比维度，并根据给定商品证据生成可检索同义词。"
-                "不要判断赢家，不要编造商品事实，不要输出价格/SKU 事实。"
-                "JSON 格式：{\"dimensions\":[{\"label\":\"维度名\",\"aliases\":[\"检索词\"],\"preference\":\"higher_is_better|lower_is_better\"}]}"
-            ),
-        },
+        {"role": "system", "content": DIMENSION_EXTRACTION_SYSTEM},
         {
             "role": "user",
             "content": json.dumps(
@@ -722,21 +708,6 @@ def _product_evidence_for_llm(product: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_EVIDENCE_JUDGE_SYSTEM = (
-    "你是电商导购的对比证据裁判。只输出 JSON，不写任何解释。"
-    "任务：对每个给定维度，只依据所给的商品证据（标题、描述、官方问答、用户评价），判断哪款商品在该维度更好。\n"
-    "规则：\n"
-    "1. 只能用提供的证据，禁止编造。要读懂评价语气：比如“噪音几乎没了/全没了”是好评，“有底噪/不好/一般”是差评。\n"
-    "2. winner_product_id 必须是给定的某个 product_id；证据接近或不足就填 null。\n"
-    "3. evidence 里每个商品引用一句你判断所依据的原文（尽量逐字照抄），没有合适证据就留空字符串。\n"
-    "4. 遵守每个维度的 preference：lower_is_better 表示越低/越少越好。\n"
-    "5. 不要判断价格或 SKU，这部分系统会单独处理。\n"
-    "6. reasons 每个商品用一句话说明理由；confidence 取 high|medium|low|none。\n"
-    '只输出如下 JSON：{"judgments":[{"dimension":"维度名","winner_product_id":"pid 或 null",'
-    '"reasons":{"pid":"一句话理由"},"evidence":{"pid":"原文引用"},"confidence":"high|medium|low|none"}]}'
-)
-
-
 def _evidence_judge_messages(
     query: str,
     products: list[dict[str, Any]],
@@ -748,7 +719,7 @@ def _evidence_judge_messages(
         "products": [_product_evidence_for_llm(product) for product in products],
     }
     return [
-        {"role": "system", "content": _EVIDENCE_JUDGE_SYSTEM},
+        {"role": "system", "content": EVIDENCE_JUDGE_SYSTEM},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
     ]
 
@@ -763,21 +734,6 @@ def _judge_confidence(raw: Any, reason: str, grounded: bool) -> str:
     if conf in {"high", "medium"} and not grounded:
         conf = "low"
     return conf
-
-
-def _json_object(raw: str) -> dict[str, Any]:
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            return {}
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
 
 
 def _specs_from_llm_payload(
@@ -1031,34 +987,3 @@ def _price_is_priority(query: str, filters: SearchFilters) -> bool:
         term in normalized
         for term in ["性价比", "划算", "便宜", "价格", "预算", "省钱", "更值"]
     )
-
-
-def _normalize(value: str) -> str:
-    return re.sub(r"[\s·,，。；;:：/\\()（）「」『』【】\[\]_-]+", "", value.lower())
-
-
-def _trim(value: str, max_len: int) -> str:
-    value = value.strip()
-    if len(value) <= max_len:
-        return value
-    return value[: max_len - 1] + "…"
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for item in items:
-        if item and item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
-
-
-def _dedupe_int(items: list[int]) -> list[int]:
-    seen = set()
-    result = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
