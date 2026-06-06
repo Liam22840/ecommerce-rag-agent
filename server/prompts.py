@@ -81,13 +81,16 @@ INTENT_SYSTEM_PROMPT = (
     "12. exclude_seen：用户想看和刚才展示过的不一样的商品（看过的别再给）时设为 true，否则 false。\n"
     "13. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列）。用户指回其中某个/某些之前看过的商品时，"
     "定位到对应商品并把其 id 原样填进 recall_product_ids；否则填 []。\n"
+    "14. intent_type=comparison 且用户要对比的是 session_products 里展示过的商品时，定位到对应商品，把要对比的 id（通常两个）"
+    "原样填进 compare_product_ids；定位不到具体 id 的点名商品仍走 compare_refs；否则 compare_product_ids 填 []。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
     '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
     '"required_terms":[string],"requested_specs":[string],'
     '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string],'
-    '"rewritten_query":string|null,"exclude_seen":boolean,"recall_product_ids":[string]}'
+    '"rewritten_query":string|null,"exclude_seen":boolean,"recall_product_ids":[string],'
+    '"compare_product_ids":[string]}'
 )
 
 

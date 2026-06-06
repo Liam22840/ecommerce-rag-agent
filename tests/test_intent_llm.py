@@ -140,6 +140,12 @@ def test_recall_product_ids_extracted_and_default_empty():
     assert _parser(json.dumps({"sub_category": "面霜"})).parse("推荐面霜").recall_product_ids == []
 
 
+def test_compare_product_ids_extracted_and_default_empty():
+    resp = json.dumps({"intent_type": "comparison", "compare_product_ids": ["p_beauty_007", "p_beauty_008"]})
+    assert _parser(resp).parse("第一个和第二个哪个好").compare_product_ids == ["p_beauty_007", "p_beauty_008"]
+    assert _parser(json.dumps({"sub_category": "面霜"})).parse("推荐面霜").compare_product_ids == []
+
+
 def test_session_products_passed_to_llm_when_present():
     fake = FakeLLM(json.dumps({}))
     parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS, llm=fake)

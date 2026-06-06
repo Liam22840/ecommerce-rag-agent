@@ -98,6 +98,9 @@ class SearchFilters:
     # LLM-picked product ids (copied from session_products) for backtracking recall
     # ("回到最开始那个"); validated against the catalog before use.
     recall_product_ids: list[str] = field(default_factory=list)
+    # LLM-resolved product ids (copied from session_products) for a comparison turn
+    # ("第一个和第二个"); validated against the catalog, with the ordinal/name waterfall as fallback.
+    compare_product_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -205,6 +208,7 @@ class IntentParser:
         filters.rewritten_query = _coerce_query(payload.get("rewritten_query"))
         filters.exclude_seen = _coerce_bool(payload.get("exclude_seen"))
         filters.recall_product_ids = _coerce_str_list(payload.get("recall_product_ids"))
+        filters.compare_product_ids = _coerce_str_list(payload.get("compare_product_ids"))
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -225,6 +229,7 @@ class IntentParser:
         merged.rewritten_query = llm.rewritten_query  # rewrite is only produced by the LLM
         merged.exclude_seen = llm.exclude_seen  # novelty flag is only produced by the LLM
         merged.recall_product_ids = llm.recall_product_ids  # recall ids only come from the LLM
+        merged.compare_product_ids = llm.compare_product_ids  # comparison ids only come from the LLM
         self._backfill_category(merged)
         return merged
 

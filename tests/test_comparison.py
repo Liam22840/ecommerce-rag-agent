@@ -346,3 +346,37 @@ def test_build_evidence_comparison_produces_focus_row():
     assert comparison.winner_product_id in {"p1", None}
     assert comparison.recommendation
     assert comparison.summary
+
+
+# --- LLM-resolved compare ids (LLM-first, dictionary-as-fallback) ---------------
+
+def test_llm_resolved_compare_ids_win_over_the_dictionary():
+    a = _product("p1", title="A面霜", category="美妆护肤", sub_category="面霜")
+    b = _product("p2", title="B面霜", category="美妆护肤", sub_category="面霜")
+    svc = ComparisonService(_catalog(a, b))
+
+    # Phrasing the ORDINALS dict cannot parse, and no recent context — only the LLM-resolved
+    # ids (validated against the catalog) can pin this comparison.
+    comparison = svc.build(
+        "排第一的那个和最后那个哪个更保湿",
+        SearchFilters(intent_type="comparison", compare_product_ids=["p1", "p2"]),
+        explicit_product_ids=[],
+        recent_product_ids=[],
+    )
+    assert [product.product_id for product in comparison.products] == ["p1", "p2"]
+
+
+def test_invalid_llm_compare_ids_fall_back_to_the_dictionary_waterfall():
+    a = _product("p1", title="A面霜", category="美妆护肤", sub_category="面霜")
+    b = _product("p2", title="B面霜", category="美妆护肤", sub_category="面霜")
+    svc = ComparisonService(_catalog(a, b))
+
+    # A hallucinated id is dropped by the catalog check, so resolution falls through to the
+    # deterministic ordinal dictionary against the recent products.
+    comparison = svc.build(
+        "第一个和第二个哪个更保湿",
+        SearchFilters(intent_type="comparison", compare_product_ids=["p_nope"]),
+        explicit_product_ids=[],
+        recent_product_ids=["p1", "p2"],
+    )
+    assert [product.product_id for product in comparison.products] == ["p1", "p2"]

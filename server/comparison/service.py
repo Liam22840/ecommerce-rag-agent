@@ -175,20 +175,27 @@ class ComparisonService:
         explicit_product_ids: list[str],
         recent_product_ids: list[str],
     ) -> tuple[list[str], str | None]:
-        """Confidence-ordered: explicit (structured) ids first, then the LLM-extracted
-        references mapped deterministically (precise), then the deterministic waterfall as
-        the fallback. No extra LLM call (references come from the parser's existing call)."""
-        valid_explicit = dedupe([
-            pid for pid in explicit_product_ids if self._catalog.get(pid) is not None
-        ])
+        """Confidence-ordered: explicit (structured) ids first, then the ids the LLM resolved
+        from session_products, then the LLM's named references mapped deterministically, then
+        the deterministic ordinal/name waterfall as the fallback. No extra LLM call — the LLM
+        signals come from the intent parser's existing call."""
+        valid_explicit = self._valid_catalog_ids(explicit_product_ids)
         if len(valid_explicit) >= 2:
             return valid_explicit[:3], None
-        # LLM references are more precise than the deterministic name matcher, so map them
+        # LLM resolved the referenced products to exact ids (generalising over phrasing the
+        # ordinal/name dictionary can't). Trust them only after validating against the catalog.
+        llm_ids = self._valid_catalog_ids(filters.compare_product_ids)
+        if len(llm_ids) >= 2:
+            return llm_ids[:3], None
+        # LLM named references are more precise than the deterministic name matcher, so map them
         # before falling to the full deterministic waterfall.
         mapped = self._map_refs_to_products(filters.compare_refs, recent_product_ids)
         if len(mapped) >= 2:
             return mapped[:3], None
         return self._resolve_product_ids(query, explicit_product_ids, recent_product_ids)
+
+    def _valid_catalog_ids(self, product_ids: list[str]) -> list[str]:
+        return dedupe([pid for pid in product_ids if self._catalog.get(pid) is not None])
 
     def _map_refs_to_products(self, refs: list[str], recent_product_ids: list[str]) -> list[str]:
         if not refs:
