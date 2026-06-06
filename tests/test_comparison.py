@@ -3,28 +3,27 @@
 from __future__ import annotations
 
 from server.catalog import ProductCatalog
-from server.comparison import (
-    ComparisonService,
-    _asks_for_current_two,
+from server.comparison import ComparisonService
+from server.comparison.dimensions import (
     _attribute_terms,
-    _chunks,
     _clean_attribute_label,
-    _confidence,
     _dynamic_specs,
-    _evidence,
-    _generic_polarity,
     _is_noise_attribute,
     _is_price_dimension,
-    _json_object,
-    _name_score,
-    _normalize,
     _price_is_priority,
     _specs_from_llm_payload,
     _strip_product_context_words,
-    _trim,
+)
+from server.comparison.evidence import (
+    _confidence,
+    _evidence,
+    _generic_polarity,
     _winner_from_scores,
 )
+from server.comparison.resolver import _asks_for_current_two, _name_score
+from server.comparison.text import _chunks
 from server.intent import SearchFilters
+from server.textutil import json_object, normalize, trim
 
 
 def _product(
@@ -58,17 +57,17 @@ def _catalog(*products: dict) -> ProductCatalog:
     return ProductCatalog({p["product_id"]: p for p in products})
 
 
-# --- _normalize / _trim / _chunks ----------------------------------------------
+# --- normalize / trim / _chunks ----------------------------------------------
 
 def test_normalize_strips_punctuation_and_lowercases():
-    assert _normalize("A·B, C。D（E）") == "abcde"
-    assert _normalize("降 噪_效-果") == "降噪效果"
+    assert normalize("A·B, C。D（E）") == "abcde"
+    assert normalize("降 噪_效-果") == "降噪效果"
 
 
 def test_trim_truncates_with_ellipsis():
-    assert _trim("abc", 10) == "abc"
-    assert _trim("abcdef", 4) == "abc…"
-    assert _trim("  padded  ", 10) == "padded"
+    assert trim("abc", 10) == "abc"
+    assert trim("abcdef", 4) == "abc…"
+    assert trim("  padded  ", 10) == "padded"
 
 
 def test_chunks_splits_on_terminators_and_drops_blanks():
@@ -115,25 +114,25 @@ def test_confidence_levels():
 
 def test_name_score_rewards_title_brand_subcategory():
     product = {"title": "降噪豆", "brand": "某牌", "sub_category": "真无线耳机"}
-    full = _name_score(_normalize("我想要降噪豆这款真无线耳机"), product)
+    full = _name_score(normalize("我想要降噪豆这款真无线耳机"), product)
     assert full >= 20  # title match dominates
-    none = _name_score(_normalize("完全无关的查询"), product)
+    none = _name_score(normalize("完全无关的查询"), product)
     assert none == 0.0
 
 
-# --- _json_object ---------------------------------------------------------------
+# --- json_object ---------------------------------------------------------------
 
 def test_json_object_parses_dict_and_rejects_non_dict():
-    assert _json_object('{"a": 1}') == {"a": 1}
-    assert _json_object("[1, 2, 3]") == {}
+    assert json_object('{"a": 1}') == {"a": 1}
+    assert json_object("[1, 2, 3]") == {}
 
 
 def test_json_object_extracts_embedded_object():
-    assert _json_object('好的，结果是 {"dimensions": []} 完毕') == {"dimensions": []}
+    assert json_object('好的，结果是 {"dimensions": []} 完毕') == {"dimensions": []}
 
 
 def test_json_object_returns_empty_on_garbage():
-    assert _json_object("not json at all") == {}
+    assert json_object("not json at all") == {}
 
 
 # --- _is_price_dimension / _price_is_priority -----------------------------------
