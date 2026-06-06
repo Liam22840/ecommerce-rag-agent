@@ -75,44 +75,63 @@ class ShoppingAssistant:
         compare_product_ids = compare_product_ids or []
 
         if len(compare_product_ids) >= 2 or filters.intent_type == "comparison":
-            comparison = self._comparison.build(
-                query=query,
-                filters=filters,
-                explicit_product_ids=compare_product_ids,
-                recent_product_ids=recent_product_ids,
+            return self._prepare_comparison(
+                query, session_id, filters, compare_product_ids, recent_product_ids
             )
-            products = comparison.products
-            grounded_answer = self._comparison_answer(comparison)
-            # Let the LLM narrate the (deterministic) comparison result; the template above is
-            # the fallback. No messages for a clarification — there is nothing to narrate.
-            messages = [] if comparison.clarification else comparison_narration_messages(comparison)
-            retrieval = RetrievalResult(hits=[], source="lexical")
-            self._remember_recent_products(session_id, [product.product_id for product in products])
-            return PreparedChat(
-                query=query,
-                session_id=session_id,
-                filters=filters,
-                retrieval=retrieval,
-                products=products,
-                comparison=comparison,
-                grounded_answer=grounded_answer,
-                messages=messages,
-            )
-
         if filters.intent_type == "chitchat":
-            # LLM handles the conversation (kept in character by the system prompt); the fixed
-            # reply is the fallback when the model is unavailable.
-            return PreparedChat(
-                query=query,
-                session_id=session_id,
-                filters=filters,
-                retrieval=RetrievalResult(hits=[], source="none"),
-                products=[],
-                comparison=None,
-                grounded_answer=CHITCHAT_REPLY,
-                messages=chitchat_messages(query),
-            )
+            return self._prepare_chitchat(query, session_id, filters)
+        return self._prepare_search(query, session_id, filters, top_k)
 
+    def _prepare_comparison(
+        self,
+        query: str,
+        session_id: str | None,
+        filters: SearchFilters,
+        compare_product_ids: list[str],
+        recent_product_ids: list[str],
+    ) -> PreparedChat:
+        comparison = self._comparison.build(
+            query=query,
+            filters=filters,
+            explicit_product_ids=compare_product_ids,
+            recent_product_ids=recent_product_ids,
+        )
+        products = comparison.products
+        grounded_answer = self._comparison_answer(comparison)
+        # Let the LLM narrate the (deterministic) comparison result; the template above is
+        # the fallback. No messages for a clarification — there is nothing to narrate.
+        messages = [] if comparison.clarification else comparison_narration_messages(comparison)
+        self._remember_recent_products(session_id, [product.product_id for product in products])
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            retrieval=RetrievalResult(hits=[], source="lexical"),
+            products=products,
+            comparison=comparison,
+            grounded_answer=grounded_answer,
+            messages=messages,
+        )
+
+    def _prepare_chitchat(
+        self, query: str, session_id: str | None, filters: SearchFilters
+    ) -> PreparedChat:
+        # LLM handles the conversation (kept in character by the system prompt); the fixed
+        # reply is the fallback when the model is unavailable.
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            retrieval=RetrievalResult(hits=[], source="none"),
+            products=[],
+            comparison=None,
+            grounded_answer=CHITCHAT_REPLY,
+            messages=chitchat_messages(query),
+        )
+
+    def _prepare_search(
+        self, query: str, session_id: str | None, filters: SearchFilters, top_k: int
+    ) -> PreparedChat:
         # The rewrite folds carried context into a standalone retrieval query; the answer
         # itself still replies to what the user actually typed (raw query below).
         search_query = filters.rewritten_query or query
