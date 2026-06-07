@@ -7,7 +7,7 @@ from pathlib import Path
 from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
 from server.intent import IntentParser, SearchFilters
-from server.retrieval import ProductRetriever, RetrievalResult
+from server.retrieval import ProductRetriever, RetrievalResult, RRF_K
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -147,9 +147,9 @@ def test_vector_and_lexical_overlap_is_hybrid_and_scores_merge():
 
     assert result.source == "hybrid"
     top = next(hit for hit in result.hits if hit.product["product_id"] == "p_beauty_011")
-    # vector contributes score 1.0 * 20 on top of the lexical score, and merging
-    # flips the hit's source to hybrid.
-    assert top.score > 20.0
+    # RRF: a product found by BOTH sources sums two reciprocal-rank contributions, so its score
+    # exceeds the most any single source can give (1/RRF_K), and merging flips it to hybrid.
+    assert top.score > 1.0 / RRF_K
     assert top.source == "hybrid"
 
 
@@ -214,6 +214,29 @@ def test_merge_hit_same_source_keeps_source():
     )
     assert merged["p1"].source == "lexical"
     assert merged["p1"].score == 3.0
+
+
+def test_rrf_fusion_combines_by_rank_not_raw_magnitude():
+    # The point of RRF: a product ranked #1 by one source and #2 by the other ties with the
+    # mirror-image product, regardless of how different the raw scores are (here vector 999 vs 1).
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())
+    merged: dict = {}
+    vector_ranked = [
+        CatalogHit(product={"product_id": "A"}, score=999.0, snippets=[], source="vector"),
+        CatalogHit(product={"product_id": "B"}, score=1.0, snippets=[], source="vector"),
+    ]
+    lexical_ranked = [
+        CatalogHit(product={"product_id": "B"}, score=5.0, snippets=[], source="lexical"),
+        CatalogHit(product={"product_id": "A"}, score=4.0, snippets=[], source="lexical"),
+    ]
+    retriever._fuse_by_rank(merged, vector_ranked)
+    retriever._fuse_by_rank(merged, lexical_ranked)
+
+    # A = 1/RRF_K (vec #1) + 1/(RRF_K+1) (lex #2); B is the mirror image -> equal scores.
+    assert abs(merged["A"].score - merged["B"].score) < 1e-12
+    assert merged["A"].score == 1.0 / RRF_K + 1.0 / (RRF_K + 1)
+    assert merged["A"].source == "hybrid" and merged["B"].source == "hybrid"
 
 
 def test_retrieval_result_dataclass_defaults_warnings():

@@ -11,6 +11,12 @@ from server.config import Settings
 from server.intent import SearchFilters
 
 
+# Reciprocal Rank Fusion constant (standard value). Larger -> rank differences matter less;
+# 60 is the widely-used default. Rank-based fusion is scale-invariant, so it's an algorithm
+# constant, not an operational tuning knob.
+RRF_K = 60
+
+
 @dataclass
 class RetrievalResult:
     hits: list[CatalogHit]
@@ -30,33 +36,19 @@ class ProductRetriever:
 
     def retrieve(self, query: str, filters: SearchFilters, limit: int) -> RetrievalResult:
         warnings: list[str] = []
-        merged: dict[str, CatalogHit] = {}
-        used_vector = False
-
         if self._startup_warning:
             warnings.append(self._startup_warning)
 
-        if self._vector_ready and self._embedder is not None and self._store is not None:
-            try:
-                vector = self._embedder.embed_text(query)
-                raw_hits = self._store.search(vector, k=self._settings.vector_search_k)
-                used_vector = True
-                for raw in raw_hits:
-                    product = self._catalog.get(raw["product_id"])
-                    if product is None or not self._catalog.matches_filters(product, filters):
-                        continue
-                    score = float(raw.get("score") or 0.0) * 20.0
-                    snippet = raw.get("text") or product["title"]
-                    self._merge_hit(
-                        merged,
-                        CatalogHit(product=product, score=score, snippets=[snippet], source="vector"),
-                    )
-            except Exception as exc:  # noqa: BLE001 - vector retrieval must degrade, not crash demo
-                warnings.append(f"vector search unavailable: {exc}")
-
+        vector_ranked, used_vector = self._vector_candidates(query, filters, warnings)
         lexical_hits = self._catalog.search_lexical(query, filters, limit=max(limit * 3, 12))
-        for hit in lexical_hits:
-            self._merge_hit(merged, hit)
+
+        # Reciprocal Rank Fusion: each source contributes by RANK, not raw score, so the two
+        # (cosine similarity vs lexical term-overlap, on very different scales) combine fairly
+        # instead of lexical magnitude dominating. _merge_hit then sums the contributions,
+        # flips overlapping products to "hybrid", and unions snippets.
+        merged: dict[str, CatalogHit] = {}
+        self._fuse_by_rank(merged, vector_ranked)
+        self._fuse_by_rank(merged, lexical_hits)
 
         hits = sorted(
             merged.values(),
@@ -67,6 +59,42 @@ class ProductRetriever:
         if hits:
             source = "hybrid" if used_vector and lexical_hits else "vector" if used_vector else "lexical"
         return RetrievalResult(hits=hits, source=source, warnings=warnings)
+
+    def _vector_candidates(
+        self, query: str, filters: SearchFilters, warnings: list[str]
+    ) -> tuple[list[CatalogHit], bool]:
+        """Vector hits as one CatalogHit per product (best-scoring chunk), filtered and ranked by
+        similarity. Returns (ranked_hits, used_vector). Degrades to ([], False) on any failure."""
+        if not (self._vector_ready and self._embedder is not None and self._store is not None):
+            return [], False
+        try:
+            vector = self._embedder.embed_text(query)
+            raw_hits = self._store.search(vector, k=self._settings.vector_search_k)
+        except Exception as exc:  # noqa: BLE001 - vector retrieval must degrade, not crash demo
+            warnings.append(f"vector search unavailable: {exc}")
+            return [], False
+        # Keep the best-scoring chunk per product (score only orders the vector list — RRF
+        # overwrites it with the rank contribution later, so the raw magnitude doesn't matter).
+        best: dict[str, CatalogHit] = {}
+        for raw in raw_hits:
+            product = self._catalog.get(raw["product_id"])
+            if product is None or not self._catalog.matches_filters(product, filters):
+                continue
+            pid = product["product_id"]
+            score = float(raw.get("score") or 0.0)
+            existing = best.get(pid)
+            if existing is None or score > existing.score:
+                snippet = raw.get("text") or product["title"]
+                best[pid] = CatalogHit(product=product, score=score, snippets=[snippet], source="vector")
+        ranked = sorted(best.values(), key=lambda hit: hit.score, reverse=True)
+        return ranked, True
+
+    def _fuse_by_rank(self, merged: dict[str, CatalogHit], ranked_hits: list[CatalogHit]) -> None:
+        """Replace each hit's raw score with its reciprocal-rank contribution and merge it in.
+        Input lists are already sorted best-first, so list position is the rank."""
+        for rank, hit in enumerate(ranked_hits):
+            hit.score = 1.0 / (RRF_K + rank)
+            self._merge_hit(merged, hit)
 
     def _init_vector_search(self) -> None:
         if not self._settings.enable_vector_search:
