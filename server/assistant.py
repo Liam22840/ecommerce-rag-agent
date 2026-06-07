@@ -209,9 +209,9 @@ class ShoppingAssistant:
         prev_floor = self._previous_floor(session_id)
         result_status = self._result_status(filters, products, recent_product_ids, prev_floor)
         context = self._status_context(result_status, products, prev_floor)
-        # Required attributes no longer hard-filter; flag any that nothing retrieved clearly
-        # evidences, so the answer says so honestly instead of implying every card matches.
-        unmet = self._catalog.unmet_required_terms(hits, filters)
+        # Required attributes and requested specs no longer hard-filter; flag any that nothing
+        # retrieved matches, so the answer says so honestly instead of implying every card fits.
+        unmet = self._catalog.unmet_required_terms(hits, filters) + self._catalog.unmet_requested_specs(hits, filters)
         if unmet:
             context = {**(context or {}), "unmet_terms": unmet}
         return self._search_prepared(

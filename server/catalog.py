@@ -205,11 +205,11 @@ class ProductCatalog:
             return False
 
         haystack = self._haystack(product)
-        if filters.requested_specs and not self.matches_requested_specs(product, filters.requested_specs):
-            return False
-        # required_terms are NOT a hard gate: a product that satisfies the attribute but phrases
-        # it differently shouldn't be silently dropped. They rank via _required_term_score, and
-        # the answer narrates honestly when nothing clearly evidences them.
+        # Neither requested_specs nor required_terms are hard gates: a product that fits the spec
+        # or attribute but labels it differently shouldn't be silently dropped (e.g. a bag that
+        # holds a 16寸 laptop in its description but not as a SKU label). They rank via
+        # _requested_spec_score / _required_term_score, and the answer narrates honestly when
+        # nothing matches. Price / category / sub_category / brand / excluded stay hard gates.
         for term in filters.excluded_terms:
             if term and term in haystack:
                 return False
@@ -327,6 +327,7 @@ class ProductCatalog:
             score += 5
 
         score += self._required_term_score(product, filters, haystack)
+        score += self._requested_spec_score(product, filters)
 
         for term in query_terms:
             term_l = term.lower()
@@ -368,6 +369,22 @@ class ProductCatalog:
                 score += 8  # generic evidence boost, in line with the curated weights above
 
         return score
+
+    def _requested_spec_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
+        """Rank products that match the requested spec (e.g. 50g, 256GB) above those that don't,
+        instead of excluding the rest. Same weight class as the generic required-term boost."""
+        if not filters.requested_specs:
+            return 0.0
+        return 8.0 if self.matches_requested_specs(product, filters.requested_specs) else 0.0
+
+    def unmet_requested_specs(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
+        """Requested specs that none of the hits match — for honest narration."""
+        if not filters.requested_specs:
+            return []
+        return [
+            spec for spec in filters.requested_specs
+            if not any(self.matches_requested_specs(hit.product, [spec]) for hit in hits)
+        ]
 
     def evidences_required_term(self, product: dict[str, Any], term: str) -> bool:
         """Does the product clearly evidence a required attribute? Used to rank and to narrate

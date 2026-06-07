@@ -118,6 +118,35 @@ def test_sensitive_skin_search_ranks_evidenced_first_without_dropping_others():
     assert "p_beauty_008" in ids
 
 
+def test_requested_spec_ranks_matching_first_without_dropping_others():
+    # Regression: a requested spec (e.g. 16寸) must rank matching products first but NOT drop the
+    # rest, so "能装16寸笔记本的包" returns bags instead of an empty list.
+    fits = _product(
+        "p1", title="大容量背包", category="服饰运动", sub_category="背包",
+        skus=[{"sku_id": "s1", "properties": {"规格": "16寸隔层"}, "price": 699.0}],
+    )
+    plain = _product("p2", title="普通背包", category="服饰运动", sub_category="背包", base_price=599.0)
+    catalog = _catalog(fits, plain)
+    filters = SearchFilters(sub_category="背包", requested_specs=["16寸"])
+
+    # not a hard gate: the non-matching bag is still eligible (would have been False before)
+    assert catalog.matches_filters(fits, filters) is True
+    assert catalog.matches_filters(plain, filters) is True
+
+    hits = catalog.search_lexical("背包", filters, limit=5)
+    ids = [hit.product["product_id"] for hit in hits]
+    assert "p2" in ids                       # not dropped
+    assert ids.index("p1") < ids.index("p2")  # spec-matching ranks above
+
+
+def test_unmet_requested_specs_flags_specs_no_hit_matches():
+    plain = _product("p1", title="普通背包", category="服饰运动", sub_category="背包")
+    catalog = _catalog(plain)
+    filters = SearchFilters(requested_specs=["16寸"])
+    hits = catalog.search_lexical("背包", filters, limit=5)
+    assert catalog.unmet_requested_specs(hits, filters) == ["16寸"]
+
+
 # --- construction / loading ----------------------------------------------------
 
 def test_empty_catalog_is_rejected():
