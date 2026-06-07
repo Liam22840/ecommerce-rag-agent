@@ -7,14 +7,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from server.intent import SUB_CATEGORY_ALIASES, SearchFilters
+from server.intent import REQUIRED_TERM_ALIASES, SUB_CATEGORY_ALIASES, SearchFilters
 from server.schemas import ProductCard, SkuPrice
+from server.textutil import dedupe, normalize_spec, trim
 
 
-REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
-    "敏感肌": ["敏感肌", "敏感性", "敏感皮", "干敏", "易敏", "敏皮"],
-    "保湿": ["保湿", "补水", "锁水", "滋润"],
+# Same company entered under two names in the dataset, which splits its products across two
+# "brands" and makes a brand filter on one name miss products stored under the other (e.g.
+# "Nike的跑鞋" finds nothing because the shoes are under "耐克"). Merge each alias onto one
+# canonical name (the variant the dataset uses for more products) so the brand list the LLM
+# sees, the brand filter, and the cards all agree. The raw dataset on disk is never modified.
+BRAND_ALIASES: dict[str, str] = {
+    "Nike": "耐克",
+    "苹果": "Apple 苹果",
+    "北面": "The North Face",
 }
+
+# Chinese negation prefixes (a small closed grammatical class, not a meaning library). Used so an
+# excluded term ("不要油腻") doesn't drop a product whose own copy NEGATES it ("清爽不油腻").
+EXCLUSION_NEGATIONS = ("不", "无", "没", "未", "免", "非")
+_CLAUSE_TRANSLATION = str.maketrans({c: "\n" for c in "，。；！？、,.;!?\n"})
 
 STRONG_SENSITIVE_SIGNALS = [
     "专为敏感肌",
@@ -58,6 +70,10 @@ class ProductCatalog:
         if not products:
             raise ValueError("product catalog is empty")
         self._products = products
+        for product in self._products.values():
+            canonical = BRAND_ALIASES.get(product.get("brand", ""))
+            if canonical:
+                product["brand"] = canonical
 
     @classmethod
     def load(cls, dataset_root: Path) -> "ProductCatalog":
@@ -81,6 +97,17 @@ class ProductCatalog:
     @property
     def sub_categories(self) -> set[str]:
         return {p["sub_category"] for p in self._products.values()}
+
+    def scope_summary(self) -> str:
+        """Human-readable "what we actually stock", grouped sub-categories under each category.
+        Lets the chitchat responder decline precisely (e.g. we have phones/laptops but not the
+        power banks that also fall under 数码电子)."""
+        groups: dict[str, list[str]] = {}
+        for product in self._products.values():
+            subs = groups.setdefault(product["category"], [])
+            if product["sub_category"] not in subs:
+                subs.append(product["sub_category"])
+        return "；".join(f"{cat}（{'、'.join(subs)}）" for cat, subs in groups.items())
 
     @property
     def brands(self) -> set[str]:
@@ -124,6 +151,10 @@ class ProductCatalog:
         )
 
     def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
+        # Kept lean to cut answer-prompt size (faster first token). Price/SKU fields are
+        # load-bearing for grounding and stay whole; the per-product price instruction was
+        # dropped (the same rule lives once in SYSTEM_PROMPT), and the free-text fields are
+        # trimmed to a couple of short snippets each.
         reviews = product.get("rag_knowledge", {}).get("user_reviews", [])
         faqs = product.get("rag_knowledge", {}).get("official_faq", [])
         selected_sku = self.selected_price_sku(product, filters)
@@ -140,13 +171,15 @@ class ProductCatalog:
             "selected_price_sku": selected_sku,
             "sku_prices": self.sku_prices(product),
             "sku_count": len(product.get("skus", [])),
-            "price_instruction": (
-                "Use price_label or price_summary verbatim. If the title contains a spec that differs "
-                "from the lowest_price_sku label, do not attach the lowest price to the title spec."
-            ),
-            "description": product.get("rag_knowledge", {}).get("marketing_description", ""),
-            "faq": faqs[:3],
-            "reviews": reviews[:3],
+            "description": trim(product.get("rag_knowledge", {}).get("marketing_description", ""), 160),
+            "faq": [
+                {"question": trim(str(faq.get("question", "")), 60), "answer": trim(str(faq.get("answer", "")), 120)}
+                for faq in faqs[:1]
+            ],
+            "reviews": [
+                {"rating": review.get("rating"), "content": trim(str(review.get("content", "")), 120)}
+                for review in reviews[:2]
+            ],
         }
 
     def search_lexical(self, query: str, filters: SearchFilters, limit: int) -> list[CatalogHit]:
@@ -177,16 +210,37 @@ class ProductCatalog:
         if product["brand"] in filters.excluded_brands:
             return False
 
-        haystack = self._haystack(product)
-        if filters.requested_specs and not self.matches_requested_specs(product, filters.requested_specs):
-            return False
-        for term in filters.required_terms:
-            if not self._matches_required_term(product, term, haystack):
-                return False
-        for term in filters.excluded_terms:
-            if term and term in haystack:
-                return False
+        # Soft constraints (required_terms, requested_specs) rank + narrate honestly, not gate.
+        # excluded_terms ("不要油腻") is applied AFTER retrieval by an LLM judge over the shortlist
+        # (it reads meaning + negation natively), with violates_excluded() below as the determ-
+        # inistic fallback. The hard structured gates are price / category / sub_category / brand /
+        # excluded_brands (above).
         return True
+
+    def violates_excluded(self, product: dict[str, Any], terms: list[str]) -> bool:
+        """Deterministic negation-aware exclusion check (the fallback when the LLM exclusion judge
+        is unavailable): True only if the product POSITIVELY claims an excluded term in its OWN copy
+        (title + marketing description, not third-party reviews), skipping clauses where the term is
+        negated ("不油腻"/"无添加香精")."""
+        description = product.get("rag_knowledge", {}).get("marketing_description", "")
+        clauses = (product.get("title", "") + "。" + description).translate(_CLAUSE_TRANSLATION).split("\n")
+        for term in terms:
+            if not term:
+                continue
+            for clause in clauses:
+                position = clause.find(term)
+                if position != -1 and not any(neg in clause[:position] for neg in EXCLUSION_NEGATIONS):
+                    return True
+        return False
+
+    @staticmethod
+    def avg_rating(product: dict[str, Any]) -> float:
+        ratings = [
+            float(review["rating"])
+            for review in product.get("rag_knowledge", {}).get("user_reviews", [])
+            if isinstance(review.get("rating"), int | float)
+        ]
+        return sum(ratings) / len(ratings) if ratings else 0.0
 
     @staticmethod
     def lowest_price(product: dict[str, Any]) -> float:
@@ -232,7 +286,7 @@ class ProductCatalog:
     ) -> dict[str, Any] | None:
         if filters and filters.requested_specs:
             for item in self.sku_prices(product):
-                normalized_label = _normalize_spec_text(item["label"])
+                normalized_label = normalize_spec(item["label"])
                 if all(spec in normalized_label for spec in filters.requested_specs):
                     return item
         return self.lowest_price_sku(product)
@@ -264,8 +318,8 @@ class ProductCatalog:
     def matches_requested_specs(self, product: dict[str, Any], requested_specs: list[str]) -> bool:
         if not requested_specs:
             return True
-        normalized_title = _normalize_spec_text(product.get("title", ""))
-        normalized_skus = [_normalize_spec_text(item["label"]) for item in self.sku_prices(product)]
+        normalized_title = normalize_spec(product.get("title", ""))
+        normalized_skus = [normalize_spec(item["label"]) for item in self.sku_prices(product)]
         return all(
             spec in normalized_title or any(spec in label for label in normalized_skus)
             for spec in requested_specs
@@ -290,7 +344,8 @@ class ProductCatalog:
         if filters.brand and product["brand"] == filters.brand:
             score += 5
 
-        score += self._required_term_score(product, filters)
+        score += self._required_term_score(product, filters, haystack)
+        score += self._requested_spec_score(product, filters)
 
         for term in query_terms:
             term_l = term.lower()
@@ -310,27 +365,59 @@ class ProductCatalog:
 
         if not query_terms and (filters.category or filters.sub_category or filters.max_price):
             score += 1
-        return score, _dedupe(snippets)[:3]
+        return score, dedupe(snippets)[:3]
 
-    def _required_term_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
+    def _required_term_score(self, product: dict[str, Any], filters: SearchFilters, haystack: str) -> float:
         if not filters.required_terms:
             return 0.0
 
         score = 0.0
-        haystack = self._haystack(product)
         title = product["title"]
         description = product.get("rag_knowledge", {}).get("marketing_description", "")
 
-        if "敏感肌" in filters.required_terms:
-            score += self._sensitive_relevance_score(product, haystack) * 4
-
-        if "保湿" in filters.required_terms:
-            if "保湿" in title or "补水" in title:
-                score += 5
-            if any(term in description for term in ["保湿", "补水", "锁水", "滋润"]):
-                score += 4
+        for term in filters.required_terms:
+            if term == "敏感肌":
+                score += self._sensitive_relevance_score(product, haystack) * 4
+            elif term == "保湿":
+                if "保湿" in title or "补水" in title:
+                    score += 5
+                if any(alias in description for alias in REQUIRED_TERM_ALIASES["保湿"]):
+                    score += 4
+            elif self._matches_required_term(product, term, haystack):
+                score += 8  # generic evidence boost, in line with the curated weights above
 
         return score
+
+    def _requested_spec_score(self, product: dict[str, Any], filters: SearchFilters) -> float:
+        """Rank products that match the requested spec (e.g. 50g, 256GB) above those that don't,
+        instead of excluding the rest. Same weight class as the generic required-term boost."""
+        if not filters.requested_specs:
+            return 0.0
+        return 8.0 if self.matches_requested_specs(product, filters.requested_specs) else 0.0
+
+    def unmet_requested_specs(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
+        """Requested specs that none of the hits match — for honest narration."""
+        if not filters.requested_specs:
+            return []
+        return [
+            spec for spec in filters.requested_specs
+            if not any(self.matches_requested_specs(hit.product, [spec]) for hit in hits)
+        ]
+
+    def evidences_required_term(self, product: dict[str, Any], term: str) -> bool:
+        """Does the product clearly evidence a required attribute? Used to rank and to narrate
+        honestly — NOT to exclude (see matches_filters)."""
+        return self._matches_required_term(product, term, self._haystack(product))
+
+    def unmet_required_terms(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
+        """Required attributes that none of the hits clearly evidence — for honest narration."""
+        if not filters.required_terms:
+            return []
+        evidence = [(hit.product, self._haystack(hit.product)) for hit in hits]  # one haystack per hit
+        return [
+            term for term in filters.required_terms
+            if not any(self._matches_required_term(product, term, haystack) for product, haystack in evidence)
+        ]
 
     def _matches_required_term(self, product: dict[str, Any], term: str, haystack: str) -> bool:
         if term == "敏感肌":
@@ -381,18 +468,4 @@ def _query_terms(query: str, filters: SearchFilters) -> list[str]:
     for token in ["油皮", "干皮", "敏感肌", "保湿", "控油", "轻量", "续航", "拍照", "降噪", "防水", "户外"]:
         if token in query:
             terms.append(token)
-    return _dedupe([term for term in terms if term])
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen = set()
-    out = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def _normalize_spec_text(value: str) -> str:
-    return "".join(str(value).lower().split())
+    return dedupe([term for term in terms if term])

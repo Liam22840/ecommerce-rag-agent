@@ -1,10 +1,46 @@
+import json
 from pathlib import Path
 
+import pytest
+
 from server.catalog import ProductCatalog
-from server.intent import IntentParser
+from server.intent import IntentParser, SearchFilters
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
+
+
+def _product(
+    pid: str = "p1",
+    title: str = "测试面霜",
+    brand: str = "甲牌",
+    category: str = "美妆护肤",
+    sub_category: str = "面霜",
+    desc: str = "日常护理",
+    skus=None,
+    faq=None,
+    reviews=None,
+    base_price: float = 100.0,
+) -> dict:
+    return {
+        "product_id": pid,
+        "title": title,
+        "brand": brand,
+        "category": category,
+        "sub_category": sub_category,
+        "base_price": base_price,
+        "image_path": f"{pid}.jpg",
+        "skus": skus or [],
+        "rag_knowledge": {
+            "marketing_description": desc,
+            "official_faq": faq or [],
+            "user_reviews": reviews or [],
+        },
+    }
+
+
+def _catalog(*products: dict) -> ProductCatalog:
+    return ProductCatalog({p["product_id"]: p for p in products})
 
 
 def test_catalog_loads_all_products_and_builds_cards():
@@ -68,11 +104,319 @@ def test_lexical_search_respects_budget_filter():
     assert hits == []
 
 
-def test_sensitive_skin_search_requires_positive_sensitive_fit():
+def test_sensitive_skin_search_ranks_evidenced_first_without_dropping_others():
     catalog = ProductCatalog.load(DATASET_ROOT)
     parser = IntentParser(catalog.categories, catalog.sub_categories, catalog.brands)
     filters = parser.parse("推荐50g适合敏感肌的保湿霜，cheaper is better")
 
     hits = catalog.search_lexical("推荐50g适合敏感肌的保湿霜，cheaper is better", filters, limit=5)
+    ids = [hit.product["product_id"] for hit in hits]
 
-    assert [hit.product["product_id"] for hit in hits] == ["p_beauty_007"]
+    # required_terms no longer hard-filter: the sensitive-evidenced cream ranks first, but the
+    # other 50g cream still surfaces (ranked below) rather than being silently dropped.
+    assert ids[0] == "p_beauty_007"
+    assert "p_beauty_008" in ids
+
+
+def test_requested_spec_ranks_matching_first_without_dropping_others():
+    # Regression: a requested spec (e.g. 16寸) must rank matching products first but NOT drop the
+    # rest, so "能装16寸笔记本的包" returns bags instead of an empty list.
+    fits = _product(
+        "p1", title="大容量背包", category="服饰运动", sub_category="背包",
+        skus=[{"sku_id": "s1", "properties": {"规格": "16寸隔层"}, "price": 699.0}],
+    )
+    plain = _product("p2", title="普通背包", category="服饰运动", sub_category="背包", base_price=599.0)
+    catalog = _catalog(fits, plain)
+    filters = SearchFilters(sub_category="背包", requested_specs=["16寸"])
+
+    # not a hard gate: the non-matching bag is still eligible (would have been False before)
+    assert catalog.matches_filters(fits, filters) is True
+    assert catalog.matches_filters(plain, filters) is True
+
+    hits = catalog.search_lexical("背包", filters, limit=5)
+    ids = [hit.product["product_id"] for hit in hits]
+    assert "p2" in ids                       # not dropped
+    assert ids.index("p1") < ids.index("p2")  # spec-matching ranks above
+
+
+def test_unmet_requested_specs_flags_specs_no_hit_matches():
+    plain = _product("p1", title="普通背包", category="服饰运动", sub_category="背包")
+    catalog = _catalog(plain)
+    filters = SearchFilters(requested_specs=["16寸"])
+    hits = catalog.search_lexical("背包", filters, limit=5)
+    assert catalog.unmet_requested_specs(hits, filters) == ["16寸"]
+
+
+def test_violates_excluded_skips_negated_own_copy():
+    # Regression: "不要油腻" must not flag a cream that advertises being "不油腻" (the deterministic
+    # fallback for the LLM exclusion judge).
+    catalog = _catalog(_product("p1", title="清爽面霜", desc="质地清爽不油腻不闷痘"))
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is False
+
+
+def test_violates_excluded_flags_positive_claim():
+    catalog = _catalog(_product("p1", title="厚重面霜", desc="质地油腻厚重滋养"))
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is True
+
+
+def test_violates_excluded_ignores_third_party_reviews():
+    catalog = _catalog(
+        _product("p1", title="清爽面霜", desc="清爽水润", reviews=[{"rating": 3, "content": "我觉得有点油腻"}])
+    )
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is False
+
+
+def test_matches_filters_no_longer_gates_excluded_terms():
+    # excluded_terms moved out of the retrieval gate (now an LLM judge + violates_excluded fallback
+    # over the shortlist), so matches_filters ignores it; excluded_brands stays a hard gate.
+    catalog = _catalog(_product("p1", desc="含有酒精成分"))
+    assert catalog.matches_filters(catalog.require("p1"), SearchFilters(excluded_terms=["酒精"])) is True
+
+
+# --- construction / loading ----------------------------------------------------
+
+def test_empty_catalog_is_rejected():
+    with pytest.raises(ValueError, match="empty"):
+        ProductCatalog({})
+
+
+def test_brand_aliases_canonicalised_at_load():
+    # Same company entered under two names ("Nike"/"耐克") is merged at load so a brand filter on
+    # one name finds the products stored under the other (otherwise "Nike的跑鞋" returns nothing).
+    catalog = _catalog(
+        _product("p1", brand="Nike", sub_category="跑步鞋"),
+        _product("p2", brand="耐克", sub_category="篮球鞋"),
+    )
+    assert "Nike" not in catalog.brands
+    assert catalog.brands == {"耐克"}
+    assert catalog.get("p1")["brand"] == "耐克"
+
+
+def test_get_and_require_behaviour():
+    catalog = _catalog(_product("p1"))
+    assert catalog.get("p1")["product_id"] == "p1"
+    assert catalog.get("missing") is None
+    with pytest.raises(KeyError):
+        catalog.require("missing")
+
+
+def test_load_raises_on_invalid_json(tmp_path):
+    data_dir = tmp_path / "1_cat" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "bad.json").write_text("{not valid", encoding="utf-8")
+    with pytest.raises(ValueError, match="failed to load"):
+        ProductCatalog.load(tmp_path)
+
+
+def test_load_raises_when_product_id_missing(tmp_path):
+    data_dir = tmp_path / "1_cat" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "p.json").write_text(json.dumps({"title": "x"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing product_id"):
+        ProductCatalog.load(tmp_path)
+
+
+# --- price / sku helpers --------------------------------------------------------
+
+def test_lowest_price_falls_back_to_base_price_without_skus():
+    catalog = _catalog(_product(base_price=42.0))
+    product = catalog.require("p1")
+    assert catalog.lowest_price(product) == 42.0
+
+
+def test_lowest_price_uses_min_numeric_sku_price():
+    skus = [
+        {"sku_id": "s1", "properties": {"规格": "大"}, "price": 200.0},
+        {"sku_id": "s2", "properties": {"规格": "小"}, "price": 120.0},
+        {"sku_id": "s3", "properties": {"规格": "坏"}, "price": "n/a"},  # non-numeric ignored
+    ]
+    catalog = _catalog(_product(skus=skus))
+    product = catalog.require("p1")
+    assert catalog.lowest_price(product) == 120.0
+
+
+def test_sku_prices_defaults_to_base_price_when_no_skus():
+    catalog = _catalog(_product(base_price=80.0))
+    prices = catalog.sku_prices(catalog.require("p1"))
+    assert prices == [{"sku_id": None, "label": "默认规格", "price": 80.0}]
+
+
+def test_price_label_single_sku_shows_label():
+    skus = [{"sku_id": "s1", "properties": {"规格": "标准"}, "price": 99.0}]
+    catalog = _catalog(_product(skus=skus))
+    assert catalog.price_label(catalog.require("p1")) == "99元（标准）"
+
+
+def test_price_label_uniform_multi_sku_lists_labels():
+    skus = [
+        {"sku_id": "s1", "properties": {"色": "红"}, "price": 50.0},
+        {"sku_id": "s2", "properties": {"色": "蓝"}, "price": 50.0},
+    ]
+    catalog = _catalog(_product(skus=skus))
+    label = catalog.price_label(catalog.require("p1"))
+    assert label.startswith("50元（")
+    assert "红" in label and "蓝" in label
+
+
+def test_price_label_varied_multi_sku_shows_from_price():
+    skus = [
+        {"sku_id": "s1", "properties": {"规格": "小"}, "price": 50.0},
+        {"sku_id": "s2", "properties": {"规格": "大"}, "price": 90.0},
+    ]
+    catalog = _catalog(_product(skus=skus))
+    assert catalog.price_label(catalog.require("p1")) == "50元起（小）"
+
+
+def test_price_label_with_requested_spec_shows_selected_sku():
+    skus = [
+        {"sku_id": "s1", "properties": {"规格": "15g"}, "price": 50.0},
+        {"sku_id": "s2", "properties": {"规格": "50g"}, "price": 90.0},
+    ]
+    catalog = _catalog(_product(skus=skus))
+    filters = SearchFilters(requested_specs=["50g"])
+    assert catalog.price_label(catalog.require("p1"), filters) == "90元（50g）"
+
+
+def test_price_summary_joins_all_skus():
+    skus = [
+        {"sku_id": "s1", "properties": {"规格": "小"}, "price": 50.0},
+        {"sku_id": "s2", "properties": {"规格": "大"}, "price": 90.0},
+    ]
+    catalog = _catalog(_product(skus=skus))
+    assert catalog.price_summary(catalog.require("p1")) == "小 50元；大 90元"
+
+
+def test_selected_price_sku_matches_requested_spec():
+    skus = [
+        {"sku_id": "s1", "properties": {"规格": "15g"}, "price": 50.0},
+        {"sku_id": "s2", "properties": {"规格": "50g"}, "price": 90.0},
+    ]
+    catalog = _catalog(_product(skus=skus))
+    selected = catalog.selected_price_sku(catalog.require("p1"), SearchFilters(requested_specs=["50g"]))
+    assert selected["label"] == "50g"
+    # No matching spec falls back to the cheapest SKU.
+    fallback = catalog.selected_price_sku(catalog.require("p1"), SearchFilters(requested_specs=["999g"]))
+    assert fallback["label"] == "15g"
+
+
+# --- filtering ------------------------------------------------------------------
+
+def test_matches_filters_min_price_excludes_cheaper():
+    catalog = _catalog(_product(base_price=100.0))
+    product = catalog.require("p1")
+    assert catalog.matches_filters(product, SearchFilters(min_price=150.0)) is False
+    assert catalog.matches_filters(product, SearchFilters(min_price=50.0)) is True
+
+
+def test_matches_filters_brand_and_excluded_brand():
+    catalog = _catalog(_product(brand="甲牌"))
+    product = catalog.require("p1")
+    assert catalog.matches_filters(product, SearchFilters(brand="乙牌")) is False
+    assert catalog.matches_filters(product, SearchFilters(excluded_brands=["甲牌"])) is False
+    assert catalog.matches_filters(product, SearchFilters(brand="甲牌")) is True
+
+
+def test_violates_excluded_matches_positive_and_skips_absent():
+    catalog = _catalog(_product(desc="含有酒精成分"))
+    product = catalog.require("p1")
+    assert catalog.violates_excluded(product, ["酒精"]) is True
+    assert catalog.violates_excluded(product, ["香精"]) is False
+
+
+def test_violates_excluded_ignores_empty_terms():
+    catalog = _catalog(_product(desc="含有酒精成分"))
+    product = catalog.require("p1")
+    # Empty/blank terms in the list are skipped rather than matching everything.
+    assert catalog.violates_excluded(product, ["", "酒精"]) is True
+    assert catalog.violates_excluded(product, [""]) is False
+
+
+def test_matches_filters_category_and_subcategory():
+    catalog = _catalog(_product(category="美妆护肤", sub_category="面霜"))
+    product = catalog.require("p1")
+    assert catalog.matches_filters(product, SearchFilters(category="数码电子")) is False
+    assert catalog.matches_filters(product, SearchFilters(sub_category="洁面")) is False
+    assert catalog.matches_filters(product, SearchFilters(category="美妆护肤", sub_category="面霜")) is True
+
+
+# --- ratings & sensitive-skin scoring ------------------------------------------
+
+def test_avg_rating_ignores_non_numeric_ratings():
+    product = {"rag_knowledge": {"user_reviews": [{"rating": 5}, {"rating": "bad"}, {"rating": 3}]}}
+    assert ProductCatalog.avg_rating(product) == 4.0
+
+
+def test_required_terms_no_longer_hard_filter():
+    # A product that doesn't evidence the attribute is NOT dropped — required_terms rank, not gate.
+    catalog = _catalog(_product(title="普通面霜", desc="温和"))
+    product = catalog.require("p1")
+    assert catalog.matches_filters(product, SearchFilters(required_terms=["敏感肌"])) is True
+
+
+def test_sensitive_skin_strong_signal_is_evidenced():
+    catalog = _catalog(_product(desc="专为敏感肌打造，温和不刺激"))
+    product = catalog.require("p1")
+    assert catalog.evidences_required_term(product, "敏感肌") is True
+
+
+def test_sensitive_skin_weak_only_signal_is_not_evidenced():
+    # "敏感肌需先" is a weak/negative cue with no strong signal -> not evidenced (ranks low, not dropped).
+    catalog = _catalog(_product(title="普通面霜", desc="敏感肌需先做耐受测试"))
+    product = catalog.require("p1")
+    assert catalog.evidences_required_term(product, "敏感肌") is False
+
+
+def test_required_term_moisturizing_alias_is_evidenced():
+    catalog = _catalog(_product(title="补水面霜", desc="深层补水锁水"))
+    product = catalog.require("p1")
+    assert catalog.evidences_required_term(product, "保湿") is True
+
+
+def test_required_term_generic_evidence_boosts_score():
+    # A non-curated required term (not 敏感肌/保湿) still ranks a product that evidences it above one
+    # that doesn't, via the generic alias-match boost.
+    catalog = _catalog(
+        _product(pid="p1", title="清爽控油面霜", desc="持久控油不泛光"),
+        _product(pid="p2", title="滋润面霜", desc="温和滋润"),
+    )
+    hits = catalog.search_lexical("面霜", SearchFilters(required_terms=["控油"]), limit=5)
+    assert hits[0].product["product_id"] == "p1"
+
+
+def test_brand_filter_and_query_term_in_brand_score():
+    # Brand-filter match (+5) and a query term that hits the brand name (not the title) both score.
+    catalog = _catalog(
+        _product(pid="p1", title="基础面霜", brand="甲牌"),
+        _product(pid="p2", title="基础面霜", brand="乙牌"),
+    )
+    hits = catalog.search_lexical("甲牌", SearchFilters(brand="甲牌"), limit=5)
+    assert hits[0].product["product_id"] == "p1"
+
+
+def test_sku_prices_skips_non_numeric_priced_skus():
+    catalog = _catalog(_product(skus=[
+        {"sku_id": "s1", "price": None, "properties": {"规格": "坏的"}},
+        {"sku_id": "s2", "price": 60, "properties": {"规格": "好的"}},
+    ]))
+    prices = catalog.sku_prices(catalog.require("p1"))
+    assert [item["price"] for item in prices] == [60.0]
+
+
+def test_matches_requested_specs_with_no_specs_is_true():
+    catalog = _catalog(_product())
+    assert catalog.matches_requested_specs(catalog.require("p1"), []) is True
+
+
+def test_product_facts_is_slim_for_a_compact_answer_prompt():
+    faq = [{"question": f"q{i}", "answer": f"a{i}"} for i in range(5)]
+    reviews = [{"rating": 5, "content": f"c{i}"} for i in range(5)]
+    long_desc = "保湿" * 200
+    catalog = _catalog(_product(desc=long_desc, faq=faq, reviews=reviews))
+    facts = catalog.product_facts(catalog.require("p1"))
+    # Trimmed to a couple of short snippets each, with the static price instruction dropped.
+    assert len(facts["faq"]) == 1
+    assert len(facts["reviews"]) == 2
+    assert facts["reviews"][0]["rating"] == 5  # rating stays, the one review signal we keep
+    assert "price_instruction" not in facts
+    assert len(facts["description"]) <= 160  # long marketing copy is truncated
+    assert facts["sku_count"] == 0

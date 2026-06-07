@@ -5,7 +5,7 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 
 ## What this repo contains (so far)
 
-- `ecommerce_agent_dataset/`: 100 products across 4 categories, with text fields and one image per product.
+- `ecommerce_agent_dataset/`: 100+ products across 4 categories, with text fields and one image per product.
 - `ingestion/`: Python package with chunk extraction, the Doubao multimodal embedding client, and the Milvus Lite store.
 - `ingest.py`: CLI to run the full pipeline.
 

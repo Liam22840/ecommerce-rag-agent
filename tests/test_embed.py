@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from ingestion.cache import EmbeddingCache
 from ingestion.chunk import Chunk
@@ -92,4 +93,40 @@ def test_hard_fails_on_4xx(tmp_path: Path, mocker):
     embedder = DoubaoEmbedder(api_key="fake", cache=cache, retry_sleep=0.0)
 
     with pytest.raises(RuntimeError, match="401"):
+        embedder.embed_chunks([_make_chunk(text="t")])
+
+
+def test_embed_text_calls_api_then_serves_from_cache(tmp_path: Path, mocker):
+    mock_post = mocker.patch("ingestion.embed.requests.post",
+                             return_value=_ok_response([0.4, 0.5]))
+    cache = EmbeddingCache(tmp_path / "c.jsonl")
+    embedder = DoubaoEmbedder(api_key="fake", cache=cache)
+
+    assert embedder.embed_text("query") == [0.4, 0.5]
+    assert mock_post.call_count == 1
+    sent = mock_post.call_args.kwargs["json"]["input"][0]
+    assert sent == {"type": "text", "text": "query"}
+
+    # Repeat query is served from cache, no extra API call.
+    assert embedder.embed_text("query") == [0.4, 0.5]
+    assert mock_post.call_count == 1
+
+
+def test_retries_on_network_exception_then_succeeds(tmp_path: Path, mocker):
+    ok = _ok_response([0.7])
+    mocker.patch("ingestion.embed.requests.post",
+                 side_effect=[requests.ConnectionError("boom"), ok])
+    cache = EmbeddingCache(tmp_path / "c.jsonl")
+    embedder = DoubaoEmbedder(api_key="fake", cache=cache, retry_sleep=0.0)
+
+    assert embedder.embed_chunks([_make_chunk(text="t")]) == [[0.7]]
+
+
+def test_raises_after_exhausting_attempts_on_network_errors(tmp_path: Path, mocker):
+    mocker.patch("ingestion.embed.requests.post",
+                 side_effect=requests.ConnectionError("down"))
+    cache = EmbeddingCache(tmp_path / "c.jsonl")
+    embedder = DoubaoEmbedder(api_key="fake", cache=cache, retry_sleep=0.0, max_attempts=3)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
         embedder.embed_chunks([_make_chunk(text="t")])

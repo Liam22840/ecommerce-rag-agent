@@ -3,7 +3,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.app import create_app
+from server.assistant import ShoppingAssistant
+from server.catalog import ProductCatalog
 from server.config import Settings
+from server.retrieval import ProductRetriever
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -16,8 +19,64 @@ def _client() -> TestClient:
         embedding_api_key=None,
         enable_vector_search=False,
         enable_llm=False,
+        enable_query_cache=False,
     )
     return TestClient(create_app(settings=settings))
+
+
+def test_health_endpoint():
+    resp = _client().get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_chat_endpoint_rejects_blank_message():
+    resp = _client().post("/api/chat", json={"message": "   "})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "message cannot be empty"
+
+
+def test_stream_endpoint_rejects_blank_message():
+    resp = _client().post("/api/chat/stream", json={"message": "   "})
+    assert resp.status_code == 400
+
+
+def test_product_detail_returns_404_for_unknown_id():
+    resp = _client().get("/api/products/does_not_exist")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "product not found"
+
+
+def test_chat_carries_search_context_across_turns():
+    client = _client()
+    session_id = "carry-1"
+
+    first = client.post("/api/chat", json={"session_id": session_id, "message": "三百以内的面霜"})
+    assert first.status_code == 200
+    assert first.json()["intent"]["sub_category"] == "面霜"
+
+    # "便宜点的" names no category; the deterministic carry-over keeps the face-cream context
+    # (this runs with enable_llm=False, so it exercises the degraded-mode backstop).
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "便宜点的"})
+    assert second.status_code == 200
+    body = second.json()
+    assert body["intent"]["sub_category"] == "面霜"
+    assert body["intent"]["prefer_low_price"] is True
+    assert body["products"]
+    assert all(product["sub_category"] == "面霜" for product in body["products"])
+
+
+def test_cheaper_refinement_says_nothing_cheaper_instead_of_relisting():
+    client = _client()
+    session_id = "cheaper-1"
+
+    client.post("/api/chat", json={"session_id": session_id, "message": "三百以内的面霜"})
+    # "便宜一点的" carries 面霜 but the shown creams are already the cheapest -> honest answer,
+    # not a silent re-list of the same products as if they were new.
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "便宜一点的"}).json()
+    assert second["intent"]["sub_category"] == "面霜"
+    assert "没有更便宜" in second["answer"]
+    assert all(product["sub_category"] == "面霜" for product in second["products"])
 
 
 def test_chat_endpoint_returns_grounded_product_cards():
@@ -79,6 +138,61 @@ def test_stream_endpoint_uses_sse_events():
     assert '"items"' in body
 
 
+def test_stream_emits_lead_in_first_then_cards_before_answer():
+    client = _client()
+
+    with client.stream("POST", "/api/chat/stream", json={"message": "推荐一款适合油皮的洗面奶"}) as resp:
+        body = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    # The lead-in is the very first frame, before intent + retrieval run — the <1s 首 Token.
+    # It's tailored by the rule parser: "洗面奶" maps to the 洁面 sub-category, so the opener names it.
+    assert body.startswith("event: token")
+    first_frame = body.split("\n\n")[0]
+    assert "好的" in first_frame and "洁面" in first_frame
+    # Cards-first: products arrive before the grounded answer prose ("商品库" is in the answer).
+    assert body.index("event: products") < body.index("商品库")
+    # done is still the final frame.
+    assert body.rfind("event: done") > body.rfind("event: products")
+
+
+def test_stream_lead_in_is_neutral_for_chitchat_and_compare_for_explicit_comparison():
+    client = _client()
+
+    with client.stream("POST", "/api/chat/stream", json={"message": "你好呀"}) as resp:
+        chat = "".join(resp.iter_text())
+    # No product type and not a comparison -> bare neutral ack, never mis-tailored or greeting.
+    first = chat.split("\n\n")[0]
+    assert "好的" in first
+    assert "帮您找" not in first and "对比" not in first
+
+    with client.stream(
+        "POST", "/api/chat/stream",
+        json={"message": "哪个好", "compare_product_ids": ["p_beauty_007", "p_beauty_012"]},
+    ) as resp:
+        cmp = "".join(resp.iter_text())
+    assert "对比" in cmp.split("\n\n")[0]
+
+
+def test_sse_stream_degrades_gracefully_when_prepare_fails():
+    # The lead-in is flushed before prepare() runs inside the generator, so a prepare() failure
+    # must still close the stream cleanly (fallback token + done) rather than hang the client.
+    from server.app import _sse_stream
+    from server.schemas import ChatRequest
+
+    class _BoomAssistant:
+        def lead_in(self, *a, **k):
+            return "好的～\n"
+
+        def prepare(self, *a, **k):
+            raise RuntimeError("boom")
+
+    frames = "".join(_sse_stream(_BoomAssistant(), "随便", ChatRequest(message="随便"), None, None))
+    assert frames.startswith("event: token")  # lead-in still went out first
+    assert "出了一点问题" in frames            # graceful fallback message
+    assert "event: done" in frames            # stream closed, no hang
+
+
 def test_stream_endpoint_accepts_ios_payload_and_legacy_path():
     client = _client()
 
@@ -137,9 +251,12 @@ def test_chat_endpoint_uses_requested_sku_price_for_specs():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert [product["product_id"] for product in body["products"]] == ["p_beauty_007"]
-    assert body["products"][0]["price"] == 268.0
-    assert body["products"][0]["price_label"] == "268元（50g 标准装）"
+    by_id = {product["product_id"]: product for product in body["products"]}
+    # The sensitive 50g cream still surfaces; its price reflects the requested 50g SKU, not the
+    # cheapest体验装 (required_terms no longer hard-filter, so other 50g creams may appear too).
+    assert "p_beauty_007" in by_id
+    assert by_id["p_beauty_007"]["price"] == 268.0
+    assert by_id["p_beauty_007"]["price_label"] == "268元（50g 标准装）"
     assert "价格：268元（50g 标准装）" in body["answer"]
     assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
 
@@ -388,3 +505,146 @@ def test_stream_endpoint_emits_structured_comparison_event():
     assert '"winner_product_id"' in body
     assert '"price_summary"' in body
     assert "event: done" in body
+
+
+# --- comparison ordinal resolution against the unified recency memory ----------
+
+def test_comparison_前两个_resolves_to_last_results_first_two():
+    client = _client()
+    session_id = "cmp-front2"
+
+    first = client.post("/api/chat", json={"session_id": session_id, "message": "推荐几款跑步鞋"}).json()
+    shoes = [product["product_id"] for product in first["products"]]
+    assert len(shoes) >= 2
+
+    second = client.post("/api/chat", json={"session_id": session_id, "message": "前两个哪个更好"}).json()
+    compared = [product["product_id"] for product in second["products"]]
+    assert compared == shoes[:2]
+
+
+def test_comparison_ordinal_refers_to_the_most_recent_search():
+    client = _client()
+    session_id = "cmp-recency"
+
+    # Two searches in different categories; the ordinal must point at the *latest* result.
+    client.post("/api/chat", json={"session_id": session_id, "message": "推荐面霜"})
+    shoes = client.post("/api/chat", json={"session_id": session_id, "message": "推荐几款跑步鞋"}).json()
+    shoe_ids = [product["product_id"] for product in shoes["products"]]
+    assert len(shoe_ids) >= 2
+
+    compared = client.post(
+        "/api/chat", json={"session_id": session_id, "message": "第一个和第二个哪个更好"}
+    ).json()
+    compared_ids = [product["product_id"] for product in compared["products"]]
+    assert compared_ids == shoe_ids[:2]  # the shoes (latest), not the earlier creams
+    assert all(product["category"] == "服饰运动" for product in compared["products"])
+
+
+def test_comparison_without_enough_context_asks_for_clarification():
+    client = _client()
+    # A comparison intent with nothing shown yet -> clarification, no products.
+    body = client.post(
+        "/api/chat", json={"session_id": "cmp-empty", "message": "第一个和第二个哪个更好"}
+    ).json()
+    assert body["products"] == []
+    assert body["comparison"] is not None
+
+
+class _CountingAssistant:
+    """Wraps a real assistant and counts the expensive entry points, so a test can prove a
+    cache hit skipped recompute while still delegating so non-cached turns work normally."""
+
+    def __init__(self, inner: ShoppingAssistant):
+        self._inner = inner
+        self.answer_calls = 0
+        self.prepare_calls = 0
+
+    @property
+    def catalog(self):
+        return self._inner.catalog
+
+    def answer(self, *args, **kwargs):
+        self.answer_calls += 1
+        return self._inner.answer(*args, **kwargs)
+
+    def prepare(self, *args, **kwargs):
+        self.prepare_calls += 1
+        return self._inner.prepare(*args, **kwargs)
+
+    def stream_answer(self, prepared):
+        return self._inner.stream_answer(prepared)
+
+    def lead_in(self, *args, **kwargs):
+        return self._inner.lead_in(*args, **kwargs)
+
+
+def _cached_client(tmp_path):
+    settings = Settings(
+        dataset_root=DATASET_ROOT,
+        chat_api_key=None,
+        embedding_api_key=None,
+        enable_vector_search=False,
+        enable_llm=False,
+        enable_query_cache=True,
+        query_cache_path=tmp_path / "query_cache.jsonl",
+    )
+    catalog = ProductCatalog.load(settings.dataset_root)
+    retriever = ProductRetriever(catalog, settings)
+    inner = ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=None, intent_llm=None, settings=settings
+    )
+    counting = _CountingAssistant(inner)
+    return TestClient(create_app(settings=settings, assistant=counting)), counting
+
+
+def test_identical_query_is_served_from_cache(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    body = {"message": "三百以内的面霜"}
+    first = client.post("/api/chat", json=body).json()
+    assert counting.answer_calls == 1
+    second = client.post("/api/chat", json=body).json()
+    assert counting.answer_calls == 1  # served from cache, no recompute
+    assert second == first
+
+
+def test_normalised_repeat_hits_the_same_entry(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # trailing punctuation collapses to the same normalised key
+    client.post("/api/chat", json={"message": "三百以内的面霜。"})
+    assert counting.answer_calls == 1
+
+
+def test_context_turn_bypasses_cache(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # a turn carrying recent-product context is not cacheable -> recompute
+    client.post(
+        "/api/chat",
+        json={"message": "三百以内的面霜", "client_context": {"recent_product_ids": ["p_digital_001"]}},
+    )
+    assert counting.answer_calls == 2
+
+
+def test_stream_replays_cached_answer_without_recompute(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    body = {"message": "三百以内的面霜"}
+    client.post("/api/chat", json=body)  # populate via the non-stream endpoint
+    assert counting.prepare_calls == 0
+    with client.stream("POST", "/api/chat/stream", json=body) as resp:
+        stream = "".join(resp.iter_text())
+    assert counting.prepare_calls == 0  # cache hit -> prepare never ran
+    assert "event: token" in stream
+    assert "event: done" in stream
+
+
+def test_cache_persists_across_restart(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # a fresh app over the same cache file should still hit without recompute
+    client2, counting2 = _cached_client(tmp_path)
+    client2.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting2.answer_calls == 0

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from server.textutil import dedupe_ids
+
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
@@ -21,7 +23,7 @@ class ChatRequest(BaseModel):
 
     @property
     def effective_compare_product_ids(self) -> list[str]:
-        return _dedupe_ids(self.compare_product_ids + self.client_context.compare_product_ids)
+        return dedupe_ids(self.compare_product_ids + self.client_context.compare_product_ids)
 
 
 class ClientContext(BaseModel):
@@ -85,14 +87,3 @@ class ChatResponse(BaseModel):
     retrieval_source: Literal["vector", "lexical", "hybrid", "none"]
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
-
-
-def _dedupe_ids(product_ids: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for product_id in product_ids:
-        product_id = str(product_id).strip()
-        if product_id and product_id not in seen:
-            seen.add(product_id)
-            result.append(product_id)
-    return result
