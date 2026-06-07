@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from ingestion.cache import EmbeddingCache
@@ -32,7 +34,40 @@ class ProductRetriever:
         self._embedder: DoubaoEmbedder | None = None
         self._store = None
         self._startup_warning: str | None = None
+        # Pipeline parallelism for the cold embed: prewarm_query() embeds the query on a worker
+        # while the intent LLM runs, and retrieval awaits that same future instead of embedding
+        # again. A plain background thread isn't enough — when the cold embed outlasts the intent
+        # call, retrieval would miss the not-yet-written cache and embed a second time.
+        self._embed_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embed")
+        self._pending: dict[str, Future] = {}
+        self._pending_lock = threading.Lock()
         self._init_vector_search()
+
+    def prewarm_query(self, text: str) -> None:
+        """Start embedding `text` on a worker so it overlaps the intent LLM call; retrieval later
+        awaits the same future (see _embed_query) instead of re-embedding. No-op when vector
+        search is off. Best-effort: a failed embed surfaces when its future is awaited and is
+        handled there, never here."""
+        embedder = self._embedder
+        if not (self._vector_ready and embedder is not None) or not text:
+            return
+        with self._pending_lock:
+            # Drop finished futures: their vector is already in the embed cache, so a later
+            # lookup hits the cache directly. This bounds the map to in-flight work only.
+            self._pending = {k: f for k, f in self._pending.items() if not f.done()}
+            if text not in self._pending:
+                self._pending[text] = self._embed_pool.submit(embedder.embed_text, text)
+
+    def _embed_query(self, text: str) -> list[float]:
+        """Embed the retrieval query, reusing an in-flight pre-warm if one exists so a query is
+        never embedded twice. Falls back to a direct embed (which hits the warm cache when a
+        completed pre-warm already stored the vector)."""
+        with self._pending_lock:
+            future = self._pending.pop(text, None)
+        if future is not None:
+            return future.result()
+        assert self._embedder is not None  # guarded by the caller (_vector_candidates)
+        return self._embedder.embed_text(text)
 
     def retrieve(self, query: str, filters: SearchFilters, limit: int) -> RetrievalResult:
         warnings: list[str] = []
@@ -68,7 +103,7 @@ class ProductRetriever:
         if not (self._vector_ready and self._embedder is not None and self._store is not None):
             return [], False
         try:
-            vector = self._embedder.embed_text(query)
+            vector = self._embed_query(query)
             raw_hits = self._store.search(vector, k=self._settings.vector_search_k)
         except Exception as exc:  # noqa: BLE001 - vector retrieval must degrade, not crash demo
             warnings.append(f"vector search unavailable: {exc}")

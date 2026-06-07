@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from server.catalog import CatalogHit, ProductCatalog
@@ -242,3 +243,60 @@ def test_rrf_fusion_combines_by_rank_not_raw_magnitude():
 def test_retrieval_result_dataclass_defaults_warnings():
     result = RetrievalResult(hits=[], source="none")
     assert result.warnings == []
+
+
+# --- speculative pre-warm -------------------------------------------------------
+
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_prewarm_query_is_noop_without_vector_search():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())  # vector disabled, no embedder
+    # Must not raise and must not need an embedder.
+    retriever.prewarm_query("推荐一款洗面奶")
+
+
+def test_prewarm_query_embeds_in_background_when_vector_ready():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    embedder = FakeEmbedder()
+    retriever = _retriever_with_vector(catalog, raw_hits=[], embedder=embedder)
+
+    retriever.prewarm_query("推荐一款洗面奶")
+
+    # The daemon thread embeds the raw query so retrieval's later embed_text is a cache hit.
+    assert _wait_until(lambda: embedder.calls == ["推荐一款洗面奶"])
+
+
+def test_prewarm_query_ignores_embed_failure():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    embedder = FakeEmbedder(error=RuntimeError("embed down"))
+    retriever = _retriever_with_vector(catalog, raw_hits=[], embedder=embedder)
+
+    retriever.prewarm_query("推荐一款洗面奶")  # the embed runs on a worker; the failure stays in the future
+
+    assert _wait_until(lambda: embedder.calls == ["推荐一款洗面奶"])
+    # When retrieval awaits the failed pre-warm it degrades to lexical, never crashes.
+    result = retriever.retrieve("推荐一款洗面奶", _filters(catalog, "推荐一款洗面奶"), limit=3)
+    assert result.source == "lexical"
+
+
+def test_prewarm_then_retrieve_embeds_the_query_only_once():
+    # The whole point of the fix: retrieval awaits the in-flight pre-warm instead of embedding
+    # the query a second time (which the cold-embed-slower-than-intent case used to trigger).
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    raw = [{"product_id": "p_beauty_011", "score": 0.5, "text": "片段"}]
+    embedder = FakeEmbedder()
+    retriever = _retriever_with_vector(catalog, raw_hits=raw, embedder=embedder)
+
+    query = "推荐一款适合油皮的洗面奶"
+    retriever.prewarm_query(query)
+    retriever.retrieve(query, _filters(catalog, query), limit=3)
+
+    assert embedder.calls.count(query) == 1
