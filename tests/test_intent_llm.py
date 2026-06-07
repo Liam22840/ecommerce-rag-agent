@@ -291,7 +291,7 @@ def test_order_hits_by_rating_desc():
 
 def _app(intent_response: str) -> TestClient:
     settings = Settings(dataset_root=DATASET_ROOT, chat_api_key=None, embedding_api_key=None,
-                        enable_vector_search=False, enable_llm=False)
+                        enable_vector_search=False, enable_llm=False, enable_query_cache=False)
     catalog = ProductCatalog.load(DATASET_ROOT)
     retriever = ProductRetriever(catalog, settings)
     assistant = ShoppingAssistant(

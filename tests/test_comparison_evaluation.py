@@ -77,6 +77,7 @@ def _client(llm: FakeDimensionLLM) -> TestClient:
         embedding_api_key=None,
         enable_vector_search=False,
         enable_llm=True,
+        enable_query_cache=False,
     )
     catalog = ProductCatalog.load(DATASET_ROOT)
     retriever = ProductRetriever(catalog, settings)

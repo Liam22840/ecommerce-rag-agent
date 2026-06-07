@@ -3,7 +3,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.app import create_app
+from server.assistant import ShoppingAssistant
+from server.catalog import ProductCatalog
 from server.config import Settings
+from server.retrieval import ProductRetriever
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -16,6 +19,7 @@ def _client() -> TestClient:
         embedding_api_key=None,
         enable_vector_search=False,
         enable_llm=False,
+        enable_query_cache=False,
     )
     return TestClient(create_app(settings=settings))
 
@@ -489,3 +493,100 @@ def test_comparison_without_enough_context_asks_for_clarification():
     ).json()
     assert body["products"] == []
     assert body["comparison"] is not None
+
+
+class _CountingAssistant:
+    """Wraps a real assistant and counts the expensive entry points, so a test can prove a
+    cache hit skipped recompute while still delegating so non-cached turns work normally."""
+
+    def __init__(self, inner: ShoppingAssistant):
+        self._inner = inner
+        self.answer_calls = 0
+        self.prepare_calls = 0
+
+    @property
+    def catalog(self):
+        return self._inner.catalog
+
+    def answer(self, *args, **kwargs):
+        self.answer_calls += 1
+        return self._inner.answer(*args, **kwargs)
+
+    def prepare(self, *args, **kwargs):
+        self.prepare_calls += 1
+        return self._inner.prepare(*args, **kwargs)
+
+    def stream_answer(self, prepared):
+        return self._inner.stream_answer(prepared)
+
+
+def _cached_client(tmp_path):
+    settings = Settings(
+        dataset_root=DATASET_ROOT,
+        chat_api_key=None,
+        embedding_api_key=None,
+        enable_vector_search=False,
+        enable_llm=False,
+        enable_query_cache=True,
+        query_cache_path=tmp_path / "query_cache.jsonl",
+    )
+    catalog = ProductCatalog.load(settings.dataset_root)
+    retriever = ProductRetriever(catalog, settings)
+    inner = ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=None, intent_llm=None, settings=settings
+    )
+    counting = _CountingAssistant(inner)
+    return TestClient(create_app(settings=settings, assistant=counting)), counting
+
+
+def test_identical_query_is_served_from_cache(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    body = {"message": "三百以内的面霜"}
+    first = client.post("/api/chat", json=body).json()
+    assert counting.answer_calls == 1
+    second = client.post("/api/chat", json=body).json()
+    assert counting.answer_calls == 1  # served from cache, no recompute
+    assert second == first
+
+
+def test_normalised_repeat_hits_the_same_entry(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # trailing punctuation collapses to the same normalised key
+    client.post("/api/chat", json={"message": "三百以内的面霜。"})
+    assert counting.answer_calls == 1
+
+
+def test_context_turn_bypasses_cache(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # a turn carrying recent-product context is not cacheable -> recompute
+    client.post(
+        "/api/chat",
+        json={"message": "三百以内的面霜", "client_context": {"recent_product_ids": ["p_digital_001"]}},
+    )
+    assert counting.answer_calls == 2
+
+
+def test_stream_replays_cached_answer_without_recompute(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    body = {"message": "三百以内的面霜"}
+    client.post("/api/chat", json=body)  # populate via the non-stream endpoint
+    assert counting.prepare_calls == 0
+    with client.stream("POST", "/api/chat/stream", json=body) as resp:
+        stream = "".join(resp.iter_text())
+    assert counting.prepare_calls == 0  # cache hit -> prepare never ran
+    assert "event: token" in stream
+    assert "event: done" in stream
+
+
+def test_cache_persists_across_restart(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting.answer_calls == 1
+    # a fresh app over the same cache file should still hit without recompute
+    client2, counting2 = _cached_client(tmp_path)
+    client2.post("/api/chat", json={"message": "三百以内的面霜"})
+    assert counting2.answer_calls == 0

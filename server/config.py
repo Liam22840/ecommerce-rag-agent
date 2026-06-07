@@ -19,6 +19,7 @@ class Settings:
     data_dir: Path = PROJECT_ROOT / "data"
     milvus_path: Path = PROJECT_ROOT / "data" / "milvus.db"
     embedding_cache_path: Path = PROJECT_ROOT / "data" / "embedding_cache.jsonl"
+    query_cache_path: Path = PROJECT_ROOT / "data" / "query_cache.jsonl"
     embedding_dim: int = 2048
     chat_api_key: str | None = None
     embedding_api_key: str | None = None
@@ -49,6 +50,10 @@ class Settings:
     enable_vector_search: bool = True
     enable_llm: bool = True
     enable_llm_intent: bool = True
+    # Hot-query cache: store answers to context-free product questions so an identical
+    # repeat returns instantly without re-running retrieval or the LLM.
+    enable_query_cache: bool = True
+    query_cache_max_entries: int = 500
 
     @classmethod
     def load(cls) -> "Settings":
@@ -81,6 +86,10 @@ class Settings:
             enable_vector_search=_bool_env("ENABLE_VECTOR_SEARCH", True),
             enable_llm=_bool_env("ENABLE_LLM", True),
             enable_llm_intent=_bool_env("ENABLE_LLM_INTENT", True),
+            enable_query_cache=_bool_env("ENABLE_QUERY_CACHE", True),
+            query_cache_max_entries=int(
+                os.environ.get("RAG_QUERY_CACHE_MAX", cls.query_cache_max_entries)
+            ),
         )
 
 
