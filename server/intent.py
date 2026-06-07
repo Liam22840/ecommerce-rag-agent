@@ -15,6 +15,13 @@ from server.prompts import intent_messages
 from server.textutil import dedupe, json_object, normalize_spec, trim
 
 
+# Single source of truth for sellpoint-attribute synonyms: the rule-parser extracts these from a
+# query (LLM-off fallback) and the catalog uses them to evidence/rank the same attribute.
+REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
+    "敏感肌": ["敏感肌", "敏感性", "敏感皮", "干敏", "易敏", "敏皮"],
+    "保湿": ["保湿", "补水", "锁水", "滋润"],
+}
+
 CATEGORY_ALIASES: dict[str, list[str]] = {
     "美妆护肤": ["护肤", "美妆", "化妆品", "彩妆"],
     "数码电子": ["数码", "电子", "手机", "电脑", "耳机", "平板"],
@@ -380,12 +387,11 @@ def _prefers_low_price(text: str) -> bool:
 
 
 def _parse_required_terms(text: str) -> list[str]:
-    required_terms = []
-    if any(term in text for term in ["敏感肌", "敏感皮", "易敏", "干敏", "敏皮"]):
-        required_terms.append("敏感肌")
-    if any(term in text for term in ["保湿", "补水", "锁水", "滋润"]):
-        required_terms.append("保湿")
-    return required_terms
+    return [
+        term
+        for term, aliases in REQUIRED_TERM_ALIASES.items()
+        if any(alias in text for alias in aliases)
+    ]
 
 
 def _parse_requested_specs(text: str) -> list[str]:

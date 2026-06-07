@@ -7,15 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from server.intent import SUB_CATEGORY_ALIASES, SearchFilters
+from server.intent import REQUIRED_TERM_ALIASES, SUB_CATEGORY_ALIASES, SearchFilters
 from server.schemas import ProductCard, SkuPrice
 from server.textutil import dedupe, normalize_spec
 
-
-REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
-    "敏感肌": ["敏感肌", "敏感性", "敏感皮", "干敏", "易敏", "敏皮"],
-    "保湿": ["保湿", "补水", "锁水", "滋润"],
-}
 
 # Same company entered under two names in the dataset, which splits its products across two
 # "brands" and makes a brand filter on one name miss products stored under the other (e.g.
@@ -380,7 +375,7 @@ class ProductCatalog:
             elif term == "保湿":
                 if "保湿" in title or "补水" in title:
                     score += 5
-                if any(t in description for t in ["保湿", "补水", "锁水", "滋润"]):
+                if any(alias in description for alias in REQUIRED_TERM_ALIASES["保湿"]):
                     score += 4
             elif self._matches_required_term(product, term, haystack):
                 score += 8  # generic evidence boost, in line with the curated weights above
