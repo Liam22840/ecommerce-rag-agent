@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from server.assistant import ShoppingAssistant, _chunk_text
+from server.assistant import ShoppingAssistant, _chunk_text, _reason
 from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
 from server.filter_cache import FilterCache
@@ -474,6 +474,61 @@ def test_result_status_no_results_when_empty():
     prepared = assistant.prepare("便宜点的", session_id="fresh", top_k=3)
     assert prepared.products == []
     assert prepared.result_status == "no_results"
+
+
+def test_result_status_no_cheaper_when_tightened_below_floor():
+    # "便宜一点的" pushed the price ceiling under the cheapest item shown last turn and found
+    # nothing -> a distinct status from a plain empty result, so the answer can say "已是最便宜".
+    assistant = _assistant(llm=None)
+    status = assistant._result_status(
+        SearchFilters(prefer_low_price=True), products=[], recent_product_ids=[], prev_floor=50.0,
+    )
+    assert status == "no_cheaper"
+
+
+def test_order_hits_sorts_by_price_descending():
+    assistant = _assistant(llm=None)
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008", "p_beauty_011")
+    ordered = assistant._order_hits(hits, SearchFilters(sort_by="price_desc"))
+    prices = [assistant._display_price(hit.product, SearchFilters(sort_by="price_desc")) for hit in ordered]
+    assert prices == sorted(prices, reverse=True)
+
+
+def test_excluded_ids_with_no_hits_returns_empty_set():
+    assistant = _assistant(llm=FakeLLM())
+    assert assistant._excluded_ids([], ["油腻"]) == set()
+
+
+def test_excluded_ids_falls_back_when_llm_raises():
+    # An exception from the judge (not just unparseable output) must degrade to the deterministic check.
+    assistant = _assistant(llm=FakeLLM(complete_error=RuntimeError("judge down")))
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
+    assert assistant._excluded_ids(hits, ["烟酰胺"]) == {"p_beauty_008"}
+
+
+def test_exclusion_terms_drop_violating_products_in_prepare():
+    # End-to-end: an exclusion turn ("不要油腻") must remove products whose own copy claims the
+    # excluded term, via the deterministic fallback when no answer LLM is configured.
+    intent = _SeqLLM([json.dumps(
+        {"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜", "excluded_terms": ["油腻"]}
+    )])
+    assistant = _assistant_with_intent(intent)
+    prepared = assistant.prepare("不要油腻的面霜", session_id="s", top_k=5)
+    for product in prepared.products:
+        full = assistant.catalog.require(product.product_id)
+        assert assistant.catalog.violates_excluded(full, ["油腻"]) is False
+
+
+def test_reason_credits_required_term_only_when_evidenced():
+    assistant = _assistant(llm=None)
+    evidenced = {
+        "product_id": "x", "title": "补水面霜", "brand": "甲牌",
+        "category": "美妆护肤", "sub_category": "面霜", "base_price": 50.0, "skus": [],
+        "rag_knowledge": {"marketing_description": "深层补水锁水", "official_faq": [], "user_reviews": []},
+    }
+    hit = CatalogHit(product=evidenced, score=1.0, snippets=[], source="lexical")
+    reason = _reason(hit, SearchFilters(required_terms=["保湿"]), assistant.catalog)
+    assert "匹配保湿需求" in reason
 
 
 def test_result_status_exhausted_when_all_seen_excluded():

@@ -37,15 +37,63 @@ class FakeJudgeLLM:
         return self.dimension_json
 
 
-def _build(judgment_json: str):
+class _RaisingLLM:
+    """Raises on either the dimension-extraction or the evidence-judge prompt (and returns valid
+    JSON for the other), to exercise the degrade-to-deterministic paths on each LLM failure."""
+
+    available = True
+
+    def __init__(self, raise_on: str):
+        self._raise_on = raise_on  # "dimension" | "judge"
+
+    def complete(self, messages):
+        is_judge = "对比证据裁判" in messages[0]["content"]
+        if (self._raise_on == "judge") == is_judge:
+            raise RuntimeError("llm down")
+        if is_judge:
+            return json.dumps({"judgments": []}, ensure_ascii=False)
+        return json.dumps({"dimensions": [{"label": "降噪", "aliases": ["降噪"]}]}, ensure_ascii=False)
+
+
+def _build_with_llm(llm):
     catalog = ProductCatalog.load(DATASET_ROOT)
-    svc = ComparisonService(catalog, llm=FakeJudgeLLM(judgment_json))
+    svc = ComparisonService(catalog, llm=llm)
     return svc.build(
         query="这两款降噪哪个更好",
         filters=SearchFilters(raw_query="这两款降噪哪个更好"),
         explicit_product_ids=[P7, P18],
         recent_product_ids=[],
     )
+
+
+def test_dimension_extraction_exception_degrades_to_deterministic():
+    comp = _build_with_llm(_RaisingLLM(raise_on="dimension"))
+    assert [card.product_id for card in comp.products] == [P7, P18]  # still builds
+    assert _row(comp, "价格与SKU") is not None
+
+
+def test_evidence_judge_exception_degrades_to_deterministic():
+    comp = _build_with_llm(_RaisingLLM(raise_on="judge"))
+    row = _row(comp, "降噪")
+    assert row is not None  # deterministic evidence row still produced
+
+
+def test_judgments_skip_non_dict_and_unknown_dimension():
+    judgment = json.dumps({"judgments": [
+        "not-a-dict",                                       # skipped: not a dict
+        {"dimension": "未知维度", "winner_product_id": P7},  # skipped: not an extracted dimension
+        {"dimension": "降噪", "winner_product_id": P7,
+         "reasons": {P7: "降噪强", P18: "一般"}, "evidence": {P7: REAL_QUOTE}, "confidence": "high"},
+    ]}, ensure_ascii=False)
+    comp = _build(judgment)
+    row = _row(comp, "降噪")
+    assert row is not None
+    assert row.winner_product_id == P7
+    assert _row(comp, "未知维度") is None
+
+
+def _build(judgment_json: str):
+    return _build_with_llm(FakeJudgeLLM(judgment_json))
 
 
 def _row(comp, dimension):

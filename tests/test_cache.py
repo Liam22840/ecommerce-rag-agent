@@ -47,6 +47,21 @@ def test_cache_handles_multiple_entries(tmp_path: Path):
     assert reloaded.get("c") == [3.0]
 
 
+def test_load_skips_blank_lines(tmp_path: Path):
+    # Append-only writes plus an editor or a crash can leave blank lines; loading must skip them.
+    cache_file = tmp_path / "cache.jsonl"
+    cache_file.write_text(
+        '{"key": "a", "vector": [1.0]}\n'
+        "\n"
+        "   \n"
+        '{"key": "b", "vector": [2.0]}\n',
+        encoding="utf-8",
+    )
+    cache = EmbeddingCache(cache_file)
+    assert cache.get("a") == [1.0]
+    assert cache.get("b") == [2.0]
+
+
 def test_concurrent_put_and_get_is_thread_safe(tmp_path: Path):
     # Speculative pre-warm + the request thread + FastAPI's threadpool all share one cache, so
     # concurrent put/get must not corrupt the dict or interleave a JSONL line.

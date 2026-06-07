@@ -43,6 +43,20 @@ def test_insert_and_search_roundtrip(tmp_path: Path):
     assert top["product_id"] == "p1"
 
 
+def test_count_reflects_stored_rows(tmp_path: Path):
+    db = tmp_path / "milvus.db"
+    store = MilvusStore(uri=str(db), dim=4)
+    store.ensure_collection()
+    assert store.count() == 0
+
+    store.upsert(
+        [_chunk("p1::summary", text="A"), _chunk("p2::summary", product_id="p2", text="B")],
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+    )
+    store.client.flush(collection_name=store.collection_name)
+    assert store.count() == 2
+
+
 def test_upsert_is_idempotent_on_chunk_id(tmp_path: Path):
     db = tmp_path / "milvus.db"
     store = MilvusStore(uri=str(db), dim=4)

@@ -118,6 +118,29 @@ def test_deterministic_carry_over_without_llm():
     assert f.prefer_low_price is True
 
 
+def test_no_carry_over_when_previous_turn_had_no_topic():
+    # A context-free first turn followed by a vague one: there's nothing to inherit, so the
+    # vague turn is returned as-is rather than borrowing a category that was never set.
+    previous = SearchFilters(category=None, sub_category=None)
+    f = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS).parse("便宜点的", previous_filters=previous)
+    assert f.category is None
+    assert f.sub_category is None
+
+
+def test_brand_simultaneously_wanted_and_excluded_is_cleared():
+    # If the LLM ever emits a brand it also excluded, the brand would match nothing -> drop it.
+    resp = json.dumps({"intent_type": "product_search", "brand": "华为", "excluded_brands": ["华为"]})
+    f = _parser(resp).parse("推荐华为但不要华为")
+    assert f.brand is None
+    assert "华为" in f.excluded_brands
+
+
+def test_excluded_brands_list_skips_non_string_items():
+    resp = json.dumps({"sub_category": "面霜", "excluded_brands": ["华为", 123, None, "  雅诗兰黛 "]})
+    f = _parser(resp).parse("推荐面霜")
+    assert f.excluded_brands == ["华为", "雅诗兰黛"]
+
+
 def test_rewritten_query_extracted():
     resp = json.dumps({"sub_category": "面霜", "rewritten_query": "更便宜的面霜"})
     f = _parser(resp).parse("便宜点的")

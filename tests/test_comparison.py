@@ -7,6 +7,7 @@ from server.comparison import ComparisonService
 from server.comparison.dimensions import (
     _attribute_terms,
     _clean_attribute_label,
+    _corpus_backed_query_ngrams,
     _dynamic_specs,
     _is_noise_attribute,
     _is_price_dimension,
@@ -15,12 +16,14 @@ from server.comparison.dimensions import (
     _strip_product_context_words,
 )
 from server.comparison.evidence import (
+    _best_snippet,
     _confidence,
     _evidence,
     _generic_polarity,
+    _judge_confidence,
     _winner_from_scores,
 )
-from server.comparison.resolver import _asks_for_current_two, _name_score
+from server.comparison.resolver import _asks_for_current_two, _best_ref_match, _name_score
 from server.comparison.text import _chunks
 from server.intent import SearchFilters
 from server.textutil import json_object, normalize, trim
@@ -210,6 +213,37 @@ def test_specs_from_llm_payload_drops_dimension_without_corpus_support():
     assert _specs_from_llm_payload(payload, "哪个防水", products) == []
 
 
+def test_specs_from_llm_payload_skips_non_dict_entries():
+    products = [_product(desc="降噪效果出色，地铁里非常安静")]
+    payload = {"dimensions": ["not-a-dict", {"label": "降噪", "aliases": ["降噪"]}]}
+    specs = _specs_from_llm_payload(payload, "哪个降噪更好", products)
+    assert [spec.label for spec in specs] == ["降噪"]
+
+
+def test_specs_from_llm_payload_dedupes_repeated_label():
+    products = [_product(desc="降噪效果出色，地铁里非常安静")]
+    payload = {"dimensions": [
+        {"label": "降噪", "aliases": ["降噪"]},
+        {"label": "降噪", "aliases": ["降噪"]},
+    ]}
+    specs = _specs_from_llm_payload(payload, "哪个降噪更好", products)
+    assert [spec.label for spec in specs] == ["降噪"]
+
+
+def test_specs_from_llm_payload_coerces_non_list_aliases():
+    products = [_product(desc="降噪效果出色，地铁里非常安静")]
+    payload = {"dimensions": [{"label": "降噪", "aliases": "降噪"}]}  # aliases should be a list
+    specs = _specs_from_llm_payload(payload, "哪个降噪更好", products)
+    assert any(spec.label == "降噪" for spec in specs)
+
+
+def test_specs_from_llm_payload_drops_noise_label():
+    # The LLM occasionally emits a meta word ("对比") as a dimension — it must be dropped.
+    products = [_product(desc="降噪效果出色")]
+    payload = {"dimensions": [{"label": "对比", "aliases": ["对比"]}]}
+    assert _specs_from_llm_payload(payload, "哪个更好", products) == []
+
+
 def test_specs_from_llm_payload_infers_preference_when_invalid():
     products = [_product(desc="糖分很低，热量也低")]
     payload = {"dimensions": [{"label": "糖分", "aliases": ["糖分", "热量"], "preference": "bogus"}]}
@@ -234,6 +268,28 @@ def test_dynamic_specs_without_products_is_empty():
     assert _dynamic_specs("哪个降噪更好", []) == []
 
 
+def test_dynamic_specs_falls_back_to_corpus_ngrams_without_comparative_pattern():
+    # A bare attribute with no "更好/看重" wrapper has no explicit candidate, so the fallback
+    # mines corpus-backed n-grams from the query instead.
+    products = [_product(desc="降噪效果出色，地铁里非常安静")]
+    specs = _dynamic_specs("降噪", products)
+    assert any("降噪" in spec.label for spec in specs)
+
+
+def test_corpus_backed_query_ngrams_keeps_only_corpus_terms():
+    products = [_product(desc="降噪效果出色")]
+    corpus = normalize("降噪效果出色 测试耳机 某牌")
+    ngrams = _corpus_backed_query_ngrams(normalize("降噪不存在词"), corpus, products)
+    assert "降噪" in ngrams
+    assert "不存在" not in ngrams  # not in the corpus
+
+
+def test_strip_product_context_words_drops_exact_match_and_suffix():
+    product = _product(brand="森海")
+    assert _strip_product_context_words("森海", [product]) == ""      # whole label is the brand
+    assert _strip_product_context_words("降噪森海", [product]) == "降噪"  # brand as a suffix
+
+
 # --- _evidence ------------------------------------------------------------------
 
 def test_evidence_scores_positive_mentions_and_collects_snippets():
@@ -255,6 +311,33 @@ def test_evidence_returns_zero_without_term_matches():
     assert snippets == []
 
 
+def test_best_snippet_prefers_matching_chunk_else_first():
+    text = "佩戴很舒适。降噪表现优秀。续航也不错。"
+    assert "降噪" in _best_snippet(text, ("降噪",))
+    # no term matches -> fall back to the first chunk rather than returning nothing
+    assert _best_snippet(text, ("不存在的词",)) == "佩戴很舒适"
+
+
+def test_best_snippet_empty_text_is_empty():
+    assert _best_snippet("", ("降噪",)) == ""
+
+
+def test_judge_confidence_clamps_and_downgrades():
+    # An unrecognised confidence string is normalised to "medium"...
+    assert _judge_confidence("bogus", reason="有依据", grounded=True) == "medium"
+    # ...but an ungrounded high/medium claim is downgraded so we never over-claim.
+    assert _judge_confidence("high", reason="有依据", grounded=False) == "low"
+    # No reason and no grounding -> no confidence at all.
+    assert _judge_confidence("high", reason="", grounded=False) == "none"
+
+
+# --- resolver: _best_ref_match --------------------------------------------------
+
+def test_best_ref_match_empty_ref_returns_none():
+    assert _best_ref_match("", [_product()]) is None
+    assert _best_ref_match("   ", [_product()]) is None
+
+
 # --- ComparisonService resolution / build --------------------------------------
 
 def test_resolve_ordinals_maps_phrases_and_digit_pairs():
@@ -269,6 +352,46 @@ def test_resolve_names_matches_title_in_query():
     b = _product("p2", title="轻量跑鞋X")
     svc = ComparisonService(_catalog(a, b))
     assert svc._resolve_names("我要超静降噪豆Pro", ["p1", "p2"]) == ["p1"]
+
+
+def test_resolve_ordinals_handles_front_two_phrase():
+    svc = ComparisonService(_catalog(_product("p1"), _product("p2"), _product("p3")))
+    assert svc._resolve_ordinals("前两个对比", ["p1", "p2", "p3"]) == ["p1", "p2"]
+
+
+def test_resolve_ordinals_handles_a_and_b_phrase():
+    svc = ComparisonService(_catalog(_product("p1"), _product("p2")))
+    assert svc._resolve_ordinals("A和B哪个好", ["p1", "p2"]) == ["p1", "p2"]
+
+
+def test_title_and_price_subject_fall_back_to_id_when_unknown():
+    svc = ComparisonService(_catalog(_product("p1")))
+    assert svc._title("p_missing", []) == "p_missing"
+    assert svc._price_subject("p_missing", [], SearchFilters()) == "p_missing"
+
+
+def test_resolve_product_ids_picks_up_two_ids_from_text():
+    a, b = _product("p_test_001"), _product("p_test_002")
+    svc = ComparisonService(_catalog(a, b))
+    ids, clarification = svc._resolve_product_ids("对比 p_test_001 和 p_test_002", [], [])
+    assert ids == ["p_test_001", "p_test_002"]
+    assert clarification is None
+
+
+def test_resolve_product_ids_falls_to_name_matching():
+    a = _product("p1", title="超静降噪豆Pro")
+    b = _product("p2", title="轻量跑鞋X")
+    svc = ComparisonService(_catalog(a, b))
+    ids, clarification = svc._resolve_product_ids("超静降噪豆Pro和轻量跑鞋X谁好", [], ["p1", "p2"])
+    assert set(ids) == {"p1", "p2"}
+    assert clarification is None
+
+
+def test_resolve_product_ids_uses_current_two_when_referenced():
+    svc = ComparisonService(_catalog(_product("p1"), _product("p2")))
+    ids, clarification = svc._resolve_product_ids("对比这两个", [], ["p1", "p2"])
+    assert ids == ["p1", "p2"]
+    assert clarification is None
 
 
 def test_build_trusts_validated_llm_compare_ids():

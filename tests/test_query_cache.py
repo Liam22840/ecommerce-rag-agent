@@ -42,6 +42,24 @@ def test_persists_and_reloads_from_jsonl(tmp_path):
     assert second.get(key)["answer"] == "persisted"
 
 
+def test_load_skips_blank_and_malformed_lines(tmp_path):
+    # A torn write (process killed mid-append) or a stray blank line must not break startup:
+    # the loader skips them and keeps every well-formed entry.
+    path = tmp_path / "q.jsonl"
+    path.write_text(
+        '{"key": "a", "response": {"answer": "A"}}\n'
+        "\n"
+        "{not valid json\n"
+        '{"key": "b", "response": "not-a-dict"}\n'  # response must be a dict to be kept
+        '{"key": "c", "response": {"answer": "C"}}\n',
+        encoding="utf-8",
+    )
+    cache = QueryCache(path)
+    assert cache.get("a")["answer"] == "A"
+    assert cache.get("b") is None
+    assert cache.get("c")["answer"] == "C"
+
+
 def test_lru_cap_drops_oldest(tmp_path):
     cache = QueryCache(tmp_path / "q.jsonl", max_entries=2)
     cache.put("a", _response("A"))

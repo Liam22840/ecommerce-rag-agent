@@ -41,6 +41,25 @@ def test_parses_basic_recommendation_aliases():
     assert filters.max_price is None
 
 
+def test_matches_category_named_directly_in_query():
+    # A query that names a catalog category outright is matched directly (not via an alias).
+    filters = _parser().parse("推荐美妆护肤的产品")
+    assert filters.category == "美妆护肤"
+
+
+def test_lead_in_hint_search_for_subcategory():
+    assert _parser().lead_in_hint("推荐一款洗面奶") == ("search", "洁面")
+
+
+def test_lead_in_hint_search_for_category_only():
+    # Category named without a sub-category -> the opener acknowledges the category.
+    assert _parser().lead_in_hint("有什么美妆护肤推荐") == ("search", "美妆护肤")
+
+
+def test_lead_in_hint_neutral_for_chitchat():
+    assert _parser().lead_in_hint("你好呀") == ("neutral", None)
+
+
 def test_parses_budget_and_earphone_alias():
     filters = _parser().parse("200 元以下的蓝牙耳机有哪些？")
 

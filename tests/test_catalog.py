@@ -323,6 +323,14 @@ def test_violates_excluded_matches_positive_and_skips_absent():
     assert catalog.violates_excluded(product, ["香精"]) is False
 
 
+def test_violates_excluded_ignores_empty_terms():
+    catalog = _catalog(_product(desc="含有酒精成分"))
+    product = catalog.require("p1")
+    # Empty/blank terms in the list are skipped rather than matching everything.
+    assert catalog.violates_excluded(product, ["", "酒精"]) is True
+    assert catalog.violates_excluded(product, [""]) is False
+
+
 def test_matches_filters_category_and_subcategory():
     catalog = _catalog(_product(category="美妆护肤", sub_category="面霜"))
     product = catalog.require("p1")
@@ -362,6 +370,41 @@ def test_required_term_moisturizing_alias_is_evidenced():
     catalog = _catalog(_product(title="补水面霜", desc="深层补水锁水"))
     product = catalog.require("p1")
     assert catalog.evidences_required_term(product, "保湿") is True
+
+
+def test_required_term_generic_evidence_boosts_score():
+    # A non-curated required term (not 敏感肌/保湿) still ranks a product that evidences it above one
+    # that doesn't, via the generic alias-match boost.
+    catalog = _catalog(
+        _product(pid="p1", title="清爽控油面霜", desc="持久控油不泛光"),
+        _product(pid="p2", title="滋润面霜", desc="温和滋润"),
+    )
+    hits = catalog.search_lexical("面霜", SearchFilters(required_terms=["控油"]), limit=5)
+    assert hits[0].product["product_id"] == "p1"
+
+
+def test_brand_filter_and_query_term_in_brand_score():
+    # Brand-filter match (+5) and a query term that hits the brand name (not the title) both score.
+    catalog = _catalog(
+        _product(pid="p1", title="基础面霜", brand="甲牌"),
+        _product(pid="p2", title="基础面霜", brand="乙牌"),
+    )
+    hits = catalog.search_lexical("甲牌", SearchFilters(brand="甲牌"), limit=5)
+    assert hits[0].product["product_id"] == "p1"
+
+
+def test_sku_prices_skips_non_numeric_priced_skus():
+    catalog = _catalog(_product(skus=[
+        {"sku_id": "s1", "price": None, "properties": {"规格": "坏的"}},
+        {"sku_id": "s2", "price": 60, "properties": {"规格": "好的"}},
+    ]))
+    prices = catalog.sku_prices(catalog.require("p1"))
+    assert [item["price"] for item in prices] == [60.0]
+
+
+def test_matches_requested_specs_with_no_specs_is_true():
+    catalog = _catalog(_product())
+    assert catalog.matches_requested_specs(catalog.require("p1"), []) is True
 
 
 def test_product_facts_is_slim_for_a_compact_answer_prompt():
