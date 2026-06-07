@@ -81,6 +81,9 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         cache: QueryCache = app.state.query_cache
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
+            # A cache hit skips the assistant, so record the turn into session memory anyway,
+            # otherwise the next message has no context to carry over or resolve against.
+            app.state.assistant.record_cached_turn(request.effective_session_id, message, cached)
             return ChatResponse(**cached)
         response = app.state.assistant.answer(
             message,
@@ -102,6 +105,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         cache: QueryCache = app.state.query_cache
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
+            app.state.assistant.record_cached_turn(request.effective_session_id, message, cached)
             return _sse_response(_sse_replay(cached, settings.stream_chunk_size))
         # prepare() runs inside the generator (after the lead-in is flushed) so the first
         # streamed token lands in <1s instead of after intent + retrieval.

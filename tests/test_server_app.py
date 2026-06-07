@@ -577,6 +577,9 @@ class _CountingAssistant:
     def lead_in(self, *args, **kwargs):
         return self._inner.lead_in(*args, **kwargs)
 
+    def record_cached_turn(self, *args, **kwargs):
+        return self._inner.record_cached_turn(*args, **kwargs)
+
 
 def _cached_client(tmp_path):
     settings = Settings(
@@ -638,6 +641,26 @@ def test_stream_replays_cached_answer_without_recompute(tmp_path):
     assert counting.prepare_calls == 0  # cache hit -> prepare never ran
     assert "event: token" in stream
     assert "event: done" in stream
+
+
+def test_query_cache_hit_still_records_session_for_followups(tmp_path):
+    # Regression: a cache hit is served without running the assistant, but it must still record
+    # the turn in session memory, otherwise the next message has nothing to carry over against.
+    settings = Settings(
+        dataset_root=DATASET_ROOT, chat_api_key=None, embedding_api_key=None,
+        enable_vector_search=False, enable_llm=False,
+        enable_query_cache=True, enable_filter_cache=False,
+        query_cache_path=tmp_path / "qc.jsonl",
+    )
+    client = TestClient(create_app(settings=settings))
+    # One session populates the exact-text cache.
+    client.post("/api/chat", json={"session_id": "A", "message": "三百以内的面霜"})
+    # A fresh session asks the same thing -> served from the cache (assistant skipped)...
+    client.post("/api/chat", json={"session_id": "B", "message": "三百以内的面霜"})
+    # ...yet the follow-up still carries the 面霜 context over.
+    follow = client.post("/api/chat", json={"session_id": "B", "message": "便宜点的"}).json()
+    assert follow["intent"]["sub_category"] == "面霜"
+    assert follow["intent"]["prefer_low_price"] is True
 
 
 def test_cache_persists_across_restart(tmp_path):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from collections.abc import Iterator
 from typing import Literal
 
@@ -437,6 +437,21 @@ class ShoppingAssistant:
         if prepared.filter_cache_key is None or prepared.from_filter_cache:
             return
         self._filter_cache.put(prepared.filter_cache_key, response.model_dump())
+
+    def record_cached_turn(self, session_id: str | None, query: str, cached: dict) -> None:
+        """A query-cache hit is served by the API layer without running prepare(), so session
+        memory never sees the turn and the next message has nothing to carry over or resolve
+        references against. Rebuild the shown products and parsed filters from the cached
+        response and record the turn, so a follow-up after a cache hit behaves the same as after
+        a freshly computed answer."""
+        if not session_id:
+            return
+        products = [ProductCard(**product) for product in cached.get("products", [])]
+        valid = {f.name for f in fields(SearchFilters)}
+        intent = {key: value for key, value in (cached.get("intent") or {}).items() if key in valid}
+        filters = SearchFilters(**intent) if intent else SearchFilters(raw_query=query)
+        self._remember_shown_products(session_id, products)
+        self._remember_turn(session_id, query, filters, products)
 
     def stream_answer(self, prepared: PreparedChat) -> Iterator[str]:
         if prepared.messages and self._llm is not None and self._llm.available:
