@@ -20,6 +20,7 @@ class Settings:
     milvus_path: Path = PROJECT_ROOT / "data" / "milvus.db"
     embedding_cache_path: Path = PROJECT_ROOT / "data" / "embedding_cache.jsonl"
     query_cache_path: Path = PROJECT_ROOT / "data" / "query_cache.jsonl"
+    filter_cache_path: Path = PROJECT_ROOT / "data" / "filter_cache.jsonl"
     embedding_dim: int = 2048
     chat_api_key: str | None = None
     embedding_api_key: str | None = None
@@ -54,6 +55,10 @@ class Settings:
     # repeat returns instantly without re-running retrieval or the LLM.
     enable_query_cache: bool = True
     query_cache_max_entries: int = 500
+    # Filter-keyed answer cache: same answers keyed on the parsed intent instead of the raw
+    # text, so paraphrases of one intent share an entry. Complements the exact query cache.
+    enable_filter_cache: bool = True
+    filter_cache_max_entries: int = 500
 
     @classmethod
     def load(cls) -> "Settings":
@@ -89,6 +94,10 @@ class Settings:
             enable_query_cache=_bool_env("ENABLE_QUERY_CACHE", True),
             query_cache_max_entries=int(
                 os.environ.get("RAG_QUERY_CACHE_MAX", cls.query_cache_max_entries)
+            ),
+            enable_filter_cache=_bool_env("ENABLE_FILTER_CACHE", True),
+            filter_cache_max_entries=int(
+                os.environ.get("RAG_FILTER_CACHE_MAX", cls.filter_cache_max_entries)
             ),
         )
 

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from server.prompts import intent_messages
-from server.textutil import dedupe, json_object, normalize_spec, trim
+from server.textutil import dedupe, json_object, normalize, normalize_spec, trim
 
 
 # Single source of truth for sellpoint-attribute synonyms: the rule-parser extracts these from a
@@ -154,6 +154,27 @@ class IntentParser:
             base.brand = None
         self._widen_approximate_price(base, message)
         return base
+
+    def lead_in_hint(self, message: str) -> tuple[str, str | None]:
+        """Instant, deterministic guess for the streaming opener — no LLM call. Rule-parse the
+        raw text and report what to acknowledge: ("search", <type>) when a catalog category is
+        named, ("compare", None) for a comparison phrasing, else ("neutral", None). Type wins
+        over the fuzzy comparison regex; anything unrecognised falls back to neutral, so chit-chat
+        is never mis-opened. The real understanding is still the LLM's job, behind the opener."""
+        rule = self._rule_parse(message)
+        # Only tailor toward a type the user positively wants. If the detected type is itself
+        # excluded ("不要面霜" -> 面霜 lands in both sub_category and excluded_terms), there's no
+        # clear positive intent, so stay neutral rather than offering the negated type (or a
+        # category backfilled from it). A modifier negation ("不要油腻的面霜") still tailors,
+        # because the excluded term is the phrase, not the type itself.
+        excluded = {normalize(term) for term in rule.excluded_terms}
+        if rule.sub_category:
+            return ("neutral", None) if normalize(rule.sub_category) in excluded else ("search", rule.sub_category)
+        if rule.category:
+            return ("neutral", None) if normalize(rule.category) in excluded else ("search", rule.category)
+        if rule.intent_type == "comparison":
+            return ("compare", None)
+        return ("neutral", None)
 
     def _widen_approximate_price(self, filters: SearchFilters, message: str) -> None:
         # Fallback for when the LLM (or the rule parser, which never expands) collapsed an

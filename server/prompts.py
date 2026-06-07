@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from server.schemas import ProductComparison
 
 
+# --- Streaming lead-in ---------------------------------------------------------
+
+# The first streamed token, emitted before the heavy LLM work so the first screen lands in well
+# under a second (首屏极速响应) while the grounded answer is assembled behind it. The kind is
+# chosen deterministically by the rule parser (no model call); the answer behind it is still
+# LLM-driven. A named product type personalises the opener; everything else gets a neutral line,
+# so an unrecognised or chit-chat query is never mis-opened. Streaming-only: never stored.
+def lead_in_text(kind: str, label: str | None = None) -> str:
+    if kind == "search" and label:
+        return f"好的，我来帮您找{label}～\n"
+    if kind == "compare":
+        return "好的，我来帮您对比一下～\n"
+    # Neutral bucket = vague searches AND chit-chat (we can't tell them apart pre-parse). A bare
+    # acknowledgement composes cleanly before either: it doesn't imply a lookup (wrong for chit-
+    # chat) and doesn't greet (which would clash with a chit-chat reply's own greeting).
+    return "好的～\n"
+
+
 # --- Recommendation answer -----------------------------------------------------
 
 SYSTEM_PROMPT = """你是一个电商智能导购助手。

@@ -8,6 +8,7 @@ from pathlib import Path
 from server.assistant import ShoppingAssistant, _chunk_text
 from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
+from server.filter_cache import FilterCache
 from server.intent import SearchFilters
 from server.llm import ModelUnavailable
 from server.retrieval import ProductRetriever, RetrievalResult
@@ -263,10 +264,14 @@ def test_comparison_turn_does_not_overwrite_carried_filters():
 
 
 class _SpyRetriever:
-    """Records the query string handed to retrieve()."""
+    """Records the query string handed to retrieve() and the pre-warmed query."""
 
     def __init__(self):
         self.queries: list[str] = []
+        self.prewarmed: list[str] = []
+
+    def prewarm_query(self, text):
+        self.prewarmed.append(text)
 
     def retrieve(self, query, filters, limit):
         self.queries.append(query)
@@ -294,6 +299,95 @@ def test_prepare_falls_back_to_raw_query_when_no_rewrite():
     assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
 
     assert spy.queries == ["三百以内的面霜"]
+
+
+def test_prepare_prewarms_the_query_embedding():
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=None)
+
+    assistant.prepare("三百以内的面霜", session_id="s", top_k=3)
+
+    # The raw query is pre-warmed so the embed overlaps the intent call.
+    assert spy.prewarmed == ["三百以内的面霜"]
+
+
+def test_prepare_skips_prewarm_for_explicit_comparison():
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=None)
+
+    assistant.prepare("对比一下", session_id="s", top_k=3, compare_product_ids=["a", "b"])
+
+    assert spy.prewarmed == []  # comparison never retrieves, so nothing to pre-warm
+
+
+def test_lead_in_is_tailored_by_rule_parser_or_neutral():
+    a = _assistant()
+    # A named product type personalises the opener (rule parser maps it, no model call).
+    assert "面霜" in a.lead_in("三百以内的面霜")
+    # An explicit comparison from the request opens with 对比.
+    assert "对比" in a.lead_in("随便", compare_product_ids=["a", "b"])
+    # A vague / chit-chat query the rules can't place falls back to a bare neutral ack — no
+    # lookup implication, no greeting (which would clash with a chit-chat reply's own greeting).
+    assert a.lead_in("你好") == "好的～\n"
+    # A modifier negation still tailors (they want 面霜, just not greasy)...
+    assert "面霜" in a.lead_in("不要油腻的面霜")
+    # ...but negating the type itself opens neutral, never offering the excluded type.
+    assert a.lead_in("不要面霜") == "好的～\n"
+
+
+# --- filter-keyed safe cache ---------------------------------------------------
+
+def _cached_assistant(cache: FilterCache, llm) -> ShoppingAssistant:
+    settings = _settings()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, settings)
+    retriever._startup_warning = None
+    return ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=llm, intent_llm=None,
+        settings=settings, filter_cache=cache,
+    )
+
+
+def test_filter_cache_serves_paraphrases_from_one_entry(tmp_path):
+    cache = FilterCache(tmp_path / "fc.jsonl", enabled=True)
+    llm = FakeLLM(complete_result="缓存答案")
+    assistant = _cached_assistant(cache, llm)
+
+    # Session-free turns with the same parsed filters but different wording.
+    first = assistant.answer("推荐洗面奶", session_id=None, top_k=3)
+    second = assistant.answer("洗面奶推荐", session_id=None, top_k=3)
+
+    assert first.answer == "缓存答案"
+    assert second.answer == "缓存答案"
+    assert llm.complete_calls == 1  # the paraphrase was served from the filter cache
+    assert [p.product_id for p in second.products] == [p.product_id for p in first.products]
+
+
+def test_filter_cache_key_separates_negation_and_ignores_phrasing_and_order():
+    # Opposite price intent -> different keys (the LLM resolved the negation into structure).
+    cheap = SearchFilters(sub_category="洁面", prefer_low_price=True)
+    pricey = SearchFilters(sub_category="洁面", prefer_low_price=False)
+    assert FilterCache.key(cheap, 3) != FilterCache.key(pricey, 3)
+
+    # Same meaning -> same key regardless of raw text or list order.
+    a = SearchFilters(sub_category="洁面", required_terms=["保湿", "控油"], raw_query="x")
+    b = SearchFilters(sub_category="洁面", required_terms=["控油", "保湿"], raw_query="y")
+    assert FilterCache.key(a, 3) == FilterCache.key(b, 3)
+
+    # top_k is part of the key (different result-set size).
+    assert FilterCache.key(a, 3) != FilterCache.key(a, 5)
+
+
+def test_filter_cache_skips_session_context_turns():
+    # A turn that carries seen-product context is never cacheable: same words can mean different
+    # things once the conversation has state.
+    base = SearchFilters(sub_category="洁面")
+    assert FilterCache.eligible(base, recent_product_ids=[]) is True
+    assert FilterCache.eligible(base, recent_product_ids=["p1"]) is False
+    assert FilterCache.eligible(SearchFilters(sub_category="洁面", exclude_seen=True), []) is False
+    assert FilterCache.eligible(SearchFilters(intent_type="chitchat"), []) is False
 
 
 # --- multi-round history + relative refinements --------------------------------

@@ -9,6 +9,7 @@ from typing import Literal
 from server.comparison import ComparisonService
 from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
+from server.filter_cache import FilterCache
 from server.intent import IntentParser, SearchFilters
 from server.llm import ArkChatClient, ModelUnavailable
 from server.prompts import (
@@ -17,6 +18,7 @@ from server.prompts import (
     chitchat_messages,
     comparison_narration_messages,
     exclusion_judge_messages,
+    lead_in_text,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import ChatResponse, ProductCard, ProductComparison
@@ -52,6 +54,11 @@ class PreparedChat:
     grounded_answer: str
     messages: list[dict[str, str]]
     result_status: ResultStatus = "ok"
+    # Set on a filter-cacheable product search so the answer can be stored under the parsed
+    # intent; None when the turn isn't cacheable. from_filter_cache marks a turn served from
+    # that cache, so it isn't re-stored and its (cached) answer streams via the fallback path.
+    filter_cache_key: str | None = None
+    from_filter_cache: bool = False
 
 
 @dataclass
@@ -87,11 +94,15 @@ class ShoppingAssistant:
         llm: ArkChatClient | None = None,
         intent_llm: ArkChatClient | None = None,
         settings: Settings | None = None,
+        filter_cache: FilterCache | None = None,
     ):
         self._catalog = catalog
         self._retriever = retriever
         self._llm = llm
         self._settings = settings or Settings()
+        # Off unless wired with a real cache (create_app does this); keeps direct test
+        # construction side-effect-free, mirroring how QueryCache lives only at the API layer.
+        self._filter_cache = filter_cache or FilterCache(self._settings.filter_cache_path, enabled=False)
         self._parser = IntentParser(
             catalog.categories,
             catalog.sub_categories,
@@ -106,6 +117,15 @@ class ShoppingAssistant:
     def catalog(self) -> ProductCatalog:
         return self._catalog
 
+    def lead_in(self, query: str, compare_product_ids: list[str] | None = None) -> str:
+        """Instant, deterministic streaming opener (no model call). An explicit comparison is
+        known from the request; otherwise the rule parser guesses what to acknowledge. The real
+        understanding still happens in the LLM parse that runs behind this opener."""
+        if compare_product_ids:
+            return lead_in_text("compare")
+        kind, label = self._parser.lead_in_hint(query)
+        return lead_in_text(kind, label)
+
     def prepare(
         self,
         query: str,
@@ -114,6 +134,11 @@ class ShoppingAssistant:
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
     ) -> PreparedChat:
+        # Pipeline parallelism: start embedding the query now so it overlaps the intent call
+        # below. Retrieval's later embed_text then hits the warm cache instead of paying the
+        # cold round-trip in series. Skipped for an explicit comparison (it never retrieves).
+        if not compare_product_ids:
+            self._retriever.prewarm_query(query)
         filters = self._parser.parse(
             query,
             previous_filters=self._previous_filters(session_id),
@@ -192,6 +217,15 @@ class ShoppingAssistant:
         recalled = [pid for pid in filters.recall_product_ids if self._catalog.get(pid) is not None]
         if recalled:
             return self._prepare_recall(query, session_id, filters, recalled)
+        # Filter-keyed cache: a context-free product search keyed on the parsed intent. A hit
+        # replays the stored answer + cards, skipping embed, retrieval and the answer LLM. The
+        # key is set on a miss too, so the generated answer gets stored once it's produced.
+        filter_key: str | None = None
+        if self._filter_cache.enabled and FilterCache.eligible(filters, recent_product_ids):
+            filter_key = self._filter_cache.key(filters, top_k)
+            cached = self._filter_cache.get(filter_key)
+            if cached is not None:
+                return self._prepared_from_cache(query, session_id, filters, cached, filter_key)
         # The rewrite folds carried context into a standalone retrieval query; the answer
         # itself still replies to what the user actually typed (raw query below).
         search_query = filters.rewritten_query or query
@@ -220,7 +254,7 @@ class ShoppingAssistant:
         if unmet:
             context = {**(context or {}), "unmet_terms": unmet}
         return self._search_prepared(
-            query, session_id, filters, hits, products, retrieval, result_status, context
+            query, session_id, filters, hits, products, retrieval, result_status, context, filter_key
         )
 
     def _prepare_recall(
@@ -245,6 +279,7 @@ class ShoppingAssistant:
         retrieval: RetrievalResult,
         result_status: ResultStatus = "ok",
         context: dict | None = None,
+        filter_cache_key: str | None = None,
     ) -> PreparedChat:
         # Shared tail for the search and recall paths: record the turn, narrate, package.
         self._remember_shown_products(session_id, products)
@@ -261,6 +296,30 @@ class ShoppingAssistant:
             grounded_answer=grounded_answer,
             messages=messages,
             result_status=result_status,
+            filter_cache_key=filter_cache_key,
+        )
+
+    def _prepared_from_cache(
+        self, query: str, session_id: str | None, filters: SearchFilters, cached: dict, key: str
+    ) -> PreparedChat:
+        # Rebuild a PreparedChat from the cached response so both the streaming and non-streaming
+        # paths replay it unchanged: messages=[] routes through the fallback, which emits the
+        # cached answer text and cards. Session memory is still updated so follow-ups resolve.
+        products = [ProductCard(**product) for product in cached.get("products", [])]
+        self._remember_shown_products(session_id, products)
+        self._remember_turn(session_id, query, filters, products)
+        source = cached.get("retrieval_source") or "none"
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            retrieval=RetrievalResult(hits=[], source=source, warnings=list(cached.get("warnings", []))),
+            products=products,
+            comparison=None,
+            grounded_answer=cached.get("answer", ""),
+            messages=[],
+            filter_cache_key=key,
+            from_filter_cache=True,
         )
 
     def _result_status(
@@ -359,7 +418,7 @@ class ShoppingAssistant:
             except ModelUnavailable as exc:
                 warnings.append(f"LLM unavailable, using grounded fallback: {exc}")
 
-        return ChatResponse(
+        response = ChatResponse(
             answer=answer_text,
             products=prepared.products,
             comparison=prepared.comparison,
@@ -369,6 +428,15 @@ class ShoppingAssistant:
             degraded=bool(warnings),
             warnings=warnings,
         )
+        self.maybe_store_filter_cache(prepared, response)
+        return response
+
+    def maybe_store_filter_cache(self, prepared: PreparedChat, response: ChatResponse) -> None:
+        """Store a freshly produced answer under its parsed-intent key, so later paraphrases hit
+        it. No-op for non-cacheable turns and for answers already served from this cache."""
+        if prepared.filter_cache_key is None or prepared.from_filter_cache:
+            return
+        self._filter_cache.put(prepared.filter_cache_key, response.model_dump())
 
     def stream_answer(self, prepared: PreparedChat) -> Iterator[str]:
         if prepared.messages and self._llm is not None and self._llm.available:

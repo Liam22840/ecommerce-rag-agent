@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from server.assistant import PreparedChat, ShoppingAssistant, _chunk_text
 from server.catalog import ProductCatalog
 from server.config import Settings
+from server.filter_cache import FilterCache
 from server.llm import ArkChatClient
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
@@ -45,8 +46,18 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             timeout_seconds=settings.chat_timeout_seconds,
         )
         intent_llm = llm if settings.enable_llm_intent else None
+        filter_cache = FilterCache(
+            settings.filter_cache_path,
+            max_entries=settings.filter_cache_max_entries,
+            enabled=settings.enable_filter_cache,
+        )
         assistant = ShoppingAssistant(
-            catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm, settings=settings
+            catalog=catalog,
+            retriever=retriever,
+            llm=llm,
+            intent_llm=intent_llm,
+            settings=settings,
+            filter_cache=filter_cache,
         )
 
     app.state.settings = settings
@@ -92,14 +103,9 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
             return _sse_response(_sse_replay(cached, settings.stream_chunk_size))
-        prepared = app.state.assistant.prepare(
-            message,
-            request.effective_session_id,
-            request.top_k,
-            request.effective_compare_product_ids,
-            request.client_context.recent_product_ids,
-        )
-        return _sse_response(_sse_stream(app.state.assistant, prepared, cache, key))
+        # prepare() runs inside the generator (after the lead-in is flushed) so the first
+        # streamed token lands in <1s instead of after intent + retrieval.
+        return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key))
 
     @app.get("/api/products/{product_id}")
     def product_detail(product_id: str) -> dict:
@@ -127,52 +133,64 @@ def _maybe_store(cache: QueryCache, key: str, response: ChatResponse) -> None:
 
 def _sse_stream(
     assistant: ShoppingAssistant,
-    prepared: PreparedChat,
+    message: str,
+    request: ChatRequest,
     cache: QueryCache | None = None,
     key: str | None = None,
 ) -> Iterator[str]:
+    # Lead-in first: a deterministic, rule-picked opener flushed before intent+retrieval so 首
+    # Token lands in <1s. Streaming-only — not collected into the stored answer.
+    yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
+    try:
+        prepared = assistant.prepare(
+            message,
+            request.effective_session_id,
+            request.top_k,
+            request.effective_compare_product_ids,
+            request.client_context.recent_product_ids,
+        )
+    except Exception:  # noqa: BLE001 - lead-in already sent; close the stream cleanly
+        yield _token_event("抱歉，出了一点问题，请再试一次。")
+        yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
+        return
+
+    # Cards first: emit the products the instant retrieval finishes, then stream the prose.
+    products = [_enrich_product_dict(_model_dump(p)) for p in prepared.products]
+    comparison = _model_dump(prepared.comparison) if prepared.comparison is not None else None
+    yield _cards_frame(products, comparison)
+
     tokens: list[str] = []
     for token in assistant.stream_answer(prepared):
         tokens.append(token)
         yield _token_event(token)
-    products = [_enrich_product_dict(_model_dump(p)) for p in prepared.products]
-    comparison = _model_dump(prepared.comparison) if prepared.comparison is not None else None
-    yield from _result_frames(
-        products, comparison, prepared.session_id, prepared.retrieval.source, list(prepared.retrieval.warnings)
-    )
+    yield _done_frame(prepared.session_id, prepared.retrieval.source, list(prepared.retrieval.warnings))
+
+    response = _response_from_prepared(prepared, "".join(tokens))
     if cache is not None and key is not None:
-        _maybe_store(cache, key, _response_from_prepared(prepared, "".join(tokens)))
+        _maybe_store(cache, key, response)
+    assistant.maybe_store_filter_cache(prepared, response)
 
 
 def _sse_replay(cached: dict, chunk_size: int) -> Iterator[str]:
+    products = [_enrich_product_dict(dict(p)) for p in cached.get("products", [])]
+    yield _cards_frame(products, cached.get("comparison"))
     for token in _chunk_text(cached.get("answer", ""), chunk_size):
         yield _token_event(token)
-    products = [_enrich_product_dict(dict(p)) for p in cached.get("products", [])]
-    yield from _result_frames(
-        products,
-        cached.get("comparison"),
-        cached.get("session_id"),
-        cached.get("retrieval_source"),
-        cached.get("warnings", []),
-    )
+    yield _done_frame(cached.get("session_id"), cached.get("retrieval_source"), cached.get("warnings", []))
 
 
-def _result_frames(
-    products: list[dict],
-    comparison: dict | None,
-    session_id: str | None,
-    retrieval_source: str | None,
-    warnings: list[str],
-) -> Iterator[str]:
+def _cards_frame(products: list[dict], comparison: dict | None) -> str:
     if comparison is not None:
         comparison = dict(comparison)
         comparison["products"] = products
         comparison["items"] = products
         comparison["type"] = "comparison"
-        yield _sse("comparison", comparison)
-    else:
-        yield _sse("products", {"type": "products", "products": products, "items": products})
-    yield _sse("done", {
+        return _sse("comparison", comparison)
+    return _sse("products", {"type": "products", "products": products, "items": products})
+
+
+def _done_frame(session_id: str | None, retrieval_source: str | None, warnings: list[str]) -> str:
+    return _sse("done", {
         "type": "done",
         "ok": True,
         "session_id": session_id,
