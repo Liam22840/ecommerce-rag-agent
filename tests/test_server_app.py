@@ -641,6 +641,9 @@ def test_stream_replays_cached_answer_without_recompute(tmp_path):
     assert counting.prepare_calls == 0  # cache hit -> prepare never ran
     assert "event: token" in stream
     assert "event: done" in stream
+    # A cached reply opens with the same lead-in as a fresh one, for a consistent first screen.
+    assert stream.startswith("event: token")
+    assert "好的" in stream.split("\n\n")[0]
 
 
 def test_query_cache_hit_still_records_session_for_followups(tmp_path):

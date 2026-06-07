@@ -105,8 +105,10 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         cache: QueryCache = app.state.query_cache
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
-            app.state.assistant.record_cached_turn(request.effective_session_id, message, cached)
-            return _sse_response(_sse_replay(cached, settings.stream_chunk_size))
+            assistant = app.state.assistant
+            assistant.record_cached_turn(request.effective_session_id, message, cached)
+            lead_in = assistant.lead_in(message, request.effective_compare_product_ids)
+            return _sse_response(_sse_replay(cached, settings.stream_chunk_size, lead_in))
         # prepare() runs inside the generator (after the lead-in is flushed) so the first
         # streamed token lands in <1s instead of after intent + retrieval.
         return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key))
@@ -175,7 +177,11 @@ def _sse_stream(
     assistant.maybe_store_filter_cache(prepared, response)
 
 
-def _sse_replay(cached: dict, chunk_size: int) -> Iterator[str]:
+def _sse_replay(cached: dict, chunk_size: int, lead_in: str = "") -> Iterator[str]:
+    # Open with the same lead-in as a fresh turn so a cached reply reads identically; it stays
+    # instant since the rest of the replay is already in memory.
+    if lead_in:
+        yield _token_event(lead_in)
     products = [_enrich_product_dict(dict(p)) for p in cached.get("products", [])]
     yield _cards_frame(products, cached.get("comparison"))
     for token in _chunk_text(cached.get("answer", ""), chunk_size):
