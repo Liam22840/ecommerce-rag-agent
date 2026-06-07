@@ -364,11 +364,16 @@ def test_required_term_moisturizing_alias_is_evidenced():
     assert catalog.evidences_required_term(product, "保湿") is True
 
 
-def test_product_facts_truncates_faq_and_reviews_to_three():
+def test_product_facts_is_slim_for_a_compact_answer_prompt():
     faq = [{"question": f"q{i}", "answer": f"a{i}"} for i in range(5)]
     reviews = [{"rating": 5, "content": f"c{i}"} for i in range(5)]
-    catalog = _catalog(_product(faq=faq, reviews=reviews))
+    long_desc = "保湿" * 200
+    catalog = _catalog(_product(desc=long_desc, faq=faq, reviews=reviews))
     facts = catalog.product_facts(catalog.require("p1"))
-    assert len(facts["faq"]) == 3
-    assert len(facts["reviews"]) == 3
+    # Trimmed to a couple of short snippets each, with the static price instruction dropped.
+    assert len(facts["faq"]) == 1
+    assert len(facts["reviews"]) == 2
+    assert facts["reviews"][0]["rating"] == 5  # rating stays, the one review signal we keep
+    assert "price_instruction" not in facts
+    assert len(facts["description"]) <= 160  # long marketing copy is truncated
     assert facts["sku_count"] == 0

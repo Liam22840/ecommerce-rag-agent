@@ -9,7 +9,7 @@ from typing import Any
 
 from server.intent import REQUIRED_TERM_ALIASES, SUB_CATEGORY_ALIASES, SearchFilters
 from server.schemas import ProductCard, SkuPrice
-from server.textutil import dedupe, normalize_spec
+from server.textutil import dedupe, normalize_spec, trim
 
 
 # Same company entered under two names in the dataset, which splits its products across two
@@ -151,6 +151,10 @@ class ProductCatalog:
         )
 
     def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
+        # Kept lean to cut answer-prompt size (faster first token). Price/SKU fields are
+        # load-bearing for grounding and stay whole; the per-product price instruction was
+        # dropped (the same rule lives once in SYSTEM_PROMPT), and the free-text fields are
+        # trimmed to a couple of short snippets each.
         reviews = product.get("rag_knowledge", {}).get("user_reviews", [])
         faqs = product.get("rag_knowledge", {}).get("official_faq", [])
         selected_sku = self.selected_price_sku(product, filters)
@@ -167,13 +171,15 @@ class ProductCatalog:
             "selected_price_sku": selected_sku,
             "sku_prices": self.sku_prices(product),
             "sku_count": len(product.get("skus", [])),
-            "price_instruction": (
-                "Use price_label or price_summary verbatim. If the title contains a spec that differs "
-                "from the lowest_price_sku label, do not attach the lowest price to the title spec."
-            ),
-            "description": product.get("rag_knowledge", {}).get("marketing_description", ""),
-            "faq": faqs[:3],
-            "reviews": reviews[:3],
+            "description": trim(product.get("rag_knowledge", {}).get("marketing_description", ""), 160),
+            "faq": [
+                {"question": trim(str(faq.get("question", "")), 60), "answer": trim(str(faq.get("answer", "")), 120)}
+                for faq in faqs[:1]
+            ],
+            "reviews": [
+                {"rating": review.get("rating"), "content": trim(str(review.get("content", "")), 120)}
+                for review in reviews[:2]
+            ],
         }
 
     def search_lexical(self, query: str, filters: SearchFilters, limit: int) -> list[CatalogHit]:
