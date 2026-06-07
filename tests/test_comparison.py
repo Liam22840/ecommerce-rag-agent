@@ -143,10 +143,10 @@ def test_is_price_dimension_detects_price_terms():
     assert _is_price_dimension("降噪", ("降噪",)) is False
 
 
-def test_price_is_priority_from_filters_or_query():
-    assert _price_is_priority("随便看看", SearchFilters(prefer_low_price=True)) is True
-    assert _price_is_priority("哪个更便宜", SearchFilters()) is True
-    assert _price_is_priority("哪个降噪更好", SearchFilters()) is False
+def test_price_is_priority_follows_prefer_low_price_flag():
+    # Price priority comes from the LLM-set preference, not query keyword spotting.
+    assert _price_is_priority(SearchFilters(prefer_low_price=True)) is True
+    assert _price_is_priority(SearchFilters()) is False
 
 
 def test_asks_for_current_two():

@@ -283,9 +283,7 @@ def _dedupe_specs(specs: list[DimensionSpec]) -> list[DimensionSpec]:
     return result
 
 
-def _price_is_priority(query: str, filters: SearchFilters) -> bool:
-    normalized = normalize(query)
-    return filters.prefer_low_price or any(
-        term in normalized
-        for term in ["性价比", "划算", "便宜", "价格", "预算", "省钱", "更值"]
-    )
+def _price_is_priority(filters: SearchFilters) -> bool:
+    # Whether price should drive the comparison comes from the LLM-set preference, not keyword
+    # spotting — the intent LLM already understands "性价比"/"划算"/"不那么烧钱" and sets prefer_low_price.
+    return filters.prefer_low_price

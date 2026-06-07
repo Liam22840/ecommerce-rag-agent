@@ -94,7 +94,7 @@ class ComparisonService:
         ]
         rows.extend(self._evidence_rows(products, focus_specs, query))
 
-        winner_product_id, recommendation = self._recommend(products, rows, query, filters)
+        winner_product_id, recommendation = self._recommend(products, rows, filters)
         summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
         return ProductComparison(
             products=cards,
@@ -227,7 +227,7 @@ class ComparisonService:
     ) -> list[DimensionSpec]:
         llm_specs = self._llm_specs(query, products)
         specs = llm_specs if llm_specs else _dynamic_specs(query, products)
-        if _price_is_priority(query, filters):
+        if _price_is_priority(filters):
             specs.append(DimensionSpec(label="价格", terms=PRICE_FOCUS_TERMS, preference="lower_is_better", evidence=False))
         return _dedupe_specs(specs)[:4]
 
@@ -378,7 +378,6 @@ class ComparisonService:
         self,
         products: list[dict[str, Any]],
         rows: list[ComparisonRow],
-        query: str,
         filters: SearchFilters,
     ) -> tuple[str | None, str]:
         scores = {product["product_id"]: 0.0 for product in products}
@@ -390,7 +389,7 @@ class ComparisonService:
             if row.dimension in {"基础定位", "规格明细"}:
                 weight = 0.0
             elif row.dimension == "价格与SKU":
-                weight = 1.5 if _price_is_priority(query, filters) else 0.0
+                weight = 1.5 if _price_is_priority(filters) else 0.0
             else:
                 weight = 2.0
             scores[row.winner_product_id] += weight
