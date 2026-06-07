@@ -145,6 +145,8 @@ public final class ChatViewModel: ObservableObject {
             timeline.append(.cartStatus(id: UUID(), text: summary))
         case .cartStatus(let summary):
             timeline.append(.cartStatus(id: UUID(), text: summary))
+        case .orderStatus(let summary):
+            timeline.append(.orderStatus(id: UUID(), text: summary))
         case .done:
             finishCompletedStream()
         }
@@ -216,7 +218,7 @@ public final class ChatViewModel: ObservableObject {
                 ids.append(contentsOf: products.map(\.id))
             case .comparison(_, let comparison):
                 ids.append(contentsOf: comparison.products.map(\.id))
-            case .message, .cartStatus, .error:
+            case .message, .cartStatus, .orderStatus, .error:
                 continue
             }
             if ids.count >= 10 {

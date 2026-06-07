@@ -179,6 +179,26 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertTrue(viewModel.timeline.containsCartStatus("Backend acknowledged cart intent."))
     }
 
+    func testOrderStatusDoesNotReplaceExistingCartItems() async throws {
+        let product = Product.fixture(id: "BAG-2", title: "Carry Bag")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .orderStatus(summary: "订单待确认"),
+                .done(messageID: "order-status")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+        viewModel.addToCart(product: product)
+
+        viewModel.draftMessage = "下单吧"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(viewModel.cartItems, [CartItem(product: product, quantity: 1)])
+        XCTAssertTrue(viewModel.timeline.containsOrderStatus("订单待确认"))
+    }
+
     func testMockChatServiceEmitsScriptedFlowWithoutNetwork() async throws {
         let service = MockChatService(tokenDelay: 0, fixtureName: "mock_products")
         let request = ChatRequest(
@@ -363,6 +383,13 @@ private extension Array where Element == ChatTimelineItem {
     func containsCartStatus(_ message: String) -> Bool {
         contains {
             guard case .cartStatus(_, let itemMessage) = $0 else { return false }
+            return itemMessage == message
+        }
+    }
+
+    func containsOrderStatus(_ message: String) -> Bool {
+        contains {
+            guard case .orderStatus(_, let itemMessage) = $0 else { return false }
             return itemMessage == message
         }
     }

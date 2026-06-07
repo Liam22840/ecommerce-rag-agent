@@ -78,10 +78,39 @@ class ProductComparison(BaseModel):
     clarification: str | None = None
 
 
+class CartItem(BaseModel):
+    product_id: str
+    quantity: int = Field(default=1, ge=0)
+    product: ProductCard
+    sku_id: str | None = None
+    unit_price: float
+    price_label: str
+    line_total: float
+
+
+class CartUpdate(BaseModel):
+    items: list[CartItem] = Field(default_factory=list)
+    summary: str
+    action: str
+    subtotal: float = 0.0
+    needs_clarification: bool = False
+
+
+class OrderDraft(BaseModel):
+    order_id: str | None = None
+    status: Literal["awaiting_confirmation", "submitted", "cancelled"]
+    items: list[CartItem] = Field(default_factory=list)
+    subtotal: float = 0.0
+    address: str = "默认地址"
+    summary: str
+
+
 class ChatResponse(BaseModel):
     answer: str
     products: list[ProductCard]
     comparison: ProductComparison | None = None
+    cart: CartUpdate | None = None
+    order: OrderDraft | None = None
     session_id: str | None = None
     intent: dict[str, Any]
     retrieval_source: Literal["vector", "lexical", "hybrid", "none"]

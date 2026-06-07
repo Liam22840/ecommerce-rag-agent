@@ -142,6 +142,41 @@ def intent_messages(
     ]
 
 
+# --- Commerce intent parsing ---------------------------------------------------
+
+COMMERCE_INTENT_SYSTEM = (
+    "你是电商导购的购物车/下单意图解析器。只输出 JSON，不写解释。"
+    "任务：判断用户是否想操作购物车或下单，并把动作解析成白名单 action。"
+    "白名单 action：add, remove, set_quantity, increment, decrement, clear, show_cart, checkout, confirm_order, cancel_order, none。"
+    "规则："
+    "1. refs 放用户原话里的商品引用，如“第一个”“第二个”“这个”“刚才那个”。"
+    "2. product_ids 只能从 session_products 或 cart_items 里复制，禁止自造。无法确定就留空并保留 refs。"
+    "3. target_scope：加购通常是 shown_products；删除/改数量通常是 cart_items；不确定填 unknown。"
+    "4. quantity 只放用户明确说出的数量；没有就填 null。"
+    "5. 价格、规格、库存和订单号不由你判断。"
+    "6. 如果不是购物车或下单意图，action=none。"
+    '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|checkout|confirm_order|cancel_order|none",'
+    '"refs":[string],"product_ids":[string],"quantity":number|null,'
+    '"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
+)
+
+
+def commerce_intent_messages(
+    query: str,
+    cart_items: list[dict],
+    session_products: list[dict] | None = None,
+) -> list[dict[str, str]]:
+    payload = {
+        "query": query,
+        "cart_items": cart_items,
+        "session_products": session_products or [],
+    }
+    return [
+        {"role": "system", "content": COMMERCE_INTENT_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 # --- Exclusion judge: which shortlisted products actually have the unwanted attribute ----------
 
 EXCLUSION_JUDGE_SYSTEM = (

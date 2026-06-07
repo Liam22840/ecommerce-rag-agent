@@ -152,6 +152,22 @@ final class SSEEventParserTests: XCTestCase {
         XCTAssertEqual(event, .cartStatus(summary: "Added to cart"))
     }
 
+    func testParsesOrderDraftAndSubmittedEventsAsOrderStatus() throws {
+        let draft = try parseFrame([
+            "event: order",
+            "data: {\"type\":\"order_draft\",\"status\":\"awaiting_confirmation\",\"summary\":\"订单待确认\"}",
+            ""
+        ])
+        let submitted = try parseFrame([
+            "event: order",
+            "data: {\"type\":\"order_submitted\",\"status\":\"submitted\",\"summary\":\"订单已提交\"}",
+            ""
+        ])
+
+        XCTAssertEqual(draft, .orderStatus(summary: "订单待确认"))
+        XCTAssertEqual(submitted, .orderStatus(summary: "订单已提交"))
+    }
+
     func testParsesComparisonEventWithProductMetadata() throws {
         let event = try parseFrame([
             "event: comparison",
@@ -303,7 +319,7 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
                 continue
             case .done:
                 sawDone = true
-            case .cartUpdated, .cartStatus:
+            case .cartUpdated, .cartStatus, .orderStatus:
                 continue
             }
         }

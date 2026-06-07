@@ -129,6 +129,8 @@ private struct ChatTimelineItemView: View {
             )
         case .cartStatus(_, let text):
             CartStatusView(text: text)
+        case .orderStatus(_, let text):
+            CartStatusView(text: text)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
         }

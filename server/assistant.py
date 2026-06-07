@@ -8,6 +8,7 @@ from typing import Literal
 
 from server.comparison import ComparisonService
 from server.catalog import CatalogHit, ProductCatalog
+from server.commerce import CommerceService, CommerceResult, OrderState, looks_like_commerce
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import IntentParser, SearchFilters
@@ -21,7 +22,7 @@ from server.prompts import (
     lead_in_text,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
-from server.schemas import ChatResponse, ProductCard, ProductComparison
+from server.schemas import CartUpdate, ChatResponse, OrderDraft, ProductCard, ProductComparison
 from server.textutil import dedupe_ids, json_object
 
 
@@ -51,6 +52,8 @@ class PreparedChat:
     retrieval: RetrievalResult
     products: list[ProductCard]
     comparison: ProductComparison | None
+    cart: CartUpdate | None
+    order: OrderDraft | None
     grounded_answer: str
     messages: list[dict[str, str]]
     result_status: ResultStatus = "ok"
@@ -84,6 +87,7 @@ class SessionState:
     # for comparison ("第一个/前两个") is derived from it (last_seq desc, position asc).
     shown_products: list[dict] = field(default_factory=list)
     turn_seq: int = 0
+    order: OrderState = field(default_factory=OrderState)
 
 
 class ShoppingAssistant:
@@ -111,6 +115,7 @@ class ShoppingAssistant:
             approx_price_tolerance=self._settings.approx_price_tolerance,
         )
         self._comparison = ComparisonService(catalog, llm=llm)
+        self._commerce = CommerceService(catalog, llm=llm)
         self._sessions: dict[str, SessionState] = {}
 
     @property
@@ -123,6 +128,8 @@ class ShoppingAssistant:
         understanding still happens in the LLM parse that runs behind this opener."""
         if compare_product_ids:
             return lead_in_text("compare")
+        if looks_like_commerce(query):
+            return lead_in_text("neutral")
         kind, label = self._parser.lead_in_hint(query)
         return lead_in_text(kind, label)
 
@@ -133,7 +140,16 @@ class ShoppingAssistant:
         top_k: int,
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
+        cart_items: list[dict] | None = None,
     ) -> PreparedChat:
+        commerce = self._commerce.maybe_handle(
+            query,
+            cart_items=cart_items or [],
+            session_products=self._commerce_products(session_id, client_recent_product_ids or []),
+            order_state=self._session(session_id).order,
+        )
+        if commerce is not None:
+            return self._prepare_commerce(query, session_id, commerce)
         # Pipeline parallelism: start embedding the query now so it overlaps the intent call
         # below. Retrieval's later embed_text then hits the warm cache instead of paying the
         # cold round-trip in series. Skipped for an explicit comparison (it never retrieves).
@@ -155,6 +171,33 @@ class ShoppingAssistant:
         if filters.intent_type == "chitchat":
             return self._prepare_chitchat(query, session_id, filters)
         return self._prepare_search(query, session_id, filters, top_k, recent_product_ids)
+
+    def _prepare_commerce(
+        self,
+        query: str,
+        session_id: str | None,
+        commerce: CommerceResult,
+    ) -> PreparedChat:
+        filters = SearchFilters(
+            intent_type=commerce.intent.get("intent_type", "cart_action"),
+            raw_query=query,
+            commerce_action=commerce.intent.get("commerce_action"),
+            commerce_refs=list(commerce.intent.get("commerce_refs", [])),
+            commerce_quantity=commerce.intent.get("quantity"),
+            commerce_target_scope=commerce.intent.get("target_scope"),
+        )
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            retrieval=RetrievalResult(hits=[], source="none"),
+            products=[],
+            comparison=None,
+            cart=commerce.cart,
+            order=commerce.order,
+            grounded_answer=commerce.answer,
+            messages=[],
+        )
 
     def _prepare_comparison(
         self,
@@ -183,6 +226,8 @@ class ShoppingAssistant:
             retrieval=RetrievalResult(hits=[], source="lexical"),
             products=products,
             comparison=comparison,
+            cart=None,
+            order=None,
             grounded_answer=grounded_answer,
             messages=messages,
         )
@@ -199,6 +244,8 @@ class ShoppingAssistant:
             retrieval=RetrievalResult(hits=[], source="none"),
             products=[],
             comparison=None,
+            cart=None,
+            order=None,
             grounded_answer=CHITCHAT_REPLY,
             messages=chitchat_messages(query, self._catalog.scope_summary()),
         )
@@ -293,6 +340,8 @@ class ShoppingAssistant:
             retrieval=retrieval,
             products=products,
             comparison=None,
+            cart=None,
+            order=None,
             grounded_answer=grounded_answer,
             messages=messages,
             result_status=result_status,
@@ -316,6 +365,8 @@ class ShoppingAssistant:
             retrieval=RetrievalResult(hits=[], source=source, warnings=list(cached.get("warnings", []))),
             products=products,
             comparison=None,
+            cart=None,
+            order=None,
             grounded_answer=cached.get("answer", ""),
             messages=[],
             filter_cache_key=key,
@@ -407,8 +458,9 @@ class ShoppingAssistant:
         top_k: int,
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
+        cart_items: list[dict] | None = None,
     ) -> ChatResponse:
-        prepared = self.prepare(query, session_id, top_k, compare_product_ids, client_recent_product_ids)
+        prepared = self.prepare(query, session_id, top_k, compare_product_ids, client_recent_product_ids, cart_items)
         warnings = list(prepared.retrieval.warnings)
 
         answer_text = prepared.grounded_answer
@@ -422,6 +474,8 @@ class ShoppingAssistant:
             answer=answer_text,
             products=prepared.products,
             comparison=prepared.comparison,
+            cart=prepared.cart,
+            order=prepared.order,
             session_id=session_id,
             intent=prepared.filters.to_dict(),
             retrieval_source=prepared.retrieval.source,
@@ -528,6 +582,34 @@ class ShoppingAssistant:
         if not ordered:
             return None
         return [{key: entry[key] for key in _SHOWN_FIELDS} for entry in ordered]
+
+    def _commerce_products(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[dict] | None:
+        """Products available for cart references.
+
+        Prefer the client's visible/recent product ids because cart commands often arrive after a
+        cached stream replay or a backend restart where server-side shown_products is empty. Append
+        session memory as a fallback while preserving each source's recency order.
+        """
+        items: list[dict] = []
+        seen: set[str] = set()
+        for pid in client_recent_product_ids:
+            product = self._catalog.get(pid)
+            if product is None or pid in seen:
+                continue
+            items.append({
+                "id": pid,
+                "title": product["title"],
+                "brand": product["brand"],
+                "price": self._catalog.lowest_price(product),
+                "sub_category": product["sub_category"],
+            })
+            seen.add(pid)
+        for entry in self._session_products(session_id) or []:
+            pid = entry["id"]
+            if pid not in seen:
+                items.append(entry)
+                seen.add(pid)
+        return items or None
 
     def _history_summaries(self, session_id: str | None) -> list[dict] | None:
         turns = self._session(session_id).turns[-self._settings.history_turns :]

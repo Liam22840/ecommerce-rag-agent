@@ -29,6 +29,7 @@ public enum ChatTimelineItem: Identifiable, Equatable, Sendable {
     case products(id: UUID, products: [Product])
     case comparison(id: UUID, comparison: ProductComparison)
     case cartStatus(id: UUID, text: String)
+    case orderStatus(id: UUID, text: String)
     case error(id: UUID, message: String)
 
     public var id: UUID {
@@ -38,6 +39,7 @@ public enum ChatTimelineItem: Identifiable, Equatable, Sendable {
         case .products(let id, _),
              .comparison(let id, _),
              .cartStatus(let id, _),
+             .orderStatus(let id, _),
              .error(let id, _):
             id
         }
@@ -50,6 +52,7 @@ public enum ChatStreamEvent: Equatable, Sendable {
     case comparison(ProductComparison)
     case cartUpdated([CartItem], summary: String)
     case cartStatus(summary: String)
+    case orderStatus(summary: String)
     case done(messageID: String?)
 }
 

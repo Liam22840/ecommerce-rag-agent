@@ -310,6 +310,8 @@ private struct StreamEventPayload: Decodable {
             }
 
             return .cartUpdated(parsedItems, summary: summary)
+        case "order", "order_draft", "orderDraft", "order_submitted", "orderSubmitted":
+            return .orderStatus(summary: summary ?? "订单状态已更新。")
         case "done":
             return .done(messageID: messageID)
         case "meta", "metadata", "debug", "warning", "warnings":
