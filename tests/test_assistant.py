@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from server.assistant import ShoppingAssistant, _chunk_text
-from server.catalog import ProductCatalog
+from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
 from server.intent import SearchFilters
 from server.llm import ModelUnavailable
@@ -68,6 +68,40 @@ def _assistant(llm=None, intent_llm=None, settings=None) -> ShoppingAssistant:
     return ShoppingAssistant(
         catalog=catalog, retriever=retriever, llm=llm, intent_llm=intent_llm, settings=settings
     )
+
+
+def _hits(assistant, *product_ids) -> list[CatalogHit]:
+    return [
+        CatalogHit(product=assistant.catalog.require(pid), score=1.0, snippets=[], source="lexical")
+        for pid in product_ids
+    ]
+
+
+def test_excluded_ids_uses_llm_judgment_as_primary():
+    llm = FakeLLM(complete_result='{"exclude": ["p_beauty_007"]}')
+    assistant = _assistant(llm=llm)
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
+    assert assistant._excluded_ids(hits, ["油腻"]) == {"p_beauty_007"}
+
+
+def test_excluded_ids_ignores_ids_not_in_shortlist():
+    llm = FakeLLM(complete_result='{"exclude": ["p_not_real", "p_beauty_008"]}')
+    assistant = _assistant(llm=llm)
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
+    assert assistant._excluded_ids(hits, ["油腻"]) == {"p_beauty_008"}
+
+
+def test_excluded_ids_falls_back_to_deterministic_when_llm_unavailable():
+    assistant = _assistant(llm=FakeLLM(available=False))
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
+    # p_beauty_008's own copy positively claims 烟酰胺; 007 does not.
+    assert assistant._excluded_ids(hits, ["烟酰胺"]) == {"p_beauty_008"}
+
+
+def test_excluded_ids_falls_back_when_llm_returns_garbage():
+    assistant = _assistant(llm=FakeLLM(complete_result="not json at all"))
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
+    assert assistant._excluded_ids(hits, ["烟酰胺"]) == {"p_beauty_008"}
 
 
 # --- answer(): LLM availability matrix -----------------------------------------

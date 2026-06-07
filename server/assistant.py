@@ -16,10 +16,11 @@ from server.prompts import (
     build_messages,
     chitchat_messages,
     comparison_narration_messages,
+    exclusion_judge_messages,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import ChatResponse, ProductCard, ProductComparison
-from server.textutil import dedupe_ids
+from server.textutil import dedupe_ids, json_object
 
 
 # Outcome of a product-search turn, used to narrate honestly instead of re-listing.
@@ -194,13 +195,17 @@ class ShoppingAssistant:
         # The rewrite folds carried context into a standalone retrieval query; the answer
         # itself still replies to what the user actually typed (raw query below).
         search_query = filters.rewritten_query or query
-        # For a "换一批" turn, over-fetch so dropping already-seen items still fills top_k.
-        limit = top_k + len(recent_product_ids) if filters.exclude_seen else top_k
-        retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=limit)
+        # Over-fetch so that dropping already-seen ("换一批") or excluded ("不要油腻") items still
+        # leaves enough to fill top_k.
+        buffer = (len(recent_product_ids) if filters.exclude_seen else 0) + (top_k if filters.excluded_terms else 0)
+        retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=top_k + buffer)
         hits = self._order_hits(retrieval.hits, filters)
         if filters.exclude_seen:
             seen = set(recent_product_ids)
             hits = [hit for hit in hits if hit.product["product_id"] not in seen]
+        if filters.excluded_terms:
+            excluded = self._excluded_ids(hits, filters.excluded_terms)
+            hits = [hit for hit in hits if hit.product["product_id"] not in excluded]
         hits = hits[:top_k]
         products = [
             self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters, self._catalog), filters=filters)
@@ -292,6 +297,34 @@ class ShoppingAssistant:
         if not turns or not turns[-1].shown:
             return None
         return min(item["price"] for item in turns[-1].shown)
+
+    def _excluded_ids(self, hits: list[CatalogHit], excluded_terms: list[str]) -> set[str]:
+        """Which shortlisted products to drop for an exclusion ("不要油腻"). The LLM judges meaning
+        and negation over the small shortlist (primary); the deterministic negation-aware catalog
+        check is the fallback when the LLM is unavailable."""
+        if not hits:
+            return set()
+        if self._llm is not None and self._llm.available:
+            products = [
+                {
+                    "id": hit.product["product_id"],
+                    "名称": hit.product.get("title", ""),
+                    "描述": hit.product.get("rag_knowledge", {}).get("marketing_description", ""),
+                }
+                for hit in hits
+            ]
+            try:
+                payload = json_object(self._llm.complete(exclusion_judge_messages(excluded_terms, products)))
+                if "exclude" in payload:  # a parseable verdict; garbage -> fall through
+                    valid = {hit.product["product_id"] for hit in hits}
+                    return {pid for pid in payload["exclude"] if pid in valid}
+            except Exception:  # noqa: BLE001 - any judge failure must degrade to the deterministic check
+                pass
+        return {
+            hit.product["product_id"]
+            for hit in hits
+            if self._catalog.violates_excluded(hit.product, excluded_terms)
+        }
 
     def _order_hits(self, hits: list[CatalogHit], filters: SearchFilters) -> list[CatalogHit]:
         if filters.sort_by == "price_asc":

@@ -124,6 +124,26 @@ def intent_messages(
     ]
 
 
+# --- Exclusion judge: which shortlisted products actually have the unwanted attribute ----------
+
+EXCLUSION_JUDGE_SYSTEM = (
+    "你是电商导购的商品过滤器。用户明确不想要含有某些属性/成分/特征的商品。"
+    "给你一份候选商品（id、名称、卖点描述）和一个“要排除的属性”列表。"
+    "逐个判断商品是否“确实具备”其中任意一个属性：只有商品本身明确具备该属性才算；"
+    "若商品声称不含/无/不具备该属性（例如“不油腻”“无酒精”“零添加”），不算具备，不要排除。"
+    "凭语义判断，不要只看字面（如“厚重滋润”可视为“油腻”）。只输出 JSON，不写解释："
+    '{"exclude":[要排除的商品 id, ...]}，没有要排除的就返回 {"exclude":[]}。'
+)
+
+
+def exclusion_judge_messages(excluded_terms: list[str], products: list[dict]) -> list[dict[str, str]]:
+    payload = {"排除属性": excluded_terms, "候选商品": products}
+    return [
+        {"role": "system", "content": EXCLUSION_JUDGE_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 # --- Comparison: dimension extraction + evidence judging -----------------------
 # (the message builders live in comparison.py next to their product serialization;
 #  the prompt text lives here.)

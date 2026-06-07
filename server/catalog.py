@@ -28,6 +28,11 @@ BRAND_ALIASES: dict[str, str] = {
     "北面": "The North Face",
 }
 
+# Chinese negation prefixes (a small closed grammatical class, not a meaning library). Used so an
+# excluded term ("不要油腻") doesn't drop a product whose own copy NEGATES it ("清爽不油腻").
+EXCLUSION_NEGATIONS = ("不", "无", "没", "未", "免", "非")
+_CLAUSE_TRANSLATION = str.maketrans({c: "\n" for c in "，。；！？、,.;!?\n"})
+
 STRONG_SENSITIVE_SIGNALS = [
     "专为敏感肌",
     "专为干性敏感肌",
@@ -204,16 +209,28 @@ class ProductCatalog:
         if product["brand"] in filters.excluded_brands:
             return False
 
-        haystack = self._haystack(product)
-        # Neither requested_specs nor required_terms are hard gates: a product that fits the spec
-        # or attribute but labels it differently shouldn't be silently dropped (e.g. a bag that
-        # holds a 16寸 laptop in its description but not as a SKU label). They rank via
-        # _requested_spec_score / _required_term_score, and the answer narrates honestly when
-        # nothing matches. Price / category / sub_category / brand / excluded stay hard gates.
-        for term in filters.excluded_terms:
-            if term and term in haystack:
-                return False
+        # Soft constraints (required_terms, requested_specs) rank + narrate honestly, not gate.
+        # excluded_terms ("不要油腻") is applied AFTER retrieval by an LLM judge over the shortlist
+        # (it reads meaning + negation natively), with violates_excluded() below as the determ-
+        # inistic fallback. The hard structured gates are price / category / sub_category / brand /
+        # excluded_brands (above).
         return True
+
+    def violates_excluded(self, product: dict[str, Any], terms: list[str]) -> bool:
+        """Deterministic negation-aware exclusion check (the fallback when the LLM exclusion judge
+        is unavailable): True only if the product POSITIVELY claims an excluded term in its OWN copy
+        (title + marketing description, not third-party reviews), skipping clauses where the term is
+        negated ("不油腻"/"无添加香精")."""
+        description = product.get("rag_knowledge", {}).get("marketing_description", "")
+        clauses = (product.get("title", "") + "。" + description).translate(_CLAUSE_TRANSLATION).split("\n")
+        for term in terms:
+            if not term:
+                continue
+            for clause in clauses:
+                position = clause.find(term)
+                if position != -1 and not any(neg in clause[:position] for neg in EXCLUSION_NEGATIONS):
+                    return True
+        return False
 
     @staticmethod
     def avg_rating(product: dict[str, Any]) -> float:

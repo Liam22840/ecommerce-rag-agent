@@ -147,6 +147,32 @@ def test_unmet_requested_specs_flags_specs_no_hit_matches():
     assert catalog.unmet_requested_specs(hits, filters) == ["16寸"]
 
 
+def test_violates_excluded_skips_negated_own_copy():
+    # Regression: "不要油腻" must not flag a cream that advertises being "不油腻" (the deterministic
+    # fallback for the LLM exclusion judge).
+    catalog = _catalog(_product("p1", title="清爽面霜", desc="质地清爽不油腻不闷痘"))
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is False
+
+
+def test_violates_excluded_flags_positive_claim():
+    catalog = _catalog(_product("p1", title="厚重面霜", desc="质地油腻厚重滋养"))
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is True
+
+
+def test_violates_excluded_ignores_third_party_reviews():
+    catalog = _catalog(
+        _product("p1", title="清爽面霜", desc="清爽水润", reviews=[{"rating": 3, "content": "我觉得有点油腻"}])
+    )
+    assert catalog.violates_excluded(catalog.require("p1"), ["油腻"]) is False
+
+
+def test_matches_filters_no_longer_gates_excluded_terms():
+    # excluded_terms moved out of the retrieval gate (now an LLM judge + violates_excluded fallback
+    # over the shortlist), so matches_filters ignores it; excluded_brands stays a hard gate.
+    catalog = _catalog(_product("p1", desc="含有酒精成分"))
+    assert catalog.matches_filters(catalog.require("p1"), SearchFilters(excluded_terms=["酒精"])) is True
+
+
 # --- construction / loading ----------------------------------------------------
 
 def test_empty_catalog_is_rejected():
@@ -290,11 +316,11 @@ def test_matches_filters_brand_and_excluded_brand():
     assert catalog.matches_filters(product, SearchFilters(brand="甲牌")) is True
 
 
-def test_matches_filters_excluded_term_in_haystack():
+def test_violates_excluded_matches_positive_and_skips_absent():
     catalog = _catalog(_product(desc="含有酒精成分"))
     product = catalog.require("p1")
-    assert catalog.matches_filters(product, SearchFilters(excluded_terms=["酒精"])) is False
-    assert catalog.matches_filters(product, SearchFilters(excluded_terms=["香精"])) is True
+    assert catalog.violates_excluded(product, ["酒精"]) is True
+    assert catalog.violates_excluded(product, ["香精"]) is False
 
 
 def test_matches_filters_category_and_subcategory():
