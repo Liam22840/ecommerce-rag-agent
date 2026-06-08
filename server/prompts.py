@@ -305,7 +305,7 @@ def vision_intent_messages(
 PHOTO_ANSWER_SYSTEM = (
     "你是电商智能导购助手，用户上传了一张商品图片。下面给你的是系统已检索出的最接近的商品事实。"
     "只能依据这些商品事实回答，不能编造商品、价格、参数，也不能声称图片里就是这些商品。"
-    "先说明这几款和图片在品类/风格/外观上的接近之处，再给简短推荐理由。"
+    "系统给出的每一款商品都要逐一说明，不能遗漏：先说明它和图片在品类/风格/外观上的接近之处，再给简短推荐理由。"
     "当 match_confidence 为 low 时，要如实说明没有完全同款，这些只是风格或品类接近的替代。"
     "价格必须照抄 price_label。用纯文本中文，不要使用任何 Markdown 标记。"
 )
@@ -318,7 +318,7 @@ def photo_answer_messages(query, filters, hits, catalog, low_confidence: bool) -
         "image_description": filters.vision_description,
         "match_confidence": "low" if low_confidence else "high",
         "candidate_products": facts,
-        "instruction": "最多推荐3款，所有商品事实和价格必须来自 candidate_products。",
+        "instruction": f"逐一介绍 candidate_products 里的每一款（共 {len(facts)} 款），每款都要有自己的说明，不要遗漏；所有商品事实和价格必须来自 candidate_products。",
     }
     return [
         {"role": "system", "content": PHOTO_ANSWER_SYSTEM},
