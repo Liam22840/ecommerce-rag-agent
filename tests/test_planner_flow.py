@@ -145,6 +145,10 @@ def test_stream_emits_plan_event_before_cart_update():
     assert "event: plan" in body
     assert "event: cart" in body
     assert body.index("event: plan") < body.index("event: cart")
+    assert body.count("event: plan") >= 4
+    assert '"status": "pending"' in body
+    assert '"status": "running"' in body
+    assert '"status": "done"' in body
     assert '"action": "product_search"' in body
     assert '"action": "cart_action"' in body
 

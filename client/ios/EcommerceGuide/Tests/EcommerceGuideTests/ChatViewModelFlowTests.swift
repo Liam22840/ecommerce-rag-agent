@@ -118,7 +118,35 @@ final class ChatViewModelFlowTests: XCTestCase {
     }
 
     func testPlanEventAppendsPlanTimelineItem() async throws {
-        let steps = [
+        let pendingSteps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "pending"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "pending"
+            )
+        ]
+        let runningSteps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "running"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "pending"
+            )
+        ]
+        let doneSteps = [
             PlanStep(
                 stepID: "step-1",
                 title: "推荐跑鞋",
@@ -137,7 +165,9 @@ final class ChatViewModelFlowTests: XCTestCase {
         let viewModel = ChatViewModel(
             service: ScriptedChatService(events: [
                 .token("我来执行。"),
-                .plan(steps),
+                .plan(pendingSteps),
+                .plan(runningSteps),
+                .plan(doneSteps),
                 .done(messageID: "plan-1")
             ]),
             conversationID: UUID(),
@@ -155,7 +185,11 @@ final class ChatViewModelFlowTests: XCTestCase {
             return XCTFail("Expected plan timeline item")
         }
 
-        XCTAssertEqual(timelineSteps, steps)
+        XCTAssertEqual(timelineSteps, doneSteps)
+        XCTAssertEqual(viewModel.timeline.filter { item in
+            if case .plan = item { return true }
+            return false
+        }.count, 1)
     }
 
     func testFollowupRequestIncludesRecentProductIDs() async throws {

@@ -196,6 +196,40 @@ class ShoppingAssistant:
             return self._prepare_chitchat(query, session_id, filters)
         return self._prepare_search(query, session_id, filters, top_k, recent_product_ids)
 
+    def prepare_stream(
+        self,
+        query: str,
+        session_id: str | None,
+        top_k: int,
+        compare_product_ids: list[str] | None = None,
+        client_recent_product_ids: list[str] | None = None,
+        cart_items: list[dict] | None = None,
+    ) -> Iterator[ExecutionPlan | PreparedChat]:
+        session_products = self._commerce_products(session_id, client_recent_product_ids or [])
+        planned = self._planner.plan(
+            query,
+            session_products=session_products,
+            cart_items=cart_items or [],
+        )
+        if planned is not None:
+            yield from self._prepare_planned_task_updates(
+                query,
+                session_id,
+                planned,
+                top_k,
+                client_recent_product_ids or [],
+                cart_items or [],
+            )
+            return
+        yield self.prepare(
+            query,
+            session_id,
+            top_k,
+            compare_product_ids,
+            client_recent_product_ids,
+            cart_items,
+        )
+
     def _prepare_commerce(
         self,
         query: str,
@@ -232,6 +266,30 @@ class ShoppingAssistant:
         client_recent_product_ids: list[str],
         cart_items: list[dict],
     ) -> PreparedChat:
+        prepared = None
+        for update in self._prepare_planned_task_updates(
+            query,
+            session_id,
+            planned,
+            top_k,
+            client_recent_product_ids,
+            cart_items,
+        ):
+            if isinstance(update, PreparedChat):
+                prepared = update
+        if prepared is None:
+            raise RuntimeError("planned task did not produce a prepared chat")
+        return prepared
+
+    def _prepare_planned_task_updates(
+        self,
+        query: str,
+        session_id: str | None,
+        planned: PlannedTask,
+        top_k: int,
+        client_recent_product_ids: list[str],
+        cart_items: list[dict],
+    ) -> Iterator[ExecutionPlan | PreparedChat]:
         plan_steps = [
             PlanStep(
                 step_id=f"step-{idx}",
@@ -241,6 +299,7 @@ class ShoppingAssistant:
             )
             for idx, step in enumerate(planned.steps, start=1)
         ]
+        yield _copy_plan(ExecutionPlan(steps=plan_steps))
 
         retrieval = RetrievalResult(hits=[], source="none")
         products: list[ProductCard] = self._product_cards_from_ids(
@@ -256,6 +315,7 @@ class ShoppingAssistant:
 
         for idx, step in enumerate(planned.steps):
             plan_steps[idx].status = "running"
+            yield _copy_plan(ExecutionPlan(steps=plan_steps, summary="；".join(summaries) if summaries else None))
             try:
                 if step.action == "product_search":
                     prepared = self._run_planned_search(
@@ -324,14 +384,16 @@ class ShoppingAssistant:
                 plan_steps[idx].status = "done"
                 plan_steps[idx].summary = summary
                 summaries.append(summary)
+                yield _copy_plan(ExecutionPlan(steps=plan_steps, summary="；".join(summaries)))
             except Exception as exc:  # noqa: BLE001 - planned execution should fail closed.
                 plan_steps[idx].status = "failed"
                 plan_steps[idx].summary = "这一步缺少可执行的商品信息，请补充说明。"
                 summaries.append(plan_steps[idx].summary or "")
+                yield _copy_plan(ExecutionPlan(steps=plan_steps, summary="；".join(summaries)))
                 break
 
         plan = ExecutionPlan(steps=plan_steps, summary="；".join(summaries) if summaries else None)
-        return PreparedChat(
+        yield PreparedChat(
             query=query,
             session_id=session_id,
             filters=SearchFilters(intent_type="planned_action", raw_query=query),
@@ -975,6 +1037,12 @@ def _reason(hit: CatalogHit, filters: SearchFilters, catalog: ProductCatalog) ->
     if hit.snippets:
         reasons.append("商品描述或评价中有相关信息")
     return "，".join(reasons) if reasons else "与当前需求语义匹配"
+
+
+def _copy_plan(plan: ExecutionPlan) -> ExecutionPlan:
+    if hasattr(plan, "model_dump"):
+        return ExecutionPlan(**plan.model_dump())
+    return ExecutionPlan(**plan.dict())
 
 
 def _chunk_text(text: str, chunk_size: int) -> Iterator[str]:

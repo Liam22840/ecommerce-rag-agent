@@ -19,7 +19,7 @@ from server.llm import ArkChatClient
 from server.planner import looks_like_planned_task
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
-from server.schemas import ChatRequest, ChatResponse
+from server.schemas import ChatRequest, ChatResponse, ExecutionPlan
 
 
 def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | None = None) -> FastAPI:
@@ -147,21 +147,28 @@ def _sse_stream(
     # Token lands in <1s. Streaming-only — not collected into the stored answer.
     yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
     try:
-        prepared = assistant.prepare(
+        prepared = None
+        for update in assistant.prepare_stream(
             message,
             request.effective_session_id,
             request.top_k,
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
-        )
+        ):
+            if isinstance(update, ExecutionPlan):
+                yield _plan_frame(_model_dump(update))
+            else:
+                prepared = update
     except Exception:  # noqa: BLE001 - lead-in already sent; close the stream cleanly
         yield _token_event("抱歉，出了一点问题，请再试一次。")
         yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
         return
+    if prepared is None:
+        yield _token_event("抱歉，出了一点问题，请再试一次。")
+        yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
+        return
 
-    if prepared.plan is not None:
-        yield _plan_frame(_model_dump(prepared.plan))
     if prepared.cart is not None:
         yield _cart_frame(_model_dump(prepared.cart))
     if prepared.order is not None:

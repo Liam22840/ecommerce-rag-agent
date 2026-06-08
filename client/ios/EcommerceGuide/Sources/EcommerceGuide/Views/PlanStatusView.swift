@@ -16,7 +16,7 @@ struct PlanStatusView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(step.title)
                             .font(.footnote.weight(.medium))
-                            .foregroundStyle(GuideTheme.inkStrong)
+                            .foregroundStyle(titleTint(for: step.status))
                             .lineLimit(2)
 
                         if let summary = step.summary, !summary.isEmpty {
@@ -64,6 +64,15 @@ struct PlanStatusView: View {
             return GuideTheme.accent
         default:
             return GuideTheme.tertiaryInk
+        }
+    }
+
+    private func titleTint(for status: String) -> Color {
+        switch status {
+        case "pending", "skipped":
+            return GuideTheme.tertiaryInk
+        default:
+            return GuideTheme.secondaryInk
         }
     }
 }

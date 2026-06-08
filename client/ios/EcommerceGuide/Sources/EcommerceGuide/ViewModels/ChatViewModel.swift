@@ -15,6 +15,7 @@ public final class ChatViewModel: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var lastSubmittedMessage: String?
     private var streamingMessageID: UUID?
+    private var currentPlanTimelineID: UUID?
 
     public init(
         service: any ChatService = MockChatService(),
@@ -93,6 +94,7 @@ public final class ChatViewModel: ObservableObject {
         errorMessage = nil
         lastSubmittedMessage = trimmedMessage
         isSending = true
+        currentPlanTimelineID = nil
 
         let assistantID = UUID()
         streamingMessageID = assistantID
@@ -136,7 +138,7 @@ public final class ChatViewModel: ObservableObject {
             appendToken(token)
         case .plan(let steps):
             finishStreamingMessage()
-            timeline.append(.plan(id: UUID(), steps: steps))
+            upsertPlan(steps)
         case .products(let products):
             finishStreamingMessage()
             timeline.append(.products(id: UUID(), products: products))
@@ -153,6 +155,19 @@ public final class ChatViewModel: ObservableObject {
         case .done:
             finishCompletedStream()
         }
+    }
+
+    private func upsertPlan(_ steps: [PlanStep]) {
+        if let currentPlanTimelineID,
+           let index = timeline.firstIndex(where: { $0.id == currentPlanTimelineID }),
+           case .plan(let id, _) = timeline[index] {
+            timeline[index] = .plan(id: id, steps: steps)
+            return
+        }
+
+        let id = UUID()
+        currentPlanTimelineID = id
+        timeline.append(.plan(id: id, steps: steps))
     }
 
     private func appendToken(_ token: String) {
