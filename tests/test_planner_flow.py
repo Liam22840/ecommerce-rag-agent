@@ -6,7 +6,20 @@ from server.app import create_app
 from server.assistant import ShoppingAssistant
 from server.catalog import ProductCatalog
 from server.config import Settings
+from server.planner import looks_like_planned_task
 from server.retrieval import ProductRetriever
+
+
+def test_planner_gate_recognises_a_multistep_request_for_an_unlisted_product():
+    # Regression: the search detector hardcoded a handful of product-type characters, so a compound
+    # request for anything outside that list (裤子) was silently never treated as a multi-step task.
+    assert looks_like_planned_task("买条裤子然后加入购物车") is True
+
+
+def test_planner_gate_does_not_count_a_deictic_add_as_a_search():
+    # A plain cart-add ("买这个") next to a connector must not be miscounted as search + commerce
+    # and routed through the planner.
+    assert looks_like_planned_task("买这个吧，谢谢") is False
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
@@ -151,6 +164,74 @@ def test_stream_emits_plan_event_before_cart_update():
     assert '"status": "done"' in body
     assert '"action": "product_search"' in body
     assert '"action": "cart_action"' in body
+
+
+class ScriptedLLM:
+    """Routes by prompt: a plan for the planner, an intent label for the intent parser, a decline for
+    the chitchat answer. The compound message routes to planned_task; the bare watch search step
+    parses to chitchat, so the out-of-catalogue decline surfaces inside the plan."""
+
+    available = True
+
+    def __init__(self, plan: str):
+        self._plan = plan
+
+    def _reply(self, messages: list[dict[str, str]]) -> str:
+        system = messages[0]["content"]
+        if "planner" in system:
+            return self._plan
+        if "意图解析器" in system:
+            user = messages[1]["content"]
+            route = "planned_task" if "对比" in user else "chitchat"
+            return '{"intent_type":"%s"}' % route
+        return "抱歉，本店暂不提供手表，您可以看看我们在售的其他品类。"
+
+    def complete(self, messages: list[dict[str, str]]) -> str:
+        return self._reply(messages)
+
+    def stream(self, messages: list[dict[str, str]]):
+        yield self._reply(messages)
+
+
+def test_planner_declines_out_of_catalogue_item_instead_of_carting_a_substitute():
+    # Regression: a watch isn't in the catalogue. The intent parser classifies it as chitchat, but
+    # the planner used to force product_search and cart whatever retrieval returned (AirPods).
+    llm = ScriptedLLM(
+        '{"steps":['
+        '{"action":"product_search","title":"推荐手表","query":"推荐一个手表"},'
+        '{"action":"comparison","title":"对比手表","query":"对比手表"},'
+        '{"action":"cart_action","title":"加入购物车","target":"comparison_winner","quantity":1}'
+        ']}'
+    )
+    settings = Settings(
+        dataset_root=DATASET_ROOT,
+        chat_api_key=None,
+        embedding_api_key=None,
+        enable_vector_search=False,
+        enable_llm=False,
+        enable_llm_intent=False,
+        enable_query_cache=False,
+    )
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, settings)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=retriever, llm=llm, intent_llm=llm, settings=settings)
+    client = TestClient(create_app(settings=settings, assistant=assistant))
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "session_id": "planner-out-of-catalogue",
+            "message": "推荐一个手表，对比一下哪个好，再加入购物车",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["products"] == []
+    assert body["cart"] is None
+    assert body["comparison"] is None
+    assert body["plan"]["steps"][0]["status"] == "failed"
+    assert "手表" in body["answer"]
 
 
 def test_llm_planner_schema_executes_against_real_catalog_and_cart():

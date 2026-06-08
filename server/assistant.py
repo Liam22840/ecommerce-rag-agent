@@ -19,14 +19,15 @@ from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import IntentParser, SearchFilters
 from server.llm import ChatClient, ModelUnavailable
-from server.planner import PlannedTask, PlannerService
+from server.planner import PlannedTask, PlannerService, looks_like_planned_task
 from server.prompts import (
     CHITCHAT_REPLY,
     build_messages,
     chitchat_messages,
     comparison_narration_messages,
     exclusion_judge_messages,
-    lead_in_text,
+    opener_text,
+    photo_answer_messages,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import CartUpdate, ChatResponse, ExecutionPlan, OrderDraft, PlanStep, ProductCard, ProductComparison
@@ -93,6 +94,8 @@ class SessionState:
     refinements and backtracking)."""
 
     turns: list[TurnRecord] = field(default_factory=list)
+    # The winner of the most recent comparison, so a follow-up "买更适合的/更好的那个" resolves to it.
+    last_winner_id: str | None = None
     # Single source of truth for "what products has the user seen": session-wide, deduped by
     # id, in first-shown order, each tagged with the turn (last_seq) and within-turn position
     # it was most recently shown. Backtracking reads it in first-shown order. The recency view
@@ -135,16 +138,12 @@ class ShoppingAssistant:
     def catalog(self) -> ProductCatalog:
         return self._catalog
 
-    def lead_in(self, query: str, compare_product_ids: list[str] | None = None) -> str:
-        """Instant, deterministic streaming opener (no model call). An explicit comparison is
-        known from the request, otherwise the rule parser guesses what to acknowledge. The real
-        understanding still happens in the LLM parse that runs behind this opener."""
-        if compare_product_ids:
-            return lead_in_text("compare")
-        if looks_like_commerce(query):
-            return lead_in_text("neutral")
-        kind, label = self._parser.lead_in_hint(query)
-        return lead_in_text(kind, label)
+    def opener(self, route: str, query: str) -> str:
+        """The route-tailored streaming opener, emitted once the focused router decides (so it matches
+        what actually happens; empty for chitchat). The category label for a search opener comes from
+        the instant rule parse, not the LLM, so it costs nothing."""
+        label = self._parser.lead_in_hint(query)[1] if route == "product_search" else None
+        return opener_text(route, label)
 
     def prepare(
         self,
@@ -154,51 +153,23 @@ class ShoppingAssistant:
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
+        image_bytes: bytes | None = None,
     ) -> PreparedChat:
-        session_products = self._commerce_products(session_id, client_recent_product_ids or [])
-        planned = self._planner.plan(
-            query,
-            session_products=session_products,
-            cart_items=cart_items or [],
-        )
-        if planned is not None:
+        if image_bytes is not None:
+            recent = self._recent_product_ids(session_id, client_recent_product_ids or [])
+            return self._prepare_photo_search(query, session_id, top_k, image_bytes, recent)
+        result = None
+        for item in self._route(
+            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or []
+        ):
+            if isinstance(item, tuple):  # the opener-continuation strings are ignored off-stream
+                result = item
+        kind, payload = result
+        if kind == "planned":
             return self._prepare_planned_task(
-                query,
-                session_id,
-                planned,
-                top_k,
-                client_recent_product_ids or [],
-                cart_items or [],
+                query, session_id, payload, top_k, client_recent_product_ids or [], cart_items or []
             )
-        commerce = self._commerce.maybe_handle(
-            query,
-            cart_items=cart_items or [],
-            session_products=session_products,
-            order_state=self._session(session_id).order,
-        )
-        if commerce is not None:
-            return self._prepare_commerce(query, session_id, commerce)
-        # Pipeline parallelism: start embedding the query now so it overlaps the intent call
-        # below. Retrieval's later embed_text then hits the warm cache instead of paying the
-        # cold round-trip in series. Skipped for an explicit comparison (it never retrieves).
-        if not compare_product_ids:
-            self._retriever.prewarm_query(query)
-        filters = self._parser.parse(
-            query,
-            previous_filters=self._previous_filters(session_id),
-            history=self._history_summaries(session_id),
-            session_products=self._session_products(session_id),
-        )
-        recent_product_ids = self._recent_product_ids(session_id, client_recent_product_ids or [])
-        compare_product_ids = compare_product_ids or []
-
-        if len(compare_product_ids) >= 2 or filters.intent_type == "comparison":
-            return self._prepare_comparison(
-                query, session_id, filters, compare_product_ids, recent_product_ids
-            )
-        if filters.intent_type == "chitchat":
-            return self._prepare_chitchat(query, session_id, filters)
-        return self._prepare_search(query, session_id, filters, top_k, recent_product_ids)
+        return payload
 
     def prepare_stream(
         self,
@@ -208,31 +179,141 @@ class ShoppingAssistant:
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
-    ) -> Iterator[ExecutionPlan | PreparedChat]:
-        session_products = self._commerce_products(session_id, client_recent_product_ids or [])
-        planned = self._planner.plan(
-            query,
-            session_products=session_products,
-            cart_items=cart_items or [],
-        )
-        if planned is not None:
-            yield from self._prepare_planned_task_updates(
-                query,
-                session_id,
-                planned,
-                top_k,
-                client_recent_product_ids or [],
-                cart_items or [],
+        image_bytes: bytes | None = None,
+    ) -> Iterator[str | ExecutionPlan | PreparedChat]:
+        if image_bytes is not None:
+            yield self.prepare(
+                query, session_id, top_k, compare_product_ids,
+                client_recent_product_ids, cart_items, image_bytes=image_bytes,
             )
             return
-        yield self.prepare(
+        for item in self._route(
+            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or []
+        ):
+            if isinstance(item, str):
+                yield item  # opener continuation — stream it the moment the route is known
+                continue
+            kind, payload = item
+            if kind == "planned":
+                yield from self._prepare_planned_task_updates(
+                    query, session_id, payload, top_k, client_recent_product_ids or [], cart_items or []
+                )
+            else:
+                yield payload
+            return
+
+    def _route(
+        self,
+        query: str,
+        session_id: str | None,
+        top_k: int,
+        compare_product_ids: list[str],
+        client_recent_product_ids: list[str],
+        cart_items: list[dict],
+    ) -> Iterator[str | tuple[str, PreparedChat | PlannedTask]]:
+        """Generator: yields the route-tailored opener continuation as soon as the router decides, then
+        a final (kind, payload) tuple — ("prepared", PreparedChat) or ("planned", PlannedTask). A
+        focused LLM router classifies the turn (a deterministic clarification-continuation sits in
+        front, keyword router as the LLM-off fallback); the heavy intent parse runs only for
+        search/comparison; commerce lets the LLM fill the action."""
+        order_state = self._session(session_id).order
+        session_products = self._commerce_products(session_id, client_recent_product_ids)
+
+        # 1. Continue an open "which item?" clarification before anything routes.
+        if order_state.pending_action is not None:
+            pending = self._commerce.handle_pending_reply(
+                query, cart_items=cart_items, session_products=session_products, order_state=order_state
+            )
+            if pending is not None:
+                yield self.opener("cart_action", query)
+                yield ("prepared", self._prepare_commerce(query, session_id, pending))
+                return
+
+        # 2. Speculative embed overlaps the router/parse calls (only the search path needs it).
+        if not compare_product_ids:
+            self._retriever.prewarm_query(query)
+
+        recent_product_ids = self._recent_product_ids(session_id, client_recent_product_ids)
+
+        # 3. Focused router (LLM-primary). When the LLM is off/failed, fall back to the keyword router
+        # (which needs a rule parse). `filters` is parsed lazily and reused.
+        filters: SearchFilters | None = None
+        route, chitchat_reply = self._parser.classify_route(
             query,
-            session_id,
-            top_k,
-            compare_product_ids,
-            client_recent_product_ids,
-            cart_items,
+            has_cart=bool(cart_items),
+            has_results=bool(session_products),
+            has_draft=order_state.draft is not None,
+            just_compared=self._session(session_id).last_winner_id is not None,
         )
+        if route is None:
+            filters = self._parse_intent(query, session_id, cart_items)
+            route = self._fallback_route(query, order_state, filters)
+        if len(compare_product_ids) >= 2:
+            route = "comparison"
+
+        # The opener now matches the route the LLM actually picked — stream it before the heavy work
+        # (empty for chitchat, where the reply greets for itself).
+        opener = self.opener(route, query)
+        if opener:
+            yield opener
+
+        # 4. Dispatch.
+        if route == "planned_task":
+            planned = self._planner.plan(
+                query, force=True, session_products=session_products, cart_items=cart_items
+            )
+            if planned is not None:
+                yield ("planned", planned)
+                return
+            route = "product_search"  # planner declined -> treat as a plain search
+        if route in {"cart_action", "checkout"}:
+            commerce = self._commerce.maybe_handle(
+                query, cart_items=cart_items, session_products=session_products,
+                order_state=order_state, comparison_winner_id=self._session(session_id).last_winner_id,
+            )
+            if commerce is not None:
+                yield ("prepared", self._prepare_commerce(query, session_id, commerce))
+                return
+            route = "product_search"  # routed to cart but nothing actionable -> fall through
+        if route == "comparison":
+            filters = filters or self._parse_intent(query, session_id, cart_items)
+            yield ("prepared", self._prepare_comparison(
+                query, session_id, filters, compare_product_ids, recent_product_ids
+            ))
+            return
+        if route == "chitchat":
+            # The router already wrote the reply inline, so chitchat needs no further model call.
+            yield ("prepared", self._prepare_chitchat(
+                query, session_id, SearchFilters(intent_type="chitchat", raw_query=query),
+                reply=chitchat_reply or CHITCHAT_REPLY,
+            ))
+            return
+        # product_search: the parse still gets to downgrade to chitchat for an out-of-catalogue item.
+        filters = filters or self._parse_intent(query, session_id, cart_items)
+        if filters.intent_type == "chitchat":
+            yield ("prepared", self._prepare_chitchat(query, session_id, filters))
+            return
+        filters.intent_type = "product_search"
+        yield ("prepared", self._prepare_search(query, session_id, filters, top_k, recent_product_ids))
+
+    def _parse_intent(self, query: str, session_id: str | None, cart_items: list[dict]) -> SearchFilters:
+        return self._parser.parse(
+            query,
+            previous_filters=self._previous_filters(session_id),
+            history=self._history_summaries(session_id),
+            session_products=self._session_products(session_id),
+            cart=self._cart_for_intent(cart_items),
+        )
+
+    def _fallback_route(self, message: str, order_state: OrderState, filters: SearchFilters) -> str:
+        """Keyword route resolution for when the intent LLM is unavailable. planned_task is checked
+        before commerce because a multi-step request also contains commerce keywords; commerce before
+        the rule comparison so an ordinal add ("加第一个") routes to the cart, not a comparison."""
+        if looks_like_planned_task(message):
+            return "planned_task"
+        if looks_like_commerce(message) or order_state.draft is not None:
+            return "cart_action"  # maybe_handle's deterministic parse picks add vs checkout vs ...
+        return filters.intent_type  # rule parser: comparison or product_search
 
     def _prepare_commerce(
         self,
@@ -328,6 +409,16 @@ class ShoppingAssistant:
                         client_recent_product_ids,
                         planned,
                     )
+                    if prepared.filters.intent_type == "chitchat":
+                        # The thing isn't in our catalogue. Abandon the plan and decline politely
+                        # instead of carting an unrelated product.
+                        plan_steps[idx].status = "failed"
+                        plan_steps[idx].summary = "本店暂不提供这件商品。"
+                        summaries.append(plan_steps[idx].summary)
+                        prepared.plan = ExecutionPlan(steps=plan_steps, summary="；".join(summaries))
+                        yield _copy_plan(prepared.plan)
+                        yield prepared
+                        return
                     retrieval = prepared.retrieval
                     products = prepared.products
                     selected_ids = [product.product_id for product in products]
@@ -397,7 +488,7 @@ class ShoppingAssistant:
         yield PreparedChat(
             query=query,
             session_id=session_id,
-            filters=SearchFilters(intent_type="planned_action", raw_query=query),
+            filters=SearchFilters(intent_type="planned_task", raw_query=query),
             retrieval=retrieval,
             products=products,
             comparison=comparison,
@@ -423,6 +514,11 @@ class ShoppingAssistant:
             history=self._history_summaries(session_id),
             session_products=self._session_products(session_id),
         )
+        # An out-of-catalogue request (e.g. 手表, which we don't sell) parses as chitchat. Forcing
+        # product_search here would make retrieval return nearest-neighbour junk (AirPods for a
+        # watch) and the plan would then cart it. Honour the decline; the caller abandons the plan.
+        if filters.intent_type == "chitchat":
+            return self._prepare_chitchat(query, session_id, filters)
         filters.intent_type = "product_search"
         criteria = next((step.criteria for step in planned.steps if step.action == "select_products"), None)
         if criteria == "price_asc":
@@ -543,6 +639,8 @@ class ShoppingAssistant:
         # the fallback. No messages for a clarification, there is nothing to narrate.
         messages = [] if comparison.clarification else comparison_narration_messages(comparison)
         self._remember_shown_products(session_id, products)
+        if session_id and comparison.winner_product_id:
+            self._session(session_id).last_winner_id = comparison.winner_product_id
         return PreparedChat(
             query=query,
             session_id=session_id,
@@ -557,10 +655,11 @@ class ShoppingAssistant:
         )
 
     def _prepare_chitchat(
-        self, query: str, session_id: str | None, filters: SearchFilters
+        self, query: str, session_id: str | None, filters: SearchFilters, reply: str | None = None
     ) -> PreparedChat:
-        # LLM handles the conversation (kept in character by the system prompt). The fixed
-        # reply is the fallback when the model is unavailable.
+        # When the router already wrote the reply inline (greeting chitchat), use it and make no
+        # further model call (messages=[]). Otherwise (out-of-catalogue downgrade) let the chitchat
+        # LLM narrate the polite decline, with the fixed reply as the model-unavailable fallback.
         return PreparedChat(
             query=query,
             session_id=session_id,
@@ -857,8 +956,12 @@ class ShoppingAssistant:
         compare_product_ids: list[str] | None = None,
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
+        image_bytes: bytes | None = None,
     ) -> ChatResponse:
-        prepared = self.prepare(query, session_id, top_k, compare_product_ids, client_recent_product_ids, cart_items)
+        prepared = self.prepare(
+            query, session_id, top_k, compare_product_ids,
+            client_recent_product_ids, cart_items, image_bytes=image_bytes,
+        )
         warnings = list(prepared.retrieval.warnings)
 
         answer_text = prepared.grounded_answer
@@ -1031,6 +1134,22 @@ class ShoppingAssistant:
             if pid not in seen:
                 items.append(entry)
                 seen.add(pid)
+        return items or None
+
+    def _cart_for_intent(self, cart_items: list[dict] | None) -> list[dict] | None:
+        """Compact cart view for the intent router, so it knows a cart exists and can route cart-view
+        / remove-by-description turns ("购物车里有什么", "把最贵的删了") to cart_action instead of search."""
+        items: list[dict] = []
+        for raw in cart_items or []:
+            pid = raw.get("product_id") or (raw.get("product") or {}).get("product_id")
+            product = self._catalog.get(pid) if pid else None
+            if product is None:
+                continue
+            items.append({
+                "title": product["title"],
+                "price": self._catalog.lowest_price(product),
+                "quantity": raw.get("quantity", 1),
+            })
         return items or None
 
     def _history_summaries(self, session_id: str | None) -> list[dict] | None:

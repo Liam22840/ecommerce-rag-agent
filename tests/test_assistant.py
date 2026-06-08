@@ -322,19 +322,23 @@ def test_prepare_skips_prewarm_for_explicit_comparison():
     assert spy.prewarmed == []  # comparison never retrieves, so nothing to pre-warm
 
 
-def test_lead_in_is_tailored_by_rule_parser_or_neutral():
+def test_opener_matches_the_route():
     a = _assistant()
-    # A named product type personalises the opener (rule parser maps it, no model call).
-    assert "面霜" in a.lead_in("三百以内的面霜")
-    # An explicit comparison from the request opens with 对比.
-    assert "对比" in a.lead_in("随便", compare_product_ids=["a", "b"])
-    # A vague / chit-chat query the rules can't place falls back to a bare neutral ack, no
-    # lookup implication, no greeting (which would clash with a chit-chat reply's own greeting).
-    assert a.lead_in("你好") == "好的～\n"
-    # A modifier negation still tailors (they want 面霜, just not greasy)...
-    assert "面霜" in a.lead_in("不要油腻的面霜")
-    # ...but negating the type itself opens neutral, never offering the excluded type.
-    assert a.lead_in("不要面霜") == "好的～\n"
+    # A search opener names the product type — the label comes from the instant rule parse.
+    assert "面霜" in a.opener("product_search", "三百以内的面霜")
+    assert "面霜" in a.opener("product_search", "不要油腻的面霜")  # modifier negation still tailors
+    # Negating the type itself yields no label, so a generic search opener (never offers 面霜).
+    assert "面霜" not in a.opener("product_search", "不要面霜")
+    # Other routes get a route-appropriate opener, not a search line.
+    assert "对比" in a.opener("comparison", "随便")
+    assert "购物车" in a.opener("cart_action", "把最贵的删了")
+    # Chitchat gets no opener — its reply greets for itself.
+    assert a.opener("chitchat", "你好") == ""
+    # The opener leads with one of the varied acknowledgements (one of which itself contains a 顿号,
+    # so match the prefix rather than splitting on the separator).
+    leads = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+    opener = a.opener("product_search", "面霜")
+    assert any(opener.startswith(lead) for lead in leads)
 
 
 # --- filter-keyed safe cache ---------------------------------------------------
@@ -392,6 +396,25 @@ def test_filter_cache_skips_session_context_turns():
 
 # --- multi-round history + relative refinements --------------------------------
 
+_ROUTE_FROM_INTENT = {
+    "product_search": "search", "comparison": "comparison", "chitchat": "chitchat",
+    "cart_action": "cart", "checkout": "checkout", "planned_task": "plan",
+}
+
+
+def _route_reply_for(user_message: str, next_intent_json: str) -> str:
+    """Derive the focused-router answer. A greeting routes to chitchat (which no longer runs the intent
+    parse, so it consumes nothing); otherwise derive from the next queued intent so the router and the
+    intent parse agree (the router peeks, the intent parse pops)."""
+    if any(g in user_message for g in ("你好", "你是谁", "谢谢")):
+        return json.dumps({"route": "chitchat"})
+    try:
+        intent = json.loads(next_intent_json).get("intent_type", "product_search")
+    except (ValueError, AttributeError):
+        intent = "product_search"
+    return json.dumps({"route": _ROUTE_FROM_INTENT.get(intent, "search")})
+
+
 class _SeqLLM:
     """Intent LLM that returns a different canned JSON per call (turn-by-turn)."""
 
@@ -401,6 +424,8 @@ class _SeqLLM:
         self._responses = list(responses)
 
     def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return _route_reply_for(messages[1]["content"], self._responses[0] if self._responses else "{}")
         return self._responses.pop(0) if self._responses else "{}"
 
 
@@ -416,6 +441,8 @@ class _ScriptedLLM:
         self.calls: list = []
 
     def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return _route_reply_for(messages[1]["content"], self.next_response)
         self.calls.append(messages)
         return self.next_response
 
@@ -768,9 +795,10 @@ def test_refining_after_a_recall_carries_from_the_recall_turn():
 # --- multi-feature journeys + cross-branch memory ------------------------------
 
 def test_chitchat_turn_preserves_all_memory():
+    # The chitchat turn no longer runs the intent parse, so it consumes no queued response (the router
+    # recognises the greeting by query); only the two searches pop.
     llm = _SeqLLM([
         json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜"}),
-        json.dumps({"intent_type": "chitchat"}),
         json.dumps({"intent_type": "product_search", "sort_by": "price_asc"}),
     ])
     assistant = _assistant(intent_llm=llm)

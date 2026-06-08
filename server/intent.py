@@ -7,12 +7,13 @@ the rule pass is the fallback when the model is unavailable.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from server.prompts import intent_messages
-from server.textutil import dedupe, json_object, normalize, normalize_spec, trim
+from server.prompts import intent_messages, route_messages, vision_intent_messages
+from server.textutil import chinese_to_int, dedupe, json_object, normalize, normalize_spec, trim
 
 
 # Single source of truth for sellpoint-attribute synonyms: the rule-parser extracts these from a
@@ -70,7 +71,7 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
 }
 
 SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
-INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout"}
+INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout", "planned_task"}
 
 # Rule-fallback comparison detection. Kept local (not imported from comparison.py,
 # which imports SearchFilters from here) so the rule path can set intent_type when the
@@ -142,13 +143,14 @@ class IntentParser:
         previous_filters: SearchFilters | None = None,
         history: list[dict[str, Any]] | None = None,
         session_products: list[dict[str, Any]] | None = None,
+        cart: list[dict[str, Any]] | None = None,
     ) -> SearchFilters:
         # `previous_filters` drives the deterministic backstop (last turn only). `history`
         # is the few-round refinement context. `session_products` is the whole-session list
         # of shown products the LLM uses to resolve backtracking ("回到最开始那个").
         rule = self._rule_parse(message)
         if self._should_use_llm():
-            llm = self._llm_parse(message, history, session_products)
+            llm = self._llm_parse(message, history, session_products, cart)
             base = rule if llm is None else self._merge(rule, llm, message)
         else:
             base = rule
@@ -287,6 +289,41 @@ class IntentParser:
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
 
+    _ROUTE_MAP = {
+        "search": "product_search", "comparison": "comparison", "cart": "cart_action",
+        "checkout": "checkout", "plan": "planned_task", "chitchat": "chitchat",
+    }
+
+    def classify_route(
+        self,
+        query: str,
+        *,
+        has_cart: bool,
+        has_results: bool,
+        has_draft: bool,
+        just_compared: bool,
+    ) -> tuple[str | None, str]:
+        """Focused, route-only classifier — a short prompt that reliably decides the turn kind, which
+        the overloaded intent parser does not. For chitchat it also answers inline, so that turn needs
+        no second model call. Returns (intent_type, chitchat_reply); intent_type is None when the LLM
+        is unavailable or the answer unusable (caller then falls back to the keyword router)."""
+        if not self._should_use_llm():
+            return None, ""
+        try:
+            payload = json_object(self._llm.complete(route_messages(
+                query, has_cart=has_cart, has_results=has_results,
+                has_draft=has_draft, just_compared=just_compared,
+            )))
+        except Exception:  # noqa: BLE001 (routing must degrade to the keyword fallback)
+            return None, ""
+        return self._ROUTE_MAP.get(payload.get("route")), str(payload.get("reply") or "")
+
+    @property
+    def llm_available(self) -> bool:
+        """Whether the intent LLM can act as the router this turn. When False, the assistant uses the
+        deterministic keyword fallback router instead of trusting the rule parser's intent_type."""
+        return self._should_use_llm()
+
     def _should_use_llm(self) -> bool:
         return bool(self._llm) and getattr(self._llm, "available", False)
 
@@ -295,6 +332,7 @@ class IntentParser:
         message: str,
         history: list[dict[str, Any]] | None = None,
         session_products: list[dict[str, Any]] | None = None,
+        cart: list[dict[str, Any]] | None = None,
     ) -> SearchFilters | None:
         try:
             raw = self._llm.complete(
@@ -305,6 +343,7 @@ class IntentParser:
                     self._brands,
                     history=history,
                     session_products=session_products,
+                    cart=cart,
                 )
             )
             payload = json_object(raw)
@@ -428,44 +467,11 @@ class IntentParser:
 # A price number, in Arabic digits and/or Chinese numerals (三百, 一万, 1万, 三百五). Scoped to the
 # price patterns below so it never touches numerals inside names (e.g. 三只松鼠).
 _PRICE_NUMBER = r"([\d零〇一二两三四五六七八九十百千万]+(?:\.\d+)?)"
-_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-_CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
-
-
-def _cn_to_int(token: str) -> int | None:
-    """Convert a Chinese or mixed-digit integer (三百 / 一万 / 1万 / 三百五十 / 三百五) to an int,
-    or None if it isn't a parseable number. Used only for the deterministic price fallback. The
-    chat model handles Chinese numbers itself."""
-    total = section = number = last_unit = 0
-    for ch in token:
-        if ch.isdigit():
-            number = number * 10 + int(ch)
-        elif ch in _CN_DIGIT:
-            number = _CN_DIGIT[ch]
-        elif ch in _CN_UNIT:
-            unit = _CN_UNIT[ch]
-            if unit == 10000:
-                section = (section + number) * unit
-                total += section
-                section = 0
-            else:
-                section += (number or 1) * unit
-            last_unit = unit
-            number = 0
-        else:
-            return None
-    if number and last_unit >= 10:  # trailing bare digit, e.g. 三百五 -> 350
-        section += number * (last_unit // 10)
-        number = 0
-    return (total + section + number) or None
-
-
 def _to_number(token: str) -> float | None:
     try:
         return float(token)
     except ValueError:
-        value = _cn_to_int(token)
+        value = chinese_to_int(token)
         return float(value) if value is not None else None
 
 

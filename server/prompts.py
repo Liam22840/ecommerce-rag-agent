@@ -9,6 +9,7 @@ The message builders operate on the objects passed to them (duck-typed at runtim
 from __future__ import annotations
 
 import json
+import random
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,20 +20,22 @@ if TYPE_CHECKING:
 
 # --- Streaming lead-in ---------------------------------------------------------
 
-# The first streamed token, emitted before the heavy LLM work so the first screen lands in well
-# under a second (首屏极速响应) while the grounded answer is assembled behind it. The kind is
-# chosen deterministically by the rule parser (no model call). The answer behind it is still
-# LLM-driven. A named product type personalises the opener, everything else gets a neutral line,
-# so an unrecognised or chit-chat query is never mis-opened. Streaming-only: never stored.
-def lead_in_text(kind: str, label: str | None = None) -> str:
-    if kind == "search" and label:
-        return f"好的，我来帮您找{label}～\n"
-    if kind == "compare":
-        return "好的，我来帮您对比一下～\n"
-    # Neutral bucket = vague searches AND chit-chat (we can't tell them apart pre-parse). A bare
-    # acknowledgement composes cleanly before either: it doesn't imply a lookup (wrong for chit-
-    # chat) and doesn't greet (which would clash with a chit-chat reply's own greeting).
-    return "好的～\n"
+# The streaming opener, emitted the moment the focused router picks a route (~the router's latency,
+# still well under a second) so it actually matches what happens next. A varied lead keeps it from
+# reading robotic. Chitchat gets no opener — its reply greets for itself. Streaming-only, never stored.
+_OPENER_LEADS = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+
+
+def opener_text(route: str, label: str | None = None) -> str:
+    if route == "chitchat":
+        return ""
+    tail = {
+        "comparison": "我来帮您对比一下",
+        "cart_action": "马上帮您处理购物车",
+        "checkout": "这就帮您处理订单",
+        "planned_task": "这就为您安排",
+    }.get(route) or (f"我来帮您找{label}" if label else "我帮您找找")
+    return f"{random.choice(_OPENER_LEADS)}，{tail}～\n"
 
 
 # --- Recommendation answer -----------------------------------------------------
@@ -77,6 +80,49 @@ def build_messages(
     ]
 
 
+# --- Turn router (focused, route-only classifier) ------------------------------
+
+ROUTER_SYSTEM = (
+    "你是电商导购的意图路由器。只判断用户这句话属于哪一类，输出一个 JSON，不写解释。\n"
+    "类别：\n"
+    "- search：想找、推荐、筛选商品，或对上一批结果追加/调整条件（如“便宜点的”“再要保湿的”）。\n"
+    "- comparison：比较、二选一已展示过或点名的商品。\n"
+    "- cart：操作购物车——加入、删除、改数量、查看购物车里有什么、算总价；也包括用描述指代商品的购物车操作"
+    "（如“把最贵的删了”“买更适合的那个”“评价好的那个加入购物车”“加两件”）。\n"
+    "- checkout：下单、结算、确认订单、取消订单。\n"
+    "- plan：一句话里要连续完成多个动作（如“搜索后对比再加购”“推荐X并加入购物车然后下单”）。\n"
+    "- chitchat：打招呼、闲聊、与购物无关。\n"
+    "context 告诉你：购物车里有没有商品、刚展示过商品没有、有没有待确认订单、是否刚做过对比。"
+    "据此判断有指代的话（“那个”“最贵的”“更适合的”）该归到哪类。\n"
+    "如果 route 是 chitchat，就直接在 reply 里写一句友好、简短的中文回应：打招呼/问你是谁就说你是导购助手并把话题引到购物"
+    "（想买什么品类、预算或场景），与购物无关的问题就礼貌说你只负责帮挑选商品；其他 route 时 reply 填空字符串。\n"
+    '只输出：{"route":"search|comparison|cart|checkout|plan|chitchat","reply":string}'
+)
+
+
+def route_messages(
+    query: str,
+    *,
+    has_cart: bool,
+    has_results: bool,
+    has_draft: bool,
+    just_compared: bool,
+) -> list[dict[str, str]]:
+    payload = {
+        "query": query,
+        "context": {
+            "购物车有商品": has_cart,
+            "刚展示过商品": has_results,
+            "有待确认订单": has_draft,
+            "刚做过对比": just_compared,
+        },
+    }
+    return [
+        {"role": "system", "content": ROUTER_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 # --- Intent parsing ------------------------------------------------------------
 
 INTENT_SYSTEM_PROMPT = (
@@ -90,8 +136,17 @@ INTENT_SYSTEM_PROMPT = (
     "3. 价格区间：「200到500」→ min_price=200, max_price=500；「不超过1万/一万」→ max_price=10000；中文数字要换算成阿拉伯数字；没有约束填 null。"
     "约数价格要展开成一个合理区间而不是精确值（如「三百左右」→ min_price=255, max_price=345），只有明确说「正好/刚好」时才用精确值。\n"
     "4. 否定：「不含X」「不要X牌」→ 写进 excluded_terms / excluded_brands（品牌必须是列表里的官方品牌词，否则不写）。\n"
-    "5. intent_type：纯打招呼/闲聊/与购物无关→chitchat；在比较/二选一具体商品→comparison；其余购物需求→product_search。"
-    "若用户想要的商品明显不属于本目录的任何 category/sub_category（既无法归类，也不是承接上文的追问或“随便看看”这类泛需求），也按 chitchat 处理，礼貌说明暂不提供该品类，不要硬塞不相关的商品。\n"
+    "5. intent_type：按这句话的主要目的选一个。\n"
+    "   - product_search：想找、推荐、筛选某类商品。\n"
+    "   - comparison：对已点名或已展示的具体商品做比较、二选一。\n"
+    "   - cart_action：想操作购物车——加入、删除、改数量；查看购物车里有什么或算总价（如“购物车里有什么”"
+    "“一共多少钱”）；或按描述删除/修改某件（如“把最贵的删了”“把便宜的那个换成两件”）。下方给了 cart 就表示购物车里已有商品。"
+    "用户说“买/加 更好的/更适合的/胜出的那个”指向之前展示或对比过的某款时，也算 cart_action。\n"
+    "   - checkout：想下单、结算、确认订单或取消订单。\n"
+    "   - planned_task：一句话里要连续完成多个动作（如“搜索后筛选”“对比后加购”“搜索后加购”）。\n"
+    "   - chitchat：打招呼/闲聊/与购物无关；或想要的商品明显不属于本目录任何 category/sub_category"
+    "（既无法归类，也不是承接上文的追问或“随便看看”这类泛需求），礼貌说明暂不提供，不要硬塞不相关的商品。\n"
+    "   对 cart_action / checkout / planned_task 你只需判断类型，不要解析具体商品 id、数量或拆解步骤，这些由后续模块处理。\n"
     "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。\n"
     "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品，用其原话里最具体的指代（带型号/系列，如「理肤泉特安」而非只写「理肤泉」）；否则填 []。\n"
@@ -147,6 +202,7 @@ def intent_messages(
     brands: set[str],
     history: list[dict] | None = None,
     session_products: list[dict] | None = None,
+    cart: list[dict] | None = None,
 ) -> list[dict[str, str]]:
     user_payload = {
         "query": query,
@@ -158,6 +214,8 @@ def intent_messages(
         user_payload["recent_turns"] = history
     if session_products:
         user_payload["session_products"] = session_products
+    if cart:
+        user_payload["cart"] = cart
     return [
         {"role": "system", "content": INTENT_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from collections.abc import Iterator
 
@@ -80,6 +82,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
+        image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
@@ -94,6 +97,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
+            image_bytes=image_bytes,
         )
         if key is not None:
             _maybe_store(cache, key, response)
@@ -105,16 +109,18 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
+        image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
         key, cached = _cache_lookup(cache, message, request)
         if cached is not None:
             assistant = app.state.assistant
             assistant.record_cached_turn(request.effective_session_id, message, cached)
-            lead_in = assistant.lead_in(message, request.effective_compare_product_ids)
-            return _sse_response(_sse_replay(cached, settings.stream_chunk_size, lead_in))
+            # A cache hit is always a product search; emit the opener at once (no router wait).
+            opener = assistant.opener("product_search", message)
+            return _sse_response(_sse_replay(cached, settings.stream_chunk_size, opener))
         # prepare() runs inside the generator (after the lead-in is flushed) so the first
         # streamed token lands in <1s instead of after intent + retrieval.
-        return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key))
+        return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key, image_bytes))
 
     @app.get("/api/products/{product_id}")
     def product_detail(product_id: str) -> dict:
@@ -126,8 +132,23 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
     return app
 
 
+def _decode_image(request: ChatRequest) -> bytes | None:
+    attachment = request.image_attachment
+    if attachment is None:
+        return None
+    try:
+        return base64.b64decode(attachment.data, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="图片格式无法识别，请重新拍一张。")
+
+
 def _cache_lookup(cache: QueryCache, message: str, request: ChatRequest) -> tuple[str | None, dict | None]:
-    if looks_like_planned_task(message) or looks_like_commerce(message) or request.client_context.cart_items:
+    if (
+        looks_like_planned_task(message)
+        or looks_like_commerce(message)
+        or request.client_context.cart_items
+        or request.attachments
+    ):
         return None, None
     compare_ids = request.effective_compare_product_ids
     recent_ids = request.client_context.recent_product_ids
@@ -148,10 +169,10 @@ def _sse_stream(
     request: ChatRequest,
     cache: QueryCache | None = None,
     key: str | None = None,
+    image_bytes: bytes | None = None,
 ) -> Iterator[str]:
-    # Lead-in first: a deterministic, rule-picked opener flushed before intent+retrieval so 首
-    # Token lands in <1s. Streaming-only, not collected into the stored answer.
-    yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
+    # The opener is the first thing prepare_stream yields — a route-tailored line emitted the moment
+    # the router decides (empty for chitchat). Streaming-only, not collected into the stored answer.
     try:
         prepared = None
         for update in assistant.prepare_stream(
@@ -161,8 +182,11 @@ def _sse_stream(
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
+            image_bytes=image_bytes,
         ):
-            if isinstance(update, ExecutionPlan):
+            if isinstance(update, str):
+                yield _token_event(update)  # opener continuation
+            elif isinstance(update, ExecutionPlan):
                 yield _plan_frame(_model_dump(update))
             else:
                 prepared = update
@@ -198,11 +222,11 @@ def _sse_stream(
     assistant.maybe_store_filter_cache(prepared, response)
 
 
-def _sse_replay(cached: dict, chunk_size: int, lead_in: str = "") -> Iterator[str]:
-    # Open with the same lead-in as a fresh turn so a cached reply reads identically. It stays
+def _sse_replay(cached: dict, chunk_size: int, opener: str = "") -> Iterator[str]:
+    # Open with the same opener as a fresh turn so a cached reply reads identically. It stays
     # instant since the rest of the replay is already in memory.
-    if lead_in:
-        yield _token_event(lead_in)
+    if opener:
+        yield _token_event(opener)
     products = [_enrich_product_dict(dict(p)) for p in cached.get("products", [])]
     yield _cards_frame(products, cached.get("comparison"))
     for token in _chunk_text(cached.get("answer", ""), chunk_size):

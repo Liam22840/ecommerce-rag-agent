@@ -144,40 +144,31 @@ def test_stream_endpoint_uses_sse_events():
     assert '"items"' in body
 
 
-def test_stream_emits_lead_in_first_then_cards_before_answer():
+def test_stream_emits_lead_then_route_opener_then_cards_before_answer():
     client = _client()
 
     with client.stream("POST", "/api/chat/stream", json={"message": "推荐一款适合油皮的洗面奶"}) as resp:
         body = "".join(resp.iter_text())
 
     assert resp.status_code == 200
-    # The lead-in is the very first frame, before intent + retrieval run, the <1s 首 Token.
-    # It's tailored by the rule parser: "洗面奶" maps to the 洁面 sub-category, so the opener names it.
+    # An instant acknowledgement token is the very first frame (the <1s 首 Token).
     assert body.startswith("event: token")
-    first_frame = body.split("\n\n")[0]
-    assert "好的" in first_frame and "洁面" in first_frame
+    before_cards = body[: body.index("event: products")]
+    # The route-tailored continuation names the 洁面 sub-category (label from the rule parse), before cards.
+    assert "洁面" in before_cards
     # Cards-first: products arrive before the grounded answer prose ("商品库" is in the answer).
     assert body.index("event: products") < body.index("商品库")
-    # done is still the final frame.
     assert body.rfind("event: done") > body.rfind("event: products")
 
 
-def test_stream_lead_in_is_neutral_for_chitchat_and_compare_for_explicit_comparison():
+def test_stream_opener_is_comparison_for_an_explicit_comparison():
     client = _client()
-
-    with client.stream("POST", "/api/chat/stream", json={"message": "你好呀"}) as resp:
-        chat = "".join(resp.iter_text())
-    # No product type and not a comparison -> bare neutral ack, never mis-tailored or greeting.
-    first = chat.split("\n\n")[0]
-    assert "好的" in first
-    assert "帮您找" not in first and "对比" not in first
-
     with client.stream(
         "POST", "/api/chat/stream",
         json={"message": "哪个好", "compare_product_ids": ["p_beauty_007", "p_beauty_012"]},
     ) as resp:
         cmp = "".join(resp.iter_text())
-    assert "对比" in cmp.split("\n\n")[0]
+    assert "对比" in cmp[: cmp.index("event: comparison")]
 
 
 def test_sse_stream_degrades_gracefully_when_prepare_fails():
@@ -187,14 +178,12 @@ def test_sse_stream_degrades_gracefully_when_prepare_fails():
     from server.schemas import ChatRequest
 
     class _BoomAssistant:
-        def lead_in(self, *a, **k):
-            return "好的～\n"
-
-        def prepare(self, *a, **k):
+        def prepare_stream(self, *a, **k):
             raise RuntimeError("boom")
+            yield  # make it a generator
 
     frames = "".join(_sse_stream(_BoomAssistant(), "随便", ChatRequest(message="随便"), None, None))
-    assert frames.startswith("event: token")  # lead-in still went out first
+    assert frames.startswith("event: token")  # instant lead still went out first
     assert "出了一点问题" in frames            # graceful fallback message
     assert "event: done" in frames            # stream closed, no hang
 
@@ -580,8 +569,8 @@ class _CountingAssistant:
     def stream_answer(self, prepared):
         return self._inner.stream_answer(prepared)
 
-    def lead_in(self, *args, **kwargs):
-        return self._inner.lead_in(*args, **kwargs)
+    def opener(self, *args, **kwargs):
+        return self._inner.opener(*args, **kwargs)
 
     def record_cached_turn(self, *args, **kwargs):
         return self._inner.record_cached_turn(*args, **kwargs)
@@ -647,9 +636,9 @@ def test_stream_replays_cached_answer_without_recompute(tmp_path):
     assert counting.prepare_calls == 0  # cache hit -> prepare never ran
     assert "event: token" in stream
     assert "event: done" in stream
-    # A cached reply opens with the same lead-in as a fresh one, for a consistent first screen.
+    # A cached reply opens with the same instant lead + search continuation as a fresh one.
     assert stream.startswith("event: token")
-    assert "好的" in stream.split("\n\n")[0]
+    assert "面霜" in stream[: stream.index("event: products")]  # search opener names the type
 
 
 def test_query_cache_hit_still_records_session_for_followups(tmp_path):

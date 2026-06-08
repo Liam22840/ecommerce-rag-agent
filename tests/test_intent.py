@@ -136,6 +136,12 @@ def test_rule_parser_understands_chinese_numeral_prices():
     assert p.parse("三只松鼠的零食").max_price is None
 
 
+def test_llm_planned_task_intent_is_coerced_and_routes():
+    # The intent LLM is now the router; planned_task must survive coercion (it's a valid intent value).
+    parser = _llm_parser({"intent_type": "planned_task"})
+    assert parser.parse("推荐跑鞋并对比最便宜的两双加入购物车").intent_type == "planned_task"
+
+
 def test_parses_excluded_terms_from_negation():
     filters = _parser().parse("推荐一个面霜，不要香精")
     assert "香精" in filters.excluded_terms
