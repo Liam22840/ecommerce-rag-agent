@@ -64,16 +64,18 @@ SSE 的 content type 是 `text/event-stream; charset=utf-8`，并且 stream pars
 当前 key 分开管理：
 
 ```env
+# Chat model — Gemini Flash-Lite via其 OpenAI 兼容 endpoint。
 ARK_CHAT_API_KEY=
-ARK_CHAT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_CHAT_MODEL=ep-20260514111645-lmgt2
+ARK_CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+ARK_CHAT_MODEL=gemini-3.1-flash-lite
 
+# Embedding model — Doubao（保持不变：milvus.db 是在该 embedding space 建的）。
 ARK_EMBEDDING_API_KEY=
 ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215
 ```
 
-这样做的原因是 chat model 和 embedding model 可以使用不同的模型、endpoint 或 key。后续如果替换模型，不需要改业务代码，只需要改配置。
+chat model 和 embedding model 各自独立配置（可用不同的模型、endpoint、key）。client 是 OpenAI 兼容的，所以替换 chat 模型只需要改配置，不需要改业务代码。
 
 相关开关：
 

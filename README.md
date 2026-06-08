@@ -77,12 +77,11 @@ cp .env.example .env
 # edit .env and set ARK_CHAT_API_KEY / ARK_EMBEDDING_API_KEY
 ```
 
-The current backend uses separate Ark settings for chat and embeddings. Keep
-real keys in `.env` only:
+The backend uses separate settings for chat and embeddings. Keep real keys in `.env` only:
 
 - `ARK_CHAT_API_KEY`: key for the chat model
-- `ARK_CHAT_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
-- `ARK_CHAT_MODEL=ep-20260514111645-lmgt2`
+- `ARK_CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
+- `ARK_CHAT_MODEL=gemini-3.1-flash-lite` (Gemini Flash-Lite via its OpenAI-compatible endpoint)
 - `ARK_EMBEDDING_API_KEY`: key for query/product embeddings
 - `ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
 - `ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215`

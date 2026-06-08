@@ -59,21 +59,6 @@ def test_complete_returns_stripped_content_and_shapes_request(mocker):
     assert kwargs["headers"]["Authorization"] == "Bearer secret"
     assert kwargs["headers"]["Content-Type"] == "application/json"
     assert kwargs["timeout"] == 60.0
-    assert "thinking" not in kwargs["json"]  # not sent unless explicitly disabled
-
-
-def test_disable_thinking_adds_the_thinking_field(mocker):
-    resp = mocker.Mock(status_code=200)
-    resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
-    post = mocker.patch("server.llm.requests.post", return_value=resp)
-
-    client = ArkChatClient(
-        api_key="k", base_url="https://ark.example/api/v3", model="m1", disable_thinking=True
-    )
-    client.complete([{"role": "user", "content": "hi"}])
-
-    _, kwargs = post.call_args
-    assert kwargs["json"]["thinking"] == {"type": "disabled"}
 
 
 def test_complete_raises_on_http_error_with_status_and_body(mocker):

@@ -44,7 +44,6 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             base_url=settings.chat_base_url,
             model=settings.chat_model,
             timeout_seconds=settings.chat_timeout_seconds,
-            disable_thinking=settings.chat_disable_thinking,
         )
         intent_llm = llm if settings.enable_llm_intent else None
         filter_cache = FilterCache(

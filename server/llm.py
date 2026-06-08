@@ -19,27 +19,15 @@ class ArkChatClient:
         base_url: str,
         model: str,
         timeout_seconds: float = 60.0,
-        disable_thinking: bool = False,
     ):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout_seconds = timeout_seconds
-        # Doubao "Seed" models are reasoning models with deep thinking on by default, which adds
-        # hundreds of hidden reasoning tokens and several seconds per call. For a grounded
-        # shopping reply we don't need it, so disable it for those models (their low-latency
-        # mode). Off for models that don't accept the field (e.g. the Gemini-compatible endpoint).
-        self._disable_thinking = disable_thinking
 
     @property
     def available(self) -> bool:
         return bool(self._api_key)
-
-    def _body(self, messages: list[dict[str, str]], **extra) -> dict:
-        body = {"model": self._model, "messages": messages, "temperature": 0.2, **extra}
-        if self._disable_thinking:
-            body["thinking"] = {"type": "disabled"}
-        return body
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         if not self._api_key:
@@ -47,7 +35,7 @@ class ArkChatClient:
         resp = requests.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers(),
-            json=self._body(messages),
+            json={"model": self._model, "messages": messages, "temperature": 0.2},
             timeout=self._timeout_seconds,
         )
         if resp.status_code >= 400:
@@ -61,7 +49,12 @@ class ArkChatClient:
         with requests.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers(),
-            json=self._body(messages, stream=True),
+            json={
+                "model": self._model,
+                "messages": messages,
+                "temperature": 0.2,
+                "stream": True,
+            },
             timeout=self._timeout_seconds,
             stream=True,
         ) as resp:
