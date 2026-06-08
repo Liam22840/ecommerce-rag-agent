@@ -15,7 +15,7 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 uv venv
 uv pip install -r requirements.txt
 cp .env.example .env
-# Then edit .env and set ARK_CHAT_API_KEY / ARK_EMBEDDING_API_KEY.
+# Then edit .env and set CHAT_API_KEY / ARK_EMBEDDING_API_KEY.
 ```
 
 ## Running the ingestion
@@ -70,18 +70,18 @@ for path in glob("ecommerce_agent_dataset/*/data/*.json"):
 
 ## Running the backend API
 
-Create `.env` from the example and fill in the real Ark key locally:
+Create `.env` from the example and fill in the real API keys locally:
 
 ```bash
 cp .env.example .env
-# edit .env and set ARK_CHAT_API_KEY / ARK_EMBEDDING_API_KEY
+# edit .env and set CHAT_API_KEY / ARK_EMBEDDING_API_KEY
 ```
 
 The backend uses separate settings for chat and embeddings. Keep real keys in `.env` only:
 
-- `ARK_CHAT_API_KEY`: key for the chat model
-- `ARK_CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
-- `ARK_CHAT_MODEL=gemini-3.1-flash-lite` (Gemini Flash-Lite via its OpenAI-compatible endpoint)
+- `CHAT_API_KEY`: key for the chat model
+- `CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
+- `CHAT_MODEL=gemini-3.1-flash-lite` (Gemini Flash-Lite via its OpenAI-compatible endpoint)
 - `ARK_EMBEDDING_API_KEY`: key for query/product embeddings
 - `ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
 - `ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215`

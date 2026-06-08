@@ -11,7 +11,7 @@ from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import IntentParser, SearchFilters
-from server.llm import ArkChatClient, ModelUnavailable
+from server.llm import ChatClient, ModelUnavailable
 from server.prompts import (
     CHITCHAT_REPLY,
     build_messages,
@@ -30,6 +30,10 @@ ResultStatus = Literal["ok", "no_results", "no_cheaper", "no_improvement", "exha
 
 # Fields of a shown product remembered for the turn history and the recall log.
 _SHOWN_FIELDS = ("id", "title", "brand", "price", "sub_category")
+
+# Valid SearchFilters keys, computed once. Used to drop unknown keys when rebuilding filters from
+# a (possibly older-schema) cached response, so the reconstruction can't choke on a stale field.
+_SEARCH_FILTER_FIELDS = frozenset(f.name for f in fields(SearchFilters))
 
 
 def _product_summary(product: ProductCard) -> dict:
@@ -91,8 +95,8 @@ class ShoppingAssistant:
         self,
         catalog: ProductCatalog,
         retriever: ProductRetriever,
-        llm: ArkChatClient | None = None,
-        intent_llm: ArkChatClient | None = None,
+        llm: ChatClient | None = None,
+        intent_llm: ChatClient | None = None,
         settings: Settings | None = None,
         filter_cache: FilterCache | None = None,
     ):
@@ -305,9 +309,7 @@ class ShoppingAssistant:
         # Rebuild a PreparedChat from the cached response so both the streaming and non-streaming
         # paths replay it unchanged: messages=[] routes through the fallback, which emits the
         # cached answer text and cards. Session memory is still updated so follow-ups resolve.
-        products = [ProductCard(**product) for product in cached.get("products", [])]
-        self._remember_shown_products(session_id, products)
-        self._remember_turn(session_id, query, filters, products)
+        products = self._remember_cached_turn(session_id, query, filters, cached)
         source = cached.get("retrieval_source") or "none"
         return PreparedChat(
             query=query,
@@ -446,12 +448,20 @@ class ShoppingAssistant:
         a freshly computed answer."""
         if not session_id:
             return
-        products = [ProductCard(**product) for product in cached.get("products", [])]
-        valid = {f.name for f in fields(SearchFilters)}
-        intent = {key: value for key, value in (cached.get("intent") or {}).items() if key in valid}
+        intent = {key: value for key, value in (cached.get("intent") or {}).items() if key in _SEARCH_FILTER_FIELDS}
         filters = SearchFilters(**intent) if intent else SearchFilters(raw_query=query)
+        self._remember_cached_turn(session_id, query, filters, cached)
+
+    def _remember_cached_turn(
+        self, session_id: str | None, query: str, filters: SearchFilters, cached: dict
+    ) -> list[ProductCard]:
+        """Rebuild the shown products from a cached response and record the turn in session memory.
+        Shared by both cache-hit paths (filter-cache and query-cache); returns the products so the
+        caller can reuse them."""
+        products = [ProductCard(**product) for product in cached.get("products", [])]
         self._remember_shown_products(session_id, products)
         self._remember_turn(session_id, query, filters, products)
+        return products
 
     def stream_answer(self, prepared: PreparedChat) -> Iterator[str]:
         if prepared.messages and self._llm is not None and self._llm.available:

@@ -10,7 +10,7 @@
 - 由 LLM 解析用户意图和约束（类目、子类目、品牌、价格、卖点、排除项、多轮上下文等），确定性规则做校验和兜底。
 - 使用 Milvus Lite 中已有的向量库做语义检索。
 - 同时使用本地 lexical retrieval 作为补充和兜底，两路结果用 Reciprocal Rank Fusion 融合。
-- 把检索到的商品事实交给 Ark chat model 生成导购回答。
+- 把检索到的商品事实交给 chat model 生成导购回答。
 - 当 embedding、Milvus 或 LLM 不可用时，服务不直接崩溃，而是降级到可解释的本地结果。
 
 ## Main Request Flow
@@ -39,7 +39,7 @@
 6. 软约束（`required_terms`/`requested_specs`）参与排序而不是硬过滤；`excluded_terms`（“不要X”）由 LLM 在候选集上语义判定剔除，确定性否定词匹配兜底。
 7. `ProductCatalog` 把命中的商品转换成 `ProductCard`。
 8. `build_messages()` 把用户问题、解析结果、候选商品事实，以及诚实信号（`result_status`、未命中的卖点/规格等）组成 prompt。
-9. `ArkChatClient.complete()` 调用 Doubao/Ark chat model；不可用时退回确定性 grounded answer。
+9. `ChatClient.complete()` 调用 chat model；不可用时退回确定性 grounded answer。
 10. 返回 `ChatResponse`，包含回答、商品卡、解析意图、检索来源和 warning。
 
 ### `POST /api/chat/stream`
@@ -65,9 +65,9 @@ SSE 的 content type 是 `text/event-stream; charset=utf-8`，并且 stream pars
 
 ```env
 # Chat model — Gemini Flash-Lite via其 OpenAI 兼容 endpoint。
-ARK_CHAT_API_KEY=
-ARK_CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-ARK_CHAT_MODEL=gemini-3.1-flash-lite
+CHAT_API_KEY=
+CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+CHAT_MODEL=gemini-3.1-flash-lite
 
 # Embedding model — Doubao（保持不变：milvus.db 是在该 embedding space 建的）。
 ARK_EMBEDDING_API_KEY=
@@ -246,7 +246,7 @@ user message 是一个 JSON payload，包含：
 
 这种结构让模型更容易区分用户问题、机器解析出的约束和真实商品事实。
 
-LLM client 在 `server/llm.py`，调用 OpenAI-compatible Ark API：
+LLM client 在 `server/llm.py`，调用 OpenAI 兼容的 chat API：
 
 - 非流式：`/chat/completions`
 - 流式：`/chat/completions` with `stream=true`

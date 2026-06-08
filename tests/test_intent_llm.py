@@ -21,7 +21,7 @@ BRANDS = {"华为", "雅诗兰黛", "兰蔻"}
 
 
 class FakeLLM:
-    """Stand-in for ArkChatClient: returns canned JSON (or raises)."""
+    """Stand-in for ChatClient: returns canned JSON (or raises)."""
 
     def __init__(self, response, available: bool = True):
         self._response = response

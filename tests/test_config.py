@@ -13,7 +13,7 @@ def test_settings_keeps_chat_and_embedding_keys_separate():
 
 
 def test_settings_loads_dedicated_keys_from_env(monkeypatch):
-    monkeypatch.setenv("ARK_CHAT_API_KEY", "chat")
+    monkeypatch.setenv("CHAT_API_KEY", "chat")
     monkeypatch.setenv("ARK_EMBEDDING_API_KEY", "embedding")
 
     settings = Settings.load()
@@ -47,9 +47,9 @@ def test_optional_env_treats_blank_as_none(monkeypatch):
 
 
 def test_load_applies_scalar_env_overrides(monkeypatch):
-    monkeypatch.setenv("ARK_CHAT_MODEL", "custom-model")
-    monkeypatch.setenv("ARK_CHAT_BASE_URL", "https://chat.example")
-    monkeypatch.setenv("ARK_CHAT_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("CHAT_MODEL", "custom-model")
+    monkeypatch.setenv("CHAT_BASE_URL", "https://chat.example")
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("RAG_TOP_K", "8")
     monkeypatch.setenv("RAG_VECTOR_SEARCH_K", "30")
     monkeypatch.setenv("RAG_EMBED_TIMEOUT_SECONDS", "3.0")

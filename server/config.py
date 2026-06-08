@@ -64,16 +64,16 @@ class Settings:
     def load(cls) -> "Settings":
         load_dotenv(PROJECT_ROOT / ".env")
         return cls(
-            chat_api_key=_optional_env("ARK_CHAT_API_KEY"),
+            chat_api_key=_optional_env("CHAT_API_KEY"),
             embedding_api_key=_optional_env("ARK_EMBEDDING_API_KEY"),
-            chat_base_url=os.environ.get("ARK_CHAT_BASE_URL", cls.chat_base_url),
-            chat_model=os.environ.get("ARK_CHAT_MODEL", cls.chat_model),
+            chat_base_url=os.environ.get("CHAT_BASE_URL", cls.chat_base_url),
+            chat_model=os.environ.get("CHAT_MODEL", cls.chat_model),
             embedding_base_url=os.environ.get(
                 "ARK_EMBEDDING_BASE_URL", cls.embedding_base_url
             ),
             embedding_model=os.environ.get("ARK_EMBEDDING_MODEL", cls.embedding_model),
             chat_timeout_seconds=float(
-                os.environ.get("ARK_CHAT_TIMEOUT_SECONDS", cls.chat_timeout_seconds)
+                os.environ.get("CHAT_TIMEOUT_SECONDS", cls.chat_timeout_seconds)
             ),
             embedding_timeout_seconds=float(
                 os.environ.get("RAG_EMBED_TIMEOUT_SECONDS", cls.embedding_timeout_seconds)

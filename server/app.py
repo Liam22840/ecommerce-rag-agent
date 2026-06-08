@@ -14,7 +14,7 @@ from server.assistant import PreparedChat, ShoppingAssistant, _chunk_text
 from server.catalog import ProductCatalog
 from server.config import Settings
 from server.filter_cache import FilterCache
-from server.llm import ArkChatClient
+from server.llm import ChatClient
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
 from server.schemas import ChatRequest, ChatResponse
@@ -39,7 +39,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
     if assistant is None:
         catalog = ProductCatalog.load(settings.dataset_root)
         retriever = ProductRetriever(catalog, settings)
-        llm = ArkChatClient(
+        llm = ChatClient(
             api_key=settings.chat_api_key if settings.enable_llm else None,
             base_url=settings.chat_base_url,
             model=settings.chat_model,
