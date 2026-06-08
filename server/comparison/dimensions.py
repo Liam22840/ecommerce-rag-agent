@@ -1,7 +1,7 @@
 """Deciding what to compare: extract comparison dimensions from the query.
 
-Two paths produce DimensionSpec lists — an LLM payload (_specs_from_llm_payload) and a
-deterministic fallback (_dynamic_specs) — backed by the product corpus so every term is
+Two paths produce DimensionSpec lists, an LLM payload (_specs_from_llm_payload) and a
+deterministic fallback (_dynamic_specs), both backed by the product corpus so every term is
 grounded in real catalog text.
 """
 
@@ -285,5 +285,5 @@ def _dedupe_specs(specs: list[DimensionSpec]) -> list[DimensionSpec]:
 
 def _price_is_priority(filters: SearchFilters) -> bool:
     # Whether price should drive the comparison comes from the LLM-set preference, not keyword
-    # spotting — the intent LLM already understands "性价比"/"划算"/"不那么烧钱" and sets prefer_low_price.
+    # spotting. The intent LLM already understands "性价比"/"划算"/"不那么烧钱" and sets prefer_low_price.
     return filters.prefer_low_price

@@ -361,7 +361,7 @@ _CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 
 def _cn_to_int(token: str) -> int | None:
     """Convert a Chinese or mixed-digit integer (三百 / 一万 / 1万 / 三百五十 / 三百五) to an int,
-    or None if it isn't a parseable number. Used only for the deterministic price fallback; the
+    or None if it isn't a parseable number. Used only for the deterministic price fallback. The
     chat model handles Chinese numbers itself."""
     total = section = number = last_unit = 0
     for ch in token:

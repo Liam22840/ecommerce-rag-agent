@@ -168,7 +168,7 @@ def test_comparison_keeps_price_and_sku_facts_black_box():
     assert resp.status_code == 200
     body = resp.json()
     assert body["comparison"]["winner_product_id"] == "p_beauty_007"
-    # The answer is now LLM-narrated; the exact SKU prices are kept in the structured comparison.
+    # The answer is now LLM-narrated, the exact SKU prices are kept in the structured comparison.
     price_summaries = " ".join(product["price_summary"] for product in body["comparison"]["products"])
     assert "15g 体验装 89元；50g 标准装 268元" in price_summaries
     assert "40ml 滋润型 260元" in price_summaries

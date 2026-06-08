@@ -150,7 +150,7 @@ def _sse_stream(
     key: str | None = None,
 ) -> Iterator[str]:
     # Lead-in first: a deterministic, rule-picked opener flushed before intent+retrieval so 首
-    # Token lands in <1s. Streaming-only — not collected into the stored answer.
+    # Token lands in <1s. Streaming-only, not collected into the stored answer.
     yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
     try:
         prepared = None
@@ -166,7 +166,7 @@ def _sse_stream(
                 yield _plan_frame(_model_dump(update))
             else:
                 prepared = update
-    except Exception:  # noqa: BLE001 - lead-in already sent; close the stream cleanly
+    except Exception:  # noqa: BLE001 (lead-in already sent, close the stream cleanly)
         yield _token_event("抱歉，出了一点问题，请再试一次。")
         yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
         return
@@ -199,7 +199,7 @@ def _sse_stream(
 
 
 def _sse_replay(cached: dict, chunk_size: int, lead_in: str = "") -> Iterator[str]:
-    # Open with the same lead-in as a fresh turn so a cached reply reads identically; it stays
+    # Open with the same lead-in as a fresh turn so a cached reply reads identically. It stays
     # instant since the rest of the replay is already in memory.
     if lead_in:
         yield _token_event(lead_in)

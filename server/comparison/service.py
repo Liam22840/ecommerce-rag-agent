@@ -153,14 +153,14 @@ class ComparisonService:
     ) -> tuple[list[str], str | None]:
         """Confidence-ordered: explicit (structured) ids first, then the ids the LLM resolved
         from session_products, then the LLM's named references mapped deterministically, then
-        the deterministic ordinal/name waterfall as the fallback. No extra LLM call — the LLM
+        the deterministic ordinal/name waterfall as the fallback. No extra LLM call, the LLM
         signals come from the intent parser's existing call."""
         valid_explicit = self._valid_catalog_ids(explicit_product_ids)
         if len(valid_explicit) >= 2:
             return valid_explicit[:3], None
         # LLM resolved the referenced products to exact ids (it sees session_products in
         # most-recent-first order, so "第一个/第二个" map to the latest search). Trust them only
-        # after validating against the catalog; the deterministic ordinal/name waterfall below is
+        # after validating against the catalog. The deterministic ordinal/name waterfall below is
         # the fallback when the LLM is unavailable or couldn't resolve them.
         llm_ids = self._valid_catalog_ids(filters.compare_product_ids)
         if len(llm_ids) >= 2:
@@ -237,7 +237,7 @@ class ComparisonService:
         try:
             raw = self._llm.complete(_dimension_extraction_messages(query, products))
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - LLM dimension extraction must degrade to deterministic fallback.
+        except Exception:  # noqa: BLE001 (LLM dimension extraction must degrade to deterministic fallback)
             return []
         return _specs_from_llm_payload(payload, query, products)
 
@@ -305,7 +305,7 @@ class ComparisonService:
         focus_specs: list[DimensionSpec],
         query: str,
     ) -> list[ComparisonRow]:
-        """LLM judges each evidence dimension; any dimension it can't judge falls back
+        """LLM judges each evidence dimension. Any dimension it can't judge falls back
         to the deterministic _evidence_row."""
         evidence_specs = [spec for spec in focus_specs if spec.evidence]
         judged = self._llm_judge(products, evidence_specs, query)
@@ -322,7 +322,7 @@ class ComparisonService:
         try:
             raw = self._llm.complete(_evidence_judge_messages(query, products, evidence_specs))
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - evidence judging must degrade to the deterministic scorer.
+        except Exception:  # noqa: BLE001 (evidence judging must degrade to the deterministic scorer)
             return {}
         if not isinstance(payload.get("judgments"), list):
             return {}

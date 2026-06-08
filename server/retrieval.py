@@ -13,7 +13,7 @@ from server.config import Settings
 from server.intent import SearchFilters
 
 
-# Reciprocal Rank Fusion constant (standard value). Larger -> rank differences matter less;
+# Reciprocal Rank Fusion constant (standard value). Larger -> rank differences matter less,
 # 60 is the widely-used default. Rank-based fusion is scale-invariant, so it's an algorithm
 # constant, not an operational tuning knob.
 RRF_K = 60
@@ -36,7 +36,7 @@ class ProductRetriever:
         self._startup_warning: str | None = None
         # Pipeline parallelism for the cold embed: prewarm_query() embeds the query on a worker
         # while the intent LLM runs, and retrieval awaits that same future instead of embedding
-        # again. A plain background thread isn't enough — when the cold embed outlasts the intent
+        # again. A plain background thread isn't enough. When the cold embed outlasts the intent
         # call, retrieval would miss the not-yet-written cache and embed a second time.
         self._embed_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embed")
         self._pending: dict[str, Future] = {}
@@ -44,7 +44,7 @@ class ProductRetriever:
         self._init_vector_search()
 
     def prewarm_query(self, text: str) -> None:
-        """Start embedding `text` on a worker so it overlaps the intent LLM call; retrieval later
+        """Start embedding `text` on a worker so it overlaps the intent LLM call. Retrieval later
         awaits the same future (see _embed_query) instead of re-embedding. No-op when vector
         search is off. Best-effort: a failed embed surfaces when its future is awaited and is
         handled there, never here."""
@@ -105,10 +105,10 @@ class ProductRetriever:
         try:
             vector = self._embed_query(query)
             raw_hits = self._store.search(vector, k=self._settings.vector_search_k)
-        except Exception as exc:  # noqa: BLE001 - vector retrieval must degrade, not crash demo
+        except Exception as exc:  # noqa: BLE001 (vector retrieval must degrade, not crash demo)
             warnings.append(f"vector search unavailable: {exc}")
             return [], False
-        # Keep the best-scoring chunk per product (score only orders the vector list — RRF
+        # Keep the best-scoring chunk per product (score only orders the vector list, RRF
         # overwrites it with the rank contribution later, so the raw magnitude doesn't matter).
         best: dict[str, CatalogHit] = {}
         for raw in raw_hits:

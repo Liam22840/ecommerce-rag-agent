@@ -238,7 +238,7 @@ def test_specs_from_llm_payload_coerces_non_list_aliases():
 
 
 def test_specs_from_llm_payload_drops_noise_label():
-    # The LLM occasionally emits a meta word ("对比") as a dimension — it must be dropped.
+    # The LLM occasionally emits a meta word ("对比") as a dimension, it must be dropped.
     products = [_product(desc="降噪效果出色")]
     payload = {"dimensions": [{"label": "对比", "aliases": ["对比"]}]}
     assert _specs_from_llm_payload(payload, "哪个更好", products) == []
@@ -499,7 +499,7 @@ def test_llm_resolved_compare_ids_win_over_the_dictionary():
     b = _product("p2", title="B面霜", category="美妆护肤", sub_category="面霜")
     svc = ComparisonService(_catalog(a, b))
 
-    # Phrasing the ORDINALS dict cannot parse, and no recent context — only the LLM-resolved
+    # Phrasing the ORDINALS dict cannot parse, and no recent context, so only the LLM-resolved
     # ids (validated against the catalog) can pin this comparison.
     comparison = svc.build(
         "排第一的那个和最后那个哪个更保湿",

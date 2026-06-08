@@ -2,8 +2,7 @@
 
 This module sits at the bottom of the import graph (it imports nothing from server/),
 so any module can use it without creating a circular import. It is the single home for
-the small helpers that were previously copied across intent.py, comparison.py, catalog.py
-and assistant.py.
+the small helpers shared by intent.py, comparison.py, catalog.py and assistant.py.
 """
 
 from __future__ import annotations

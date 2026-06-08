@@ -188,7 +188,7 @@ class CommerceService:
             return None
         try:
             payload = json_object(self._llm.complete(commerce_intent_messages(message, cart_items, session_products)))
-        except Exception:  # noqa: BLE001 - commerce must fall back to deterministic handling.
+        except Exception:  # noqa: BLE001 (commerce must fall back to deterministic handling)
             return None
         action = payload.get("action")
         if action not in COMMERCE_ACTIONS:

@@ -70,7 +70,7 @@ class PreparedChat:
     result_status: ResultStatus = "ok"
     plan: ExecutionPlan | None = None
     # Set on a filter-cacheable product search so the answer can be stored under the parsed
-    # intent; None when the turn isn't cacheable. from_filter_cache marks a turn served from
+    # intent. None when the turn isn't cacheable. from_filter_cache marks a turn served from
     # that cache, so it isn't re-stored and its (cached) answer streams via the fallback path.
     filter_cache_key: str | None = None
     from_filter_cache: bool = False
@@ -95,7 +95,7 @@ class SessionState:
     turns: list[TurnRecord] = field(default_factory=list)
     # Single source of truth for "what products has the user seen": session-wide, deduped by
     # id, in first-shown order, each tagged with the turn (last_seq) and within-turn position
-    # it was most recently shown. Backtracking reads it in first-shown order; the recency view
+    # it was most recently shown. Backtracking reads it in first-shown order. The recency view
     # for comparison ("第一个/前两个") is derived from it (last_seq desc, position asc).
     shown_products: list[dict] = field(default_factory=list)
     turn_seq: int = 0
@@ -116,7 +116,7 @@ class ShoppingAssistant:
         self._retriever = retriever
         self._llm = llm
         self._settings = settings or Settings()
-        # Off unless wired with a real cache (create_app does this); keeps direct test
+        # Off unless wired with a real cache (create_app does this). Keeps direct test
         # construction side-effect-free, mirroring how QueryCache lives only at the API layer.
         self._filter_cache = filter_cache or FilterCache(self._settings.filter_cache_path, enabled=False)
         self._parser = IntentParser(
@@ -137,7 +137,7 @@ class ShoppingAssistant:
 
     def lead_in(self, query: str, compare_product_ids: list[str] | None = None) -> str:
         """Instant, deterministic streaming opener (no model call). An explicit comparison is
-        known from the request; otherwise the rule parser guesses what to acknowledge. The real
+        known from the request, otherwise the rule parser guesses what to acknowledge. The real
         understanding still happens in the LLM parse that runs behind this opener."""
         if compare_product_ids:
             return lead_in_text("compare")
@@ -389,7 +389,7 @@ class ShoppingAssistant:
                 plan_steps[idx].summary = summary
                 summaries.append(summary)
                 yield _copy_plan(ExecutionPlan(steps=plan_steps, summary="；".join(summaries)))
-            except Exception as exc:  # noqa: BLE001 - planned execution should fail closed.
+            except Exception as exc:  # noqa: BLE001 (planned execution should fail closed)
                 plan_steps[idx].status = "failed"
                 plan_steps[idx].summary = "这一步缺少可执行的商品信息，请补充说明。"
                 summaries.append(plan_steps[idx].summary or "")
@@ -542,8 +542,8 @@ class ShoppingAssistant:
         )
         products = comparison.products
         grounded_answer = self._comparison_answer(comparison)
-        # Let the LLM narrate the (deterministic) comparison result; the template above is
-        # the fallback. No messages for a clarification — there is nothing to narrate.
+        # Let the LLM narrate the (deterministic) comparison result. The template above is
+        # the fallback. No messages for a clarification, there is nothing to narrate.
         messages = [] if comparison.clarification else comparison_narration_messages(comparison)
         self._remember_shown_products(session_id, products)
         return PreparedChat(
@@ -562,7 +562,7 @@ class ShoppingAssistant:
     def _prepare_chitchat(
         self, query: str, session_id: str | None, filters: SearchFilters
     ) -> PreparedChat:
-        # LLM handles the conversation (kept in character by the system prompt); the fixed
+        # LLM handles the conversation (kept in character by the system prompt). The fixed
         # reply is the fallback when the model is unavailable.
         return PreparedChat(
             query=query,
@@ -585,7 +585,7 @@ class ShoppingAssistant:
         top_k: int,
         recent_product_ids: list[str],
     ) -> PreparedChat:
-        # Backtracking ("回到最开始那个"): the LLM picked exact product ids from session_products;
+        # Backtracking ("回到最开始那个"): the LLM picked exact product ids from session_products,
         # return those cards directly. Ids are validated against the catalog (the LLM can only
         # copy from the list we gave it, but we never trust an id we can't resolve).
         recalled = [pid for pid in filters.recall_product_ids if self._catalog.get(pid) is not None]
@@ -600,7 +600,7 @@ class ShoppingAssistant:
             cached = self._filter_cache.get(filter_key)
             if cached is not None:
                 return self._prepared_from_cache(query, session_id, filters, cached, filter_key)
-        # The rewrite folds carried context into a standalone retrieval query; the answer
+        # The rewrite folds carried context into a standalone retrieval query. The answer
         # itself still replies to what the user actually typed (raw query below).
         search_query = filters.rewritten_query or query
         # Over-fetch so that dropping already-seen ("换一批") or excluded ("不要油腻") items still
@@ -622,8 +622,8 @@ class ShoppingAssistant:
         prev_floor = self._previous_floor(session_id)
         result_status = self._result_status(filters, products, recent_product_ids, prev_floor)
         context = self._status_context(result_status, products, prev_floor)
-        # Required attributes and requested specs no longer hard-filter; flag any that nothing
-        # retrieved matches, so the answer says so honestly instead of implying every card fits.
+        # Required attributes and requested specs rank rather than hard-filter. Flag any that
+        # nothing retrieved matches, so the answer says so honestly instead of implying every card fits.
         unmet = self._catalog.unmet_required_terms(hits, filters) + self._catalog.unmet_requested_specs(hits, filters)
         if unmet:
             context = {**(context or {}), "unmet_terms": unmet}
@@ -713,7 +713,7 @@ class ShoppingAssistant:
                 return "no_cheaper"
             return "no_results"
         seen = set(recent_product_ids)
-        # A refinement that surfaced only items already shown earlier — nothing new/better.
+        # A refinement that surfaced only items already shown earlier, nothing new/better.
         if seen and all(product.product_id in seen for product in products):
             return "no_cheaper" if filters.prefer_low_price and prev_floor is not None else "no_improvement"
         return "ok"
@@ -735,7 +735,7 @@ class ShoppingAssistant:
 
     def _excluded_ids(self, hits: list[CatalogHit], excluded_terms: list[str]) -> set[str]:
         """Which shortlisted products to drop for an exclusion ("不要油腻"). The LLM judges meaning
-        and negation over the small shortlist (primary); the deterministic negation-aware catalog
+        and negation over the small shortlist (primary). The deterministic negation-aware catalog
         check is the fallback when the LLM is unavailable."""
         if not hits:
             return set()
@@ -750,10 +750,10 @@ class ShoppingAssistant:
             ]
             try:
                 payload = json_object(self._llm.complete(exclusion_judge_messages(excluded_terms, products)))
-                if "exclude" in payload:  # a parseable verdict; garbage -> fall through
+                if "exclude" in payload:  # a parseable verdict, garbage -> fall through
                     valid = {hit.product["product_id"] for hit in hits}
                     return {pid for pid in payload["exclude"] if pid in valid}
-            except Exception:  # noqa: BLE001 - any judge failure must degrade to the deterministic check
+            except Exception:  # noqa: BLE001 (any judge failure must degrade to the deterministic check)
                 pass
         return {
             hit.product["product_id"]
@@ -834,7 +834,7 @@ class ShoppingAssistant:
         self, session_id: str | None, query: str, filters: SearchFilters, cached: dict
     ) -> list[ProductCard]:
         """Rebuild the shown products from a cached response and record the turn in session memory.
-        Shared by both cache-hit paths (filter-cache and query-cache); returns the products so the
+        Shared by both cache-hit paths (filter-cache and query-cache). Returns the products so the
         caller can reuse them."""
         products = [ProductCard(**product) for product in cached.get("products", [])]
         self._remember_shown_products(session_id, products)
@@ -849,9 +849,9 @@ class ShoppingAssistant:
                     streamed = True
                     yield token
                 return
-            except Exception:  # noqa: BLE001 - stream must degrade, not crash the response
+            except Exception:  # noqa: BLE001 (stream must degrade, not crash the response)
                 if streamed:
-                    # Partial answer already sent; ending beats duplicating it with the fallback.
+                    # Partial answer already sent, ending beats duplicating it with the fallback.
                     return
         yield from _chunk_text(prepared.grounded_answer, self._settings.stream_chunk_size)
 
@@ -893,7 +893,7 @@ class ShoppingAssistant:
 
     def _remember_shown_products(self, session_id: str | None, products: list[ProductCard]) -> None:
         """Record shown products in the single session-wide log. New products are appended in
-        first-shown order (for recall); a re-shown product keeps its place but updates its
+        first-shown order (for recall). A re-shown product keeps its place but updates its
         last_seq/position (so the derived recency view stays correct)."""
         if not session_id or not products:
             return
@@ -1054,7 +1054,7 @@ def _reason(hit: CatalogHit, filters: SearchFilters, catalog: ProductCatalog) ->
         reasons.append(f"价格在{filters.max_price:g}元以内")
     for term in filters.required_terms:
         # Only credit the attribute when the product actually evidences it (not just because
-        # it was requested) — required_terms no longer hard-filter, so a card may not match.
+        # it was requested). required_terms rank rather than hard-filter, so a card may not match.
         if catalog.evidences_required_term(product, term):
             reasons.append(f"匹配{term}需求")
     if filters.prefer_low_price:

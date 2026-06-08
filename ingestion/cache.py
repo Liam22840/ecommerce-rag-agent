@@ -25,8 +25,8 @@ class EmbeddingCache:
     def __init__(self, path: Path):
         self._path = Path(path)
         self._index: dict[str, list[float]] = {}
-        # Guards _index and the append. The server embeds concurrently — the request thread,
-        # speculative pre-warm threads, and FastAPI's threadpool all share one cache — so reads
+        # Guards _index and the append. The server embeds concurrently: the request thread,
+        # speculative pre-warm threads, and FastAPI's threadpool all share one cache, so reads
         # and writes must be serialised to avoid a corrupt dict or an interleaved JSONL line.
         self._lock = threading.Lock()
         self._load()

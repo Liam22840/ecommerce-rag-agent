@@ -75,5 +75,5 @@ def test_load_parses_boolean_feature_flags(monkeypatch):
 
 
 def test_enable_llm_intent_defaults_true():
-    # enable_llm_intent is not env-driven; it defaults on for the LLM intent parser.
+    # enable_llm_intent is not env-driven, it defaults on for the LLM intent parser.
     assert Settings().enable_llm_intent is True

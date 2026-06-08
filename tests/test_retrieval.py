@@ -234,7 +234,7 @@ def test_rrf_fusion_combines_by_rank_not_raw_magnitude():
     retriever._fuse_by_rank(merged, vector_ranked)
     retriever._fuse_by_rank(merged, lexical_ranked)
 
-    # A = 1/RRF_K (vec #1) + 1/(RRF_K+1) (lex #2); B is the mirror image -> equal scores.
+    # A = 1/RRF_K (vec #1) + 1/(RRF_K+1) (lex #2), B is the mirror image -> equal scores.
     assert abs(merged["A"].score - merged["B"].score) < 1e-12
     assert merged["A"].score == 1.0 / RRF_K + 1.0 / (RRF_K + 1)
     assert merged["A"].source == "hybrid" and merged["B"].source == "hybrid"
@@ -279,7 +279,7 @@ def test_prewarm_query_ignores_embed_failure():
     embedder = FakeEmbedder(error=RuntimeError("embed down"))
     retriever = _retriever_with_vector(catalog, raw_hits=[], embedder=embedder)
 
-    retriever.prewarm_query("推荐一款洗面奶")  # the embed runs on a worker; the failure stays in the future
+    retriever.prewarm_query("推荐一款洗面奶")  # the embed runs on a worker, the failure stays in the future
 
     assert _wait_until(lambda: embedder.calls == ["推荐一款洗面奶"])
     # When retrieval awaits the failed pre-warm it degrades to lexical, never crashes.
@@ -289,7 +289,7 @@ def test_prewarm_query_ignores_embed_failure():
 
 def test_prewarm_then_retrieve_embeds_the_query_only_once():
     # The whole point of the fix: retrieval awaits the in-flight pre-warm instead of embedding
-    # the query a second time (which the cold-embed-slower-than-intent case used to trigger).
+    # the query a second time (which the cold-embed-slower-than-intent case would otherwise cause).
     catalog = ProductCatalog.load(DATASET_ROOT)
     raw = [{"product_id": "p_beauty_011", "score": 0.5, "text": "片段"}]
     embedder = FakeEmbedder()

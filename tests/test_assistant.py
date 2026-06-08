@@ -95,7 +95,7 @@ def test_excluded_ids_ignores_ids_not_in_shortlist():
 def test_excluded_ids_falls_back_to_deterministic_when_llm_unavailable():
     assistant = _assistant(llm=FakeLLM(available=False))
     hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
-    # p_beauty_008's own copy positively claims 烟酰胺; 007 does not.
+    # p_beauty_008's own copy positively claims 烟酰胺, 007 does not.
     assert assistant._excluded_ids(hits, ["烟酰胺"]) == {"p_beauty_008"}
 
 
@@ -185,7 +185,7 @@ def test_stream_answer_stops_without_duplicate_when_stream_fails_midway():
 
     tokens = list(assistant.stream_answer(prepared))
 
-    # First token already sent; we stop rather than re-emitting the fallback.
+    # First token already sent, we stop rather than re-emitting the fallback.
     assert tokens == ["部分"]
     assert prepared.grounded_answer not in "".join(tokens)
 
@@ -328,7 +328,7 @@ def test_lead_in_is_tailored_by_rule_parser_or_neutral():
     assert "面霜" in a.lead_in("三百以内的面霜")
     # An explicit comparison from the request opens with 对比.
     assert "对比" in a.lead_in("随便", compare_product_ids=["a", "b"])
-    # A vague / chit-chat query the rules can't place falls back to a bare neutral ack — no
+    # A vague / chit-chat query the rules can't place falls back to a bare neutral ack, no
     # lookup implication, no greeting (which would clash with a chit-chat reply's own greeting).
     assert a.lead_in("你好") == "好的～\n"
     # A modifier negation still tailors (they want 面霜, just not greasy)...
@@ -406,7 +406,7 @@ class _SeqLLM:
 
 class _ScriptedLLM:
     """Intent LLM whose next response is settable. Defaults to '{}' so untouched turns fall
-    back to the rule parser; set `next_response` right before a turn that needs a canned JSON
+    back to the rule parser. Set `next_response` right before a turn that needs a canned JSON
     (useful when the value depends on ids produced by earlier turns, e.g. recall)."""
 
     available = True
@@ -626,7 +626,7 @@ def test_session_products_cap_evicts_least_recently_shown():
     shoe = assistant.prepare("推荐跑鞋", session_id="s", top_k=1).products[0].product_id
 
     ids = [item["id"] for item in assistant._session_products("s")]
-    assert cream not in ids          # oldest, least-recently-shown — evicted
+    assert cream not in ids          # oldest, least-recently-shown, evicted
     assert phone in ids and shoe in ids
 
 
@@ -746,10 +746,10 @@ def test_degraded_mode_carries_category_across_a_refinement_chain():
     assert second.filters.sub_category == "面霜"
 
 
-# --- required attributes: rank, don't gate; flag honestly when unmet -----------
+# --- required attributes: rank, don't gate, flag honestly when unmet -----------
 
 def test_unmet_required_term_surfaces_closest_and_flags_honestly():
-    # The LLM asks for 防水 on a 面霜 search; no face cream evidences it.
+    # The LLM asks for 防水 on a 面霜 search, no face cream evidences it.
     intent_llm = _SeqLLM([
         json.dumps({"intent_type": "product_search", "category": "美妆护肤",
                     "sub_category": "面霜", "required_terms": ["防水"]}),
@@ -758,7 +758,7 @@ def test_unmet_required_term_surfaces_closest_and_flags_honestly():
 
     prepared = assistant.prepare("防水的面霜", session_id="s", top_k=3)
 
-    assert prepared.products  # creams still surface — not silently dropped
+    assert prepared.products  # creams still surface, not silently dropped
     assert "没有" in prepared.grounded_answer and "防水" in prepared.grounded_answer  # honest line
     # no card claims the unmet attribute
     assert all("匹配防水需求" not in (product.matched_reason or "") for product in prepared.products)

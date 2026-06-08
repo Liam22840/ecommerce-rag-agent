@@ -1,6 +1,6 @@
 """Judging products on a dimension: deterministic scoring and the LLM judge payload.
 
-_evidence scores a product's catalog text against a dimension's terms; the LLM judge
+_evidence scores a product's catalog text against a dimension's terms. The LLM judge
 (messages + confidence validation) lets a model adjudicate, with the deterministic
 scorer as the fallback.
 """

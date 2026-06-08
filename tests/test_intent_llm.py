@@ -87,7 +87,7 @@ def test_merge_validated_llm_category_survives_unmapped_subcategory():
     resp = json.dumps({"category": "美妆护肤", "sub_category": "唇釉"})
     f = _parser(resp).parse("推荐口红")
     assert f.sub_category == "唇釉"
-    assert f.category == "美妆护肤"  # 唇釉 is not in SUB_CATEGORY_TO_CATEGORY; came from LLM
+    assert f.category == "美妆护肤"  # 唇釉 is not in SUB_CATEGORY_TO_CATEGORY, came from LLM
 
 
 # --- Session context carry-over + rewrite --------------------------------------
@@ -211,7 +211,7 @@ def test_empty_payload_falls_back_to_rule_values():
 def test_hallucinated_category_is_dropped():
     resp = json.dumps({"category": "奢侈品", "sub_category": "唇釉"})
     f = _parser(resp).parse("推荐口红")
-    # 奢侈品 isn't a real category -> dropped; 唇釉 isn't in the backfill dict -> category stays None.
+    # 奢侈品 isn't a real category -> dropped. 唇釉 isn't in the backfill dict -> category stays None.
     assert f.category is None
     assert f.sub_category == "唇釉"
 
@@ -270,7 +270,7 @@ def test_no_llm_uses_rule_path():
 def test_unavailable_llm_is_not_called():
     parser = _parser(json.dumps({"sub_category": "唇釉"}), available=False)
     f = parser.parse("推荐一款适合油皮的洗面奶")
-    assert f.sub_category == "洁面"  # rule path; LLM skipped despite a canned response
+    assert f.sub_category == "洁面"  # rule path, LLM skipped despite a canned response
 
 
 def test_json_embedded_in_prose_is_extracted():

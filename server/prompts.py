@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 
 # The first streamed token, emitted before the heavy LLM work so the first screen lands in well
 # under a second (首屏极速响应) while the grounded answer is assembled behind it. The kind is
-# chosen deterministically by the rule parser (no model call); the answer behind it is still
-# LLM-driven. A named product type personalises the opener; everything else gets a neutral line,
+# chosen deterministically by the rule parser (no model call). The answer behind it is still
+# LLM-driven. A named product type personalises the opener, everything else gets a neutral line,
 # so an unrecognised or chit-chat query is never mis-opened. Streaming-only: never stored.
 def lead_in_text(kind: str, label: str | None = None) -> str:
     if kind == "search" and label:
@@ -238,7 +238,7 @@ def exclusion_judge_messages(excluded_terms: list[str], products: list[dict]) ->
 
 
 # --- Comparison: dimension extraction + evidence judging -----------------------
-# (the message builders live in comparison.py next to their product serialization;
+# (the message builders live in comparison.py next to their product serialisation,
 #  the prompt text lives here.)
 
 DIMENSION_EXTRACTION_SYSTEM = (

@@ -125,8 +125,8 @@ def test_parses_min_price_above_and_not_below():
 
 
 def test_rule_parser_understands_chinese_numeral_prices():
-    # The chat model handles Chinese numbers directly; this covers the deterministic fallback for
-    # when the model is unavailable, which previously only understood Arabic digits.
+    # The chat model handles Chinese numbers directly. This covers the deterministic fallback for
+    # when the model is unavailable, which must also parse Chinese numerals, not only Arabic digits.
     p = _parser()
     assert p.parse("三百以内的洗面奶").max_price == 300.0
     assert p.parse("不超过一万的手机").max_price == 10000.0

@@ -55,7 +55,7 @@ def test_chat_carries_search_context_across_turns():
     assert first.status_code == 200
     assert first.json()["intent"]["sub_category"] == "面霜"
 
-    # "便宜点的" names no category; the deterministic carry-over keeps the face-cream context
+    # "便宜点的" names no category, the deterministic carry-over keeps the face-cream context
     # (this runs with enable_llm=False, so it exercises the degraded-mode backstop).
     second = client.post("/api/chat", json={"session_id": session_id, "message": "便宜点的"})
     assert second.status_code == 200
@@ -145,7 +145,7 @@ def test_stream_emits_lead_in_first_then_cards_before_answer():
         body = "".join(resp.iter_text())
 
     assert resp.status_code == 200
-    # The lead-in is the very first frame, before intent + retrieval run — the <1s 首 Token.
+    # The lead-in is the very first frame, before intent + retrieval run, the <1s 首 Token.
     # It's tailored by the rule parser: "洗面奶" maps to the 洁面 sub-category, so the opener names it.
     assert body.startswith("event: token")
     first_frame = body.split("\n\n")[0]
@@ -252,8 +252,8 @@ def test_chat_endpoint_uses_requested_sku_price_for_specs():
     assert resp.status_code == 200
     body = resp.json()
     by_id = {product["product_id"]: product for product in body["products"]}
-    # The sensitive 50g cream still surfaces; its price reflects the requested 50g SKU, not the
-    # cheapest体验装 (required_terms no longer hard-filter, so other 50g creams may appear too).
+    # The sensitive 50g cream still surfaces. Its price reflects the requested 50g SKU, not the
+    # cheapest体验装 (required_terms rank rather than hard-filter, so other 50g creams may appear too).
     assert "p_beauty_007" in by_id
     assert by_id["p_beauty_007"]["price"] == 268.0
     assert by_id["p_beauty_007"]["price_label"] == "268元（50g 标准装）"
@@ -526,7 +526,7 @@ def test_comparison_ordinal_refers_to_the_most_recent_search():
     client = _client()
     session_id = "cmp-recency"
 
-    # Two searches in different categories; the ordinal must point at the *latest* result.
+    # Two searches in different categories, the ordinal must point at the *latest* result.
     client.post("/api/chat", json={"session_id": session_id, "message": "推荐面霜"})
     shoes = client.post("/api/chat", json={"session_id": session_id, "message": "推荐几款跑步鞋"}).json()
     shoe_ids = [product["product_id"] for product in shoes["products"]]

@@ -33,7 +33,7 @@ def test_insert_and_search_roundtrip(tmp_path: Path):
         [0.0, 1.0, 0.0, 0.0],
     ]
     store.upsert(chunks, vectors)
-    # Milvus Lite buffers writes; flush so the rows are searchable deterministically.
+    # Milvus Lite buffers writes, flush so the rows are searchable deterministically.
     store.client.flush(collection_name=store.collection_name)
 
     hits = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], k=2)
@@ -65,7 +65,7 @@ def test_upsert_is_idempotent_on_chunk_id(tmp_path: Path):
     c = _chunk("p1::summary", text="A")
     store.upsert([c], [[1.0, 0.0, 0.0, 0.0]])
     store.upsert([c], [[1.0, 0.0, 0.0, 0.0]])
-    # Milvus Lite buffers writes; flush so the rows are searchable deterministically.
+    # Milvus Lite buffers writes, flush so the rows are searchable deterministically.
     store.client.flush(collection_name=store.collection_name)
 
     hits = store.search(query_vector=[1.0, 0.0, 0.0, 0.0], k=10)

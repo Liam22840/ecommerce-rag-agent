@@ -152,9 +152,9 @@ class ProductCatalog:
 
     def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
         # Kept lean to cut answer-prompt size (faster first token). Price/SKU fields are
-        # load-bearing for grounding and stay whole; the per-product price instruction was
-        # dropped (the same rule lives once in SYSTEM_PROMPT), and the free-text fields are
-        # trimmed to a couple of short snippets each.
+        # load-bearing for grounding and stay whole. The price rule lives once in SYSTEM_PROMPT
+        # rather than per product, and the free-text fields are trimmed to a couple of short
+        # snippets each.
         reviews = product.get("rag_knowledge", {}).get("user_reviews", [])
         faqs = product.get("rag_knowledge", {}).get("official_faq", [])
         selected_sku = self.selected_price_sku(product, filters)
@@ -396,7 +396,7 @@ class ProductCatalog:
         return 8.0 if self.matches_requested_specs(product, filters.requested_specs) else 0.0
 
     def unmet_requested_specs(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
-        """Requested specs that none of the hits match — for honest narration."""
+        """Requested specs that none of the hits match, for honest narration."""
         if not filters.requested_specs:
             return []
         return [
@@ -406,11 +406,11 @@ class ProductCatalog:
 
     def evidences_required_term(self, product: dict[str, Any], term: str) -> bool:
         """Does the product clearly evidence a required attribute? Used to rank and to narrate
-        honestly — NOT to exclude (see matches_filters)."""
+        honestly, NOT to exclude (see matches_filters)."""
         return self._matches_required_term(product, term, self._haystack(product))
 
     def unmet_required_terms(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
-        """Required attributes that none of the hits clearly evidence — for honest narration."""
+        """Required attributes that none of the hits clearly evidence, for honest narration."""
         if not filters.required_terms:
             return []
         evidence = [(hit.product, self._haystack(hit.product)) for hit in hits]  # one haystack per hit

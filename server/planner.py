@@ -104,7 +104,7 @@ class PlannerService:
                     cart_items=cart_items,
                 )
             )
-        except Exception:  # noqa: BLE001 - planner must degrade to deterministic handling.
+        except Exception:  # noqa: BLE001 (planner must degrade to deterministic handling)
             return None
         if raw.strip().lower() in {"null", "none", ""}:
             return None
