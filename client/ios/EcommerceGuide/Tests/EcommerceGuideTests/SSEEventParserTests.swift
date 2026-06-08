@@ -152,6 +152,47 @@ final class SSEEventParserTests: XCTestCase {
         XCTAssertEqual(event, .cartStatus(summary: "Added to cart"))
     }
 
+    func testParsesOrderDraftAndSubmittedEventsAsOrderStatus() throws {
+        let draft = try parseFrame([
+            "event: order",
+            "data: {\"type\":\"order_draft\",\"status\":\"awaiting_confirmation\",\"summary\":\"订单待确认\"}",
+            ""
+        ])
+        let submitted = try parseFrame([
+            "event: order",
+            "data: {\"type\":\"order_submitted\",\"status\":\"submitted\",\"summary\":\"订单已提交\"}",
+            ""
+        ])
+
+        XCTAssertEqual(draft, .orderStatus(summary: "订单待确认"))
+        XCTAssertEqual(submitted, .orderStatus(summary: "订单已提交"))
+    }
+
+    func testParsesPlannerEvent() throws {
+        let event = try parseFrame([
+            "event: plan",
+            "data: {\"type\":\"plan\",\"steps\":[{\"step_id\":\"step-1\",\"title\":\"推荐跑鞋\",\"action\":\"product_search\",\"status\":\"done\",\"summary\":\"找到 3 款候选商品。\"},{\"step_id\":\"step-2\",\"title\":\"加入购物车\",\"action\":\"cart_action\",\"status\":\"done\",\"summary\":\"已加入购物车。\"}]}",
+            ""
+        ])
+
+        XCTAssertEqual(event, .plan([
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "done",
+                summary: "找到 3 款候选商品。"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "done",
+                summary: "已加入购物车。"
+            )
+        ]))
+    }
+
     func testParsesComparisonEventWithProductMetadata() throws {
         let event = try parseFrame([
             "event: comparison",
@@ -299,11 +340,11 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
                 answer += token
             case .products(let streamedProducts):
                 products = streamedProducts
-            case .comparison:
+            case .comparison, .plan:
                 continue
             case .done:
                 sawDone = true
-            case .cartUpdated, .cartStatus:
+            case .cartUpdated, .cartStatus, .orderStatus:
                 continue
             }
         }

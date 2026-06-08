@@ -115,6 +115,8 @@ private struct ChatTimelineItemView: View {
         switch item {
         case .message(let message):
             MessageBubbleView(message: message)
+        case .plan(_, let steps):
+            PlanStatusView(steps: steps)
         case .products(_, let products):
             ProductCarouselView(
                 products: products,
@@ -128,6 +130,8 @@ private struct ChatTimelineItemView: View {
                 pickAction: addToCartAction
             )
         case .cartStatus(_, let text):
+            CartStatusView(text: text)
+        case .orderStatus(_, let text):
             CartStatusView(text: text)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)

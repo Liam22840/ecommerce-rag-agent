@@ -117,6 +117,81 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertEqual(comparison.winnerProductID, firstProduct.id)
     }
 
+    func testPlanEventAppendsPlanTimelineItem() async throws {
+        let pendingSteps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "pending"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "pending"
+            )
+        ]
+        let runningSteps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "running"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "pending"
+            )
+        ]
+        let doneSteps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "done",
+                summary: "找到 3 款候选商品。"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "done",
+                summary: "已加入购物车。"
+            )
+        ]
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("我来执行。"),
+                .plan(pendingSteps),
+                .plan(runningSteps),
+                .plan(doneSteps),
+                .done(messageID: "plan-1")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐跑鞋并加入购物车"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        guard case .plan(_, let timelineSteps)? = viewModel.timeline.first(where: { item in
+            if case .plan = item { return true }
+            return false
+        }) else {
+            return XCTFail("Expected plan timeline item")
+        }
+
+        XCTAssertEqual(timelineSteps, doneSteps)
+        XCTAssertEqual(viewModel.timeline.filter { item in
+            if case .plan = item { return true }
+            return false
+        }.count, 1)
+    }
+
     func testFollowupRequestIncludesRecentProductIDs() async throws {
         let firstProduct = Product.fixture(id: "FACE-1", title: "First Cream")
         let secondProduct = Product.fixture(id: "FACE-2", title: "Second Cream")
@@ -177,6 +252,26 @@ final class ChatViewModelFlowTests: XCTestCase {
 
         XCTAssertEqual(viewModel.cartItems, [CartItem(product: product, quantity: 1)])
         XCTAssertTrue(viewModel.timeline.containsCartStatus("Backend acknowledged cart intent."))
+    }
+
+    func testOrderStatusDoesNotReplaceExistingCartItems() async throws {
+        let product = Product.fixture(id: "BAG-2", title: "Carry Bag")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .orderStatus(summary: "订单待确认"),
+                .done(messageID: "order-status")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+        viewModel.addToCart(product: product)
+
+        viewModel.draftMessage = "下单吧"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(viewModel.cartItems, [CartItem(product: product, quantity: 1)])
+        XCTAssertTrue(viewModel.timeline.containsOrderStatus("订单待确认"))
     }
 
     func testMockChatServiceEmitsScriptedFlowWithoutNetwork() async throws {
@@ -363,6 +458,13 @@ private extension Array where Element == ChatTimelineItem {
     func containsCartStatus(_ message: String) -> Bool {
         contains {
             guard case .cartStatus(_, let itemMessage) = $0 else { return false }
+            return itemMessage == message
+        }
+    }
+
+    func containsOrderStatus(_ message: String) -> Bool {
+        contains {
+            guard case .orderStatus(_, let itemMessage) = $0 else { return false }
             return itemMessage == message
         }
     }

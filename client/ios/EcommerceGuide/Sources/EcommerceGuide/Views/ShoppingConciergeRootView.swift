@@ -100,15 +100,9 @@ private struct OnboardingScreen: View {
                     )
                     .shadow(color: GuideTheme.accentShadow.opacity(0.42), radius: 28, y: 10)
 
-                VStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 52, weight: .bold))
-                        .foregroundStyle(GuideTheme.accent)
-
-                    Text("shopping illustration")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(GuideTheme.accent)
-                }
+                Image(systemName: "sparkles")
+                    .font(.system(size: 52, weight: .bold))
+                    .foregroundStyle(GuideTheme.accent)
             }
             .frame(width: 160, height: 160)
             .padding(.bottom, 32)
@@ -335,10 +329,21 @@ private struct OrderReviewScreen: View {
     let backAction: () -> Void
     let confirmAction: () -> Void
 
+    @State private var recipientName = "张三"
+    @State private var phoneNumber = "13812341234"
+    @State private var shippingAddress = "北京市朝阳区望京SOHO T1 12层"
+
     private var total: Decimal {
         items.reduce(Decimal.zero) { partialResult, item in
             partialResult + (item.product.basePrice * Decimal(item.quantity))
         }
+    }
+
+    private var canSubmit: Bool {
+        !items.isEmpty
+            && !recipientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !shippingAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -364,8 +369,8 @@ private struct OrderReviewScreen: View {
                         .shadow(color: GuideTheme.accentShadow, radius: 14, y: 4)
                 }
                 .buttonStyle(.plain)
-                .disabled(items.isEmpty)
-                .opacity(items.isEmpty ? 0.5 : 1)
+                .disabled(!canSubmit)
+                .opacity(canSubmit ? 1 : 0.5)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .background(GuideTheme.panelBackground)
@@ -389,19 +394,14 @@ private struct OrderReviewScreen: View {
     }
 
     private var addressCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("收货地址", systemImage: "mappin.circle.fill")
+        VStack(alignment: .leading, spacing: 12) {
+            Label("收货信息", systemImage: "mappin.circle.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(GuideTheme.inkStrong)
 
-            Text("张三 138****1234")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(GuideTheme.inkStrong)
-
-            Text("北京市朝阳区望京SOHO T1 12层")
-                .font(.footnote)
-                .foregroundStyle(GuideTheme.secondaryInk)
-                .lineSpacing(2)
+            EditableOrderField(title: "联系人", text: $recipientName)
+            EditableOrderField(title: "手机号", text: $phoneNumber)
+            EditableOrderField(title: "详细地址", text: $shippingAddress, axis: .vertical)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -475,6 +475,34 @@ private struct OrderReviewScreen: View {
     private var formattedTotal: String {
         let value = NSDecimalNumber(decimal: total)
         return GuideTheme.currencyFormatter.string(from: value) ?? "\(total)"
+    }
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+private struct EditableOrderField: View {
+    let title: String
+    @Binding var text: String
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(GuideTheme.tertiaryInk)
+
+            TextField(title, text: $text, axis: axis)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(GuideTheme.inkStrong)
+                .lineLimit(axis == .vertical ? 3 : 1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(GuideTheme.pageBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(GuideTheme.line)
+                }
+        }
     }
 }
 

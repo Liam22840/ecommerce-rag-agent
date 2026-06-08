@@ -15,6 +15,7 @@ public final class ChatViewModel: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var lastSubmittedMessage: String?
     private var streamingMessageID: UUID?
+    private var currentPlanTimelineID: UUID?
 
     public init(
         service: any ChatService = MockChatService(),
@@ -93,6 +94,7 @@ public final class ChatViewModel: ObservableObject {
         errorMessage = nil
         lastSubmittedMessage = trimmedMessage
         isSending = true
+        currentPlanTimelineID = nil
 
         let assistantID = UUID()
         streamingMessageID = assistantID
@@ -134,6 +136,9 @@ public final class ChatViewModel: ObservableObject {
         switch event {
         case .token(let token):
             appendToken(token)
+        case .plan(let steps):
+            finishStreamingMessage()
+            upsertPlan(steps)
         case .products(let products):
             finishStreamingMessage()
             timeline.append(.products(id: UUID(), products: products))
@@ -145,9 +150,24 @@ public final class ChatViewModel: ObservableObject {
             timeline.append(.cartStatus(id: UUID(), text: summary))
         case .cartStatus(let summary):
             timeline.append(.cartStatus(id: UUID(), text: summary))
+        case .orderStatus(let summary):
+            timeline.append(.orderStatus(id: UUID(), text: summary))
         case .done:
             finishCompletedStream()
         }
+    }
+
+    private func upsertPlan(_ steps: [PlanStep]) {
+        if let currentPlanTimelineID,
+           let index = timeline.firstIndex(where: { $0.id == currentPlanTimelineID }),
+           case .plan(let id, _) = timeline[index] {
+            timeline[index] = .plan(id: id, steps: steps)
+            return
+        }
+
+        let id = UUID()
+        currentPlanTimelineID = id
+        timeline.append(.plan(id: id, steps: steps))
     }
 
     private func appendToken(_ token: String) {
@@ -216,7 +236,7 @@ public final class ChatViewModel: ObservableObject {
                 ids.append(contentsOf: products.map(\.id))
             case .comparison(_, let comparison):
                 ids.append(contentsOf: comparison.products.map(\.id))
-            case .message, .cartStatus, .error:
+            case .message, .plan, .cartStatus, .orderStatus, .error:
                 continue
             }
             if ids.count >= 10 {
