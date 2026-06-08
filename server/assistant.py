@@ -26,6 +26,8 @@ from server.prompts import (
     chitchat_messages,
     comparison_narration_messages,
     exclusion_judge_messages,
+    opener_continuation,
+    opener_lead,
     opener_text,
     photo_answer_messages,
 )
@@ -43,6 +45,21 @@ _SHOWN_FIELDS = ("id", "title", "brand", "price", "sub_category")
 # Valid SearchFilters keys, computed once. Used to drop unknown keys when rebuilding filters from
 # a (possibly older-schema) cached response, so the reconstruction can't choke on a stale field.
 _SEARCH_FILTER_FIELDS = frozenset(f.name for f in fields(SearchFilters))
+
+# Obvious greeting / small-talk openers, kept short so a real shopping query that merely starts with
+# a greeting ("你好，推荐个面霜") is not caught.
+_GREETING_HINTS = (
+    "你好", "您好", "你是谁", "您是谁", "在吗", "在不在", "谢谢", "多谢", "感谢",
+    "早上好", "中午好", "晚上好", "嗨", "哈喽", "hi", "hello",
+)
+
+
+def _looks_like_greeting(message: str) -> bool:
+    """Conservative greeting check, used ONLY to suppress the instant pre-router lead so a "好的，" never
+    lands in front of the router's inline greeting reply. Not a router: a wrong answer here only shifts
+    or duplicates the opener, it never changes the route the LLM picks."""
+    text = message.strip().lower()
+    return len(text) <= 6 and any(hint in text for hint in _GREETING_HINTS)
 
 
 def _product_summary(product: ProductCard) -> dict:
@@ -139,11 +156,15 @@ class ShoppingAssistant:
         return self._catalog
 
     def opener(self, route: str, query: str) -> str:
-        """The route-tailored streaming opener, emitted once the focused router decides (so it matches
-        what actually happens; empty for chitchat). The category label for a search opener comes from
-        the instant rule parse, not the LLM, so it costs nothing."""
-        label = self._parser.lead_in_hint(query)[1] if route == "product_search" else None
-        return opener_text(route, label)
+        """The whole route-tailored opener as one string (empty for chitchat). Used by the cached replay
+        path, which has no router to wait on. The streaming path instead splits it into an instant lead
+        and a route-specific tail (see `_route`)."""
+        return opener_text(route, self._opener_label(route, query))
+
+    def _opener_label(self, route: str, query: str) -> str | None:
+        # The category label for a search opener comes from the instant rule parse, not the LLM, so it
+        # costs nothing.
+        return self._parser.lead_in_hint(query)[1] if route == "product_search" else None
 
     def prepare(
         self,
@@ -229,13 +250,21 @@ class ShoppingAssistant:
                 yield ("prepared", self._prepare_commerce(query, session_id, pending))
                 return
 
-        # 2. Speculative embed overlaps the router/parse calls (only the search path needs it).
+        # 2. Instant lead, flushed before the router so 首Token lands < 1s on a shopping turn. Suppressed
+        # for an obvious greeting so a "好的，" never lands in front of the router's inline chitchat reply.
+        # This is a latency gate, not a router: a wrong guess only shifts or duplicates the opener, it
+        # never changes the route the LLM picks.
+        greeting = _looks_like_greeting(query)
+        if not greeting:
+            yield opener_lead()
+
+        # 3. Speculative embed overlaps the router/parse calls (only the search path needs it).
         if not compare_product_ids:
             self._retriever.prewarm_query(query)
 
         recent_product_ids = self._recent_product_ids(session_id, client_recent_product_ids)
 
-        # 3. Focused router (LLM-primary). When the LLM is off/failed, fall back to the keyword router
+        # 4. Focused router (LLM-primary). When the LLM is off/failed, fall back to the keyword router
         # (which needs a rule parse). `filters` is parsed lazily and reused.
         filters: SearchFilters | None = None
         route, chitchat_reply = self._parser.classify_route(
@@ -251,11 +280,17 @@ class ShoppingAssistant:
         if len(compare_product_ids) >= 2:
             route = "comparison"
 
-        # The opener now matches the route the LLM actually picked — stream it before the heavy work
-        # (empty for chitchat, where the reply greets for itself).
-        opener = self.opener(route, query)
-        if opener:
-            yield opener
+        # Complete the opener now the route is known. Normally the lead is already out, so only the
+        # route-specific tail remains (empty for chitchat, where the reply greets for itself). If the
+        # greeting gate suppressed the lead but the turn isn't chitchat after all, emit the whole opener.
+        if greeting:
+            opener = self.opener(route, query)
+            if opener:
+                yield opener
+        else:
+            tail = opener_continuation(route, self._opener_label(route, query))
+            if tail:
+                yield tail
 
         # 4. Dispatch.
         if route == "planned_task":

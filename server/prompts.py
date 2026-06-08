@@ -20,22 +20,41 @@ if TYPE_CHECKING:
 
 # --- Streaming lead-in ---------------------------------------------------------
 
-# The streaming opener, emitted the moment the focused router picks a route (~the router's latency,
-# still well under a second) so it actually matches what happens next. A varied lead keeps it from
-# reading robotic. Chitchat gets no opener — its reply greets for itself. Streaming-only, never stored.
+# The streaming opener is split so 首Token lands well under a second: an instant, route-neutral lead is
+# flushed BEFORE the focused router runs, then the route-specific tail follows the moment the router
+# decides, so the finished line still matches what actually happens. A varied lead keeps it from reading
+# robotic. Chitchat gets no opener — its reply greets for itself. Streaming-only, never stored.
 _OPENER_LEADS = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+
+_OPENER_TAILS = {
+    "comparison": "我来帮您对比一下",
+    "cart_action": "马上帮您处理购物车",
+    "checkout": "这就帮您处理订单",
+    "planned_task": "这就为您安排",
+}
+
+
+def opener_lead() -> str:
+    """Instant acknowledgement flushed before the router, so 首Token lands under 1s. Route-neutral (the
+    route isn't known yet); the route-specific tail follows once the router decides."""
+    return f"{random.choice(_OPENER_LEADS)}，"
+
+
+def opener_continuation(route: str, label: str | None = None) -> str:
+    """The route-specific tail, streamed once the router decides. Empty for chitchat (its reply greets
+    for itself)."""
+    if route == "chitchat":
+        return ""
+    tail = _OPENER_TAILS.get(route) or (f"我来帮您找{label}" if label else "我帮您找找")
+    return f"{tail}～\n"
 
 
 def opener_text(route: str, label: str | None = None) -> str:
+    """The whole opener as one string (lead + tail). Used by the cached replay path, which has no router
+    to wait on, so it can be flushed in one go."""
     if route == "chitchat":
         return ""
-    tail = {
-        "comparison": "我来帮您对比一下",
-        "cart_action": "马上帮您处理购物车",
-        "checkout": "这就帮您处理订单",
-        "planned_task": "这就为您安排",
-    }.get(route) or (f"我来帮您找{label}" if label else "我帮您找找")
-    return f"{random.choice(_OPENER_LEADS)}，{tail}～\n"
+    return opener_lead() + opener_continuation(route, label)
 
 
 # --- Recommendation answer -----------------------------------------------------

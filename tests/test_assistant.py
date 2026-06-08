@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from server.assistant import ShoppingAssistant, _chunk_text, _reason
+from server.assistant import ShoppingAssistant, _chunk_text, _looks_like_greeting, _reason
 from server.catalog import CatalogHit, ProductCatalog
 from server.config import Settings
 from server.filter_cache import FilterCache
@@ -339,6 +339,38 @@ def test_opener_matches_the_route():
     leads = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
     opener = a.opener("product_search", "面霜")
     assert any(opener.startswith(lead) for lead in leads)
+
+
+_OPENER_LEADS = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+
+
+def test_streaming_opener_flushes_instant_lead_then_route_tail():
+    # 首Token: the instant lead is flushed before the router, then the route-specific tail completes
+    # the line once the route is known (intent_llm off -> fallback route -> product_search).
+    a = _assistant()
+    tokens = [u for u in a.prepare_stream("三百以内的面霜", session_id="s", top_k=3) if isinstance(u, str)]
+    assert len(tokens) == 2
+    assert tokens[0].startswith(_OPENER_LEADS) and tokens[0].endswith("，")  # instant, route-neutral
+    assert "面霜" in tokens[1]  # the tail names the product type once the route is known
+    assert "".join(tokens).endswith("～\n")
+
+
+def test_streaming_greeting_suppresses_instant_lead_and_opener():
+    # A greeting routes to chitchat (the stub router answers it) and the greeting gate suppresses the
+    # instant lead, so the turn streams no opener at all — the chitchat reply greets for itself.
+    a = _assistant_with_intent(_ScriptedLLM())
+    tokens = [u for u in a.prepare_stream("你好", session_id="s", top_k=3) if isinstance(u, str)]
+    assert tokens == []
+
+
+def test_greeting_gate_only_catches_short_greetings():
+    assert _looks_like_greeting("你好") is True
+    assert _looks_like_greeting("谢谢") is True
+    assert _looks_like_greeting("hi") is True
+    # A real shopping turn that merely opens with a greeting is too long to be gated, so it keeps its
+    # instant lead; a plain shopping query has no greeting token at all.
+    assert _looks_like_greeting("你好，推荐个面霜") is False
+    assert _looks_like_greeting("推荐面霜") is False
 
 
 # --- filter-keyed safe cache ---------------------------------------------------
