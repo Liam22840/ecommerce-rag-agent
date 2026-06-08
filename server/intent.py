@@ -1,7 +1,7 @@
 """Intent and constraint parsing.
 
 A deterministic rule pass extracts price/category constraints, and when an LLM is
-available it refines the result; both produce the same SearchFilters structure and
+available it refines the result. Both produce the same SearchFilters structure and
 the rule pass is the fallback when the model is unavailable.
 """
 
@@ -97,16 +97,16 @@ class SearchFilters:
     excluded_terms: list[str] = field(default_factory=list)
     compare_refs: list[str] = field(default_factory=list)
     raw_query: str = ""
-    # LLM-rewritten standalone retrieval query for context-dependent follow-ups;
-    # empty means "use raw_query".
+    # LLM-rewritten standalone retrieval query for context-dependent follow-ups.
+    # Empty means "use raw_query".
     rewritten_query: str = ""
     # LLM-set flag for novelty refinements ("还有别的/换一批"): drop already-shown products.
     exclude_seen: bool = False
     # LLM-picked product ids (copied from session_products) for backtracking recall
-    # ("回到最开始那个"); validated against the catalog before use.
+    # ("回到最开始那个"), validated against the catalog before use.
     recall_product_ids: list[str] = field(default_factory=list)
     # LLM-resolved product ids (copied from session_products) for a comparison turn
-    # ("第一个和第二个"); validated against the catalog, with the ordinal/name waterfall as fallback.
+    # ("第一个和第二个"), validated against the catalog, with the ordinal/name waterfall as fallback.
     compare_product_ids: list[str] = field(default_factory=list)
     commerce_action: str | None = None
     commerce_refs: list[str] = field(default_factory=list)
@@ -139,8 +139,8 @@ class IntentParser:
         history: list[dict[str, Any]] | None = None,
         session_products: list[dict[str, Any]] | None = None,
     ) -> SearchFilters:
-        # `previous_filters` drives the deterministic backstop (last turn only); `history`
-        # is the few-round refinement context; `session_products` is the whole-session list
+        # `previous_filters` drives the deterministic backstop (last turn only). `history`
+        # is the few-round refinement context. `session_products` is the whole-session list
         # of shown products the LLM uses to resolve backtracking ("回到最开始那个").
         rule = self._rule_parse(message)
         if self._should_use_llm():
@@ -152,7 +152,7 @@ class IntentParser:
         # when the LLM is unavailable or omits the carry. LLM proposes, this disposes.
         base = self._apply_session_context(base, previous_filters)
         # Safety net for either source contradicting itself: a brand can't be both wanted and
-        # excluded. The rule parser already avoids this; this also catches the LLM if it ever
+        # excluded. The rule parser already avoids this. This also catches the LLM if it ever
         # emits a brand it simultaneously excluded, which would otherwise match nothing.
         if base.brand and base.brand in base.excluded_brands:
             base.brand = None
@@ -160,10 +160,10 @@ class IntentParser:
         return base
 
     def lead_in_hint(self, message: str) -> tuple[str, str | None]:
-        """Instant, deterministic guess for the streaming opener — no LLM call. Rule-parse the
+        """Instant, deterministic guess for the streaming opener, no LLM call. Rule-parse the
         raw text and report what to acknowledge: ("search", <type>) when a catalog category is
         named, ("compare", None) for a comparison phrasing, else ("neutral", None). Type wins
-        over the fuzzy comparison regex; anything unrecognised falls back to neutral, so chit-chat
+        over the fuzzy comparison regex. Anything unrecognised falls back to neutral, so chit-chat
         is never mis-opened. The real understanding is still the LLM's job, behind the opener."""
         rule = self._rule_parse(message)
         # Only tailor toward a type the user positively wants. If the detected type is itself
@@ -209,7 +209,7 @@ class IntentParser:
         if filters.prefer_low_price:
             filters.sort_by = "price_asc"
         # Rule-fallback comparison detection keeps comparison routing working when the
-        # LLM is unavailable; chitchat is not rule-detectable, so it stays product_search.
+        # LLM is unavailable. Chitchat is not rule-detectable, so it stays product_search.
         if _looks_like_comparison(text):
             filters.intent_type = "comparison"
         filters.required_terms = _parse_required_terms(text)
@@ -238,7 +238,7 @@ class IntentParser:
                 )
             )
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - LLM parse must degrade to the rule parser.
+        except Exception:  # noqa: BLE001 (LLM parse must degrade to the rule parser)
             return None
         if not payload:
             return None
@@ -351,19 +351,63 @@ class IntentParser:
         return excluded
 
 
+# A price number, in Arabic digits and/or Chinese numerals (三百, 一万, 1万, 三百五). Scoped to the
+# price patterns below so it never touches numerals inside names (e.g. 三只松鼠).
+_PRICE_NUMBER = r"([\d零〇一二两三四五六七八九十百千万]+(?:\.\d+)?)"
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+
+def _cn_to_int(token: str) -> int | None:
+    """Convert a Chinese or mixed-digit integer (三百 / 一万 / 1万 / 三百五十 / 三百五) to an int,
+    or None if it isn't a parseable number. Used only for the deterministic price fallback; the
+    chat model handles Chinese numbers itself."""
+    total = section = number = last_unit = 0
+    for ch in token:
+        if ch.isdigit():
+            number = number * 10 + int(ch)
+        elif ch in _CN_DIGIT:
+            number = _CN_DIGIT[ch]
+        elif ch in _CN_UNIT:
+            unit = _CN_UNIT[ch]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = 0
+            else:
+                section += (number or 1) * unit
+            last_unit = unit
+            number = 0
+        else:
+            return None
+    if number and last_unit >= 10:  # trailing bare digit, e.g. 三百五 -> 350
+        section += number * (last_unit // 10)
+        number = 0
+    return (total + section + number) or None
+
+
+def _to_number(token: str) -> float | None:
+    try:
+        return float(token)
+    except ValueError:
+        value = _cn_to_int(token)
+        return float(value) if value is not None else None
+
+
 def _parse_max_price(text: str) -> float | None:
     patterns = [
-        r"(?:预算|价格|价位)?\s*(\d+(?:\.\d+)?)\s*(?:元|块|rmb|人民币)?\s*(?:以下|以内|内|之内)",
-        r"(?:不超过|不超|小于|低于|少于|<=|≤)\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*(?:元|块)?\s*(?:封顶|以下)",
+        rf"(?:预算|价格|价位)?\s*{_PRICE_NUMBER}\s*(?:元|块|rmb|人民币)?\s*(?:以下|以内|内|之内)",
+        rf"(?:不超过|不超|小于|低于|少于|<=|≤)\s*{_PRICE_NUMBER}",
+        rf"{_PRICE_NUMBER}\s*(?:元|块)?\s*(?:封顶|以下)",
     ]
     return _first_number(patterns, text)
 
 
 def _parse_min_price(text: str) -> float | None:
     patterns = [
-        r"(\d+(?:\.\d+)?)\s*(?:元|块|rmb|人民币)?\s*(?:以上|起)",
-        r"(?:不低于|大于|高于|>=|≥)\s*(\d+(?:\.\d+)?)",
+        rf"{_PRICE_NUMBER}\s*(?:元|块|rmb|人民币)?\s*(?:以上|起)",
+        rf"(?:不低于|大于|高于|>=|≥)\s*{_PRICE_NUMBER}",
     ]
     return _first_number(patterns, text)
 
@@ -379,7 +423,9 @@ def _first_number(patterns: list[str], text: str) -> float | None:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            return float(match.group(1))
+            value = _to_number(match.group(1))
+            if value is not None:
+                return value
     return None
 
 
@@ -453,7 +499,7 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _coerce_price(value: Any) -> float | None:
-    if isinstance(value, bool):  # bool is an int subclass; reject explicitly
+    if isinstance(value, bool):  # bool is an int subclass, reject explicitly
         return None
     try:
         price = float(value)
