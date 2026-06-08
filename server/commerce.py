@@ -9,9 +9,9 @@ from typing import Any, Literal
 from server.catalog import ProductCatalog
 from server.llm import ChatClient
 from server.pricing import build_cart_item, cart_subtotal, money
-from server.prompts import commerce_intent_messages
+from server.prompts import commerce_intent_messages, pending_reply_messages
 from server.schemas import CartItem, CartUpdate, OrderDraft
-from server.textutil import json_object
+from server.textutil import chinese_to_int, json_object
 
 
 ActionType = Literal[
@@ -39,6 +39,9 @@ class CommerceActionCandidate:
     quantity: int | None = None
     target_scope: Scope = "unknown"
     confidence: str = "low"
+    # Per-item quantities for a multi-add with different counts ("第一个买两瓶，第二个买三瓶"):
+    # product_id -> quantity. Falls back to `quantity` (then 1) for ids not listed here.
+    item_quantities: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_commerce(self) -> bool:
@@ -92,6 +95,7 @@ def looks_like_commerce(message: str) -> bool:
         _ADD_HINTS
         + _REMOVE_HINTS
         + _CLEAR_HINTS
+        + _SHOW_HINTS
         + _CHECKOUT_HINTS
         + _CONFIRM_HINTS
         + _CANCEL_HINTS
@@ -118,18 +122,18 @@ class CommerceService:
         cart_items: list[dict[str, Any]],
         session_products: list[dict[str, Any]] | None,
         order_state: OrderState,
+        comparison_winner_id: str | None = None,
     ) -> CommerceResult | None:
         if order_state.pending_action is not None and _looks_like_pending_reply(message):
             candidate = _candidate_from_pending(order_state.pending_action, message)
             return self._apply(candidate, message, cart_items, session_products, order_state)
 
-        if not looks_like_commerce(message) and order_state.draft is None:
-            return None
-        deterministic = self._deterministic_parse(message, bool(cart_items), bool(order_state.draft))
-        llm_candidate = None
-        if not self._candidate_is_complete(deterministic, cart_items, session_products):
-            llm_candidate = self._llm_parse(message, cart_items, session_products)
-        candidate = self._choose_candidate(deterministic, llm_candidate)
+        # The LLM fills the action structure (which item, action, quantity). Deterministic parsing is
+        # only the fallback when the LLM is unavailable. Verification (the id was actually shown,
+        # coercing quantity to an int) and execution (cart maths) stay deterministic in _apply.
+        candidate = self._llm_parse(message, cart_items, session_products, comparison_winner_id)
+        if candidate is None:
+            candidate = self._deterministic_parse(message, bool(cart_items), bool(order_state.draft))
         if not candidate.is_commerce:
             return None
         return self._apply(candidate, message, cart_items, session_products, order_state)
@@ -144,6 +148,69 @@ class CommerceService:
         order_state: OrderState,
     ) -> CommerceResult:
         return self._apply(candidate, message, cart_items, session_products, order_state)
+
+    def handle_pending_reply(
+        self,
+        message: str,
+        *,
+        cart_items: list[dict[str, Any]],
+        session_products: list[dict[str, Any]] | None,
+        order_state: OrderState,
+    ) -> CommerceResult | None:
+        """Resolve a reply to an open "which item?" clarification. Returns a result when the pending
+        action is continued; returns None when the message isn't a reply (caller routes it fresh).
+        An ordinal/deictic reply is resolved deterministically; otherwise the LLM understands a
+        natural-language answer ("那个便宜的") or detects abandonment ("算了，看看别的")."""
+        pending = order_state.pending_action
+        if pending is None:
+            return None
+        if _looks_like_pending_reply(message):
+            candidate = _candidate_from_pending(pending, message)
+            return self._apply(candidate, message, cart_items, session_products, order_state)
+        if self._llm is None or not self._llm.available:
+            return None  # deterministic-only: leave pending set, let the caller route fresh
+        pool = self._pending_pool(pending, cart_items, session_products)
+        try:
+            payload = json_object(self._llm.complete(pending_reply_messages(message, pending.action, pool)))
+        except Exception:  # noqa: BLE001 (resolver failure degrades to leaving pending set)
+            return None
+        outcome = payload.get("outcome")
+        if outcome == "resolve":
+            pid = str(payload.get("product_id") or "").strip()
+            if pid and pid in {str(item.get("id")) for item in pool}:
+                candidate = CommerceActionCandidate(
+                    action=pending.action,
+                    product_ids=[pid],
+                    quantity=pending.quantity,
+                    target_scope=pending.target_scope,
+                    confidence="high",
+                )
+                return self._apply(candidate, message, cart_items, session_products, order_state)
+            return None
+        if outcome in {"abandon", "not_a_reply"}:
+            order_state.pending_action = None
+        return None
+
+    def _pending_pool(
+        self,
+        pending: CommerceActionCandidate,
+        cart_items: list[dict[str, Any]],
+        session_products: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        if pending.target_scope == "cart_items":
+            return [
+                {"id": item.product_id, "名称": item.product.title, "价格": item.price_label,
+                 "评分": self._catalog.avg_rating(self._catalog.require(item.product_id))}
+                for item in self._normalize_cart(cart_items)
+            ]
+        pool: list[dict[str, Any]] = []
+        for p in (session_products or []):
+            product = self._catalog.get(p.get("id"))
+            pool.append({
+                "id": p.get("id"), "名称": p.get("title"), "价格": p.get("price"),
+                "评分": self._catalog.avg_rating(product) if product else None,
+            })
+        return pool
 
     def _deterministic_parse(
         self,
@@ -172,7 +239,9 @@ class CommerceService:
         if any(hint in text for hint in _SET_QTY_HINTS) and quantity is not None:
             return CommerceActionCandidate("set_quantity", refs, quantity=quantity, target_scope="cart_items", confidence="high")
         if any(hint in text for hint in _ADD_HINTS) or _looks_like_add_ref(text, has_cart):
-            return CommerceActionCandidate("add", refs, quantity=quantity or 1, target_scope="shown_products", confidence="high")
+            # Leave quantity as None when none was parsed so a deferred LLM can supply it (e.g. a
+            # measure word the parser can't read, "要五个"); _apply defaults to 1.
+            return CommerceActionCandidate("add", refs, quantity=quantity, target_scope="shown_products", confidence="high")
         if has_cart and any(hint in text for hint in _SHOW_HINTS):
             return CommerceActionCandidate("show_cart", refs, target_scope="cart_items", confidence="medium")
         return CommerceActionCandidate()
@@ -182,58 +251,42 @@ class CommerceService:
         message: str,
         cart_items: list[dict[str, Any]],
         session_products: list[dict[str, Any]] | None,
+        comparison_winner_id: str | None = None,
     ) -> CommerceActionCandidate | None:
         if self._llm is None or not self._llm.available:
             return None
         try:
-            payload = json_object(self._llm.complete(commerce_intent_messages(message, cart_items, session_products)))
+            payload = json_object(self._llm.complete(
+                commerce_intent_messages(message, cart_items, session_products, comparison_winner_id)
+            ))
         except Exception:  # noqa: BLE001 (commerce must fall back to deterministic handling)
             return None
         action = payload.get("action")
         if action not in COMMERCE_ACTIONS:
             return None
+        product_ids = [str(pid).strip() for pid in payload.get("product_ids", []) if str(pid).strip()]
+        # Optional per-item list ([{product_id, quantity}]) for different counts per product. Its ids
+        # extend product_ids so resolution + the shown-item check treat them the same.
+        item_quantities: dict[str, int] = {}
+        for entry in payload.get("items", []) if isinstance(payload.get("items"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            pid = str(entry.get("product_id", "")).strip()
+            qty = _coerce_int(entry.get("quantity"))
+            if pid:
+                if pid not in product_ids:
+                    product_ids.append(pid)
+                if qty is not None:
+                    item_quantities[pid] = qty
         return CommerceActionCandidate(
             action=action,
             refs=[str(ref).strip() for ref in payload.get("refs", []) if str(ref).strip()],
-            product_ids=[str(pid).strip() for pid in payload.get("product_ids", []) if str(pid).strip()],
+            product_ids=product_ids,
             quantity=_coerce_int(payload.get("quantity")),
             target_scope=payload.get("target_scope") if payload.get("target_scope") in {"shown_products", "cart_items", "unknown"} else "unknown",
             confidence=payload.get("confidence") if payload.get("confidence") in {"high", "medium", "low"} else "low",
+            item_quantities=item_quantities,
         )
-
-    def _candidate_is_complete(
-        self,
-        candidate: CommerceActionCandidate,
-        cart_items: list[dict[str, Any]],
-        session_products: list[dict[str, Any]] | None,
-    ) -> bool:
-        if candidate.action in {"none"}:
-            return False
-        if candidate.action in {"clear", "show_cart", "checkout", "confirm_order", "cancel_order"}:
-            return candidate.confidence == "high"
-        if candidate.action in {"increment", "decrement", "set_quantity"} and len(cart_items) == 1:
-            return True
-        if candidate.product_ids:
-            return True
-        if candidate.refs:
-            pool = cart_items if candidate.target_scope == "cart_items" else (session_products or [])
-            return _ordinal_ref(candidate.refs) is not None and len(pool) >= _ordinal_ref(candidate.refs)
-        return False
-
-    def _choose_candidate(
-        self,
-        deterministic: CommerceActionCandidate,
-        llm_candidate: CommerceActionCandidate | None,
-    ) -> CommerceActionCandidate:
-        if deterministic.confidence == "high" and deterministic.action != "none":
-            if llm_candidate and llm_candidate.action != deterministic.action and llm_candidate.confidence == "high":
-                return CommerceActionCandidate(action="none")
-            if llm_candidate and (not deterministic.refs and llm_candidate.refs):
-                deterministic.refs = llm_candidate.refs
-            if llm_candidate and deterministic.quantity is None:
-                deterministic.quantity = llm_candidate.quantity
-            return deterministic
-        return llm_candidate or deterministic
 
     def _apply(
         self,
@@ -273,15 +326,22 @@ class CommerceService:
             return CommerceResult("已取消本次下单，购物车商品仍会保留。", self._cart_update(cart, "cancel_order", self._cart_summary(cart)), order, intent)
 
         if candidate.action == "add":
-            resolved = self._resolve_product(candidate, session_products or [], cart, prefer_cart=False)
+            resolved = self._resolve_products(candidate, session_products or [], cart, prefer_cart=False)
             if isinstance(resolved, str):
                 order_state.pending_action = candidate
                 return self._clarify(cart, resolved, intent)
+            # quantity is per item; the LLM is told a count of products ("两双") goes in product_ids,
+            # not here, so we trust it and default to 1 when unset. item_quantities overrides per id.
             qty = candidate.quantity or 1
-            cart = self._upsert(cart, resolved.product_id, qty)
-            summary = f"已将「{resolved.product.title}」加入购物车，数量 {self._quantity_for(cart, resolved.product_id)}。"
+            for item in resolved:
+                cart = self._upsert(cart, item.product_id, candidate.item_quantities.get(item.product_id, qty))
             order_state.pending_action = None
             order_state.draft = None
+            if len(resolved) == 1:
+                pid = resolved[0].product_id
+                summary = f"已将「{resolved[0].product.title}」加入购物车，数量 {self._quantity_for(cart, pid)}。"
+            else:
+                summary = "已将 " + "、".join(f"「{item.product.title}」" for item in resolved) + " 加入购物车。"
             return CommerceResult(summary, self._cart_update(cart, "add", summary), None, intent)
 
         resolved_item = self._resolve_cart_item(candidate, cart)
@@ -350,6 +410,36 @@ class CommerceService:
             items.append(build_cart_item(self._catalog, product, quantity, raw.get("sku_id")))
         return _dedupe_cart(items, self._catalog)
 
+    def _resolve_products(
+        self,
+        candidate: CommerceActionCandidate,
+        session_products: list[dict[str, Any]],
+        cart: list[CartItem],
+        prefer_cart: bool,
+    ) -> list[CartItem] | str:
+        """Resolve one or more products for an add. The LLM's ids (which can be several, e.g. a fuzzy
+        "便宜的两个") and explicit ordinals ("第一个和第二个") resolve to multiple items; everything
+        else falls back to the single-item resolver. LLM ids are verified against what was actually
+        shown/in the cart, so the model can't add an off-screen product (e.g. resolving "最便宜的那个"
+        to the globally cheapest item the user never saw)."""
+        shown = {_pool_product_id(p) for p in session_products} | {item.product_id for item in cart}
+        ids = [pid for pid in candidate.product_ids if pid in shown and self._catalog.get(pid) is not None]
+        if ids:
+            return [build_cart_item(self._catalog, self._catalog.require(pid), 1) for pid in ids]
+        ordinals = _ordinal_refs(candidate.refs)
+        if ordinals:
+            pool = cart if prefer_cart else session_products
+            items = [
+                build_cart_item(self._catalog, self._catalog.require(_pool_product_id(pool[o - 1])), 1)
+                for o in ordinals
+                if 1 <= o <= len(pool) and self._catalog.get(_pool_product_id(pool[o - 1])) is not None
+            ]
+            if items:
+                return items
+            return "我没找到你说的第几个商品，请先让我推荐或明确商品名。"
+        single = self._resolve_product(candidate, session_products, cart, prefer_cart)
+        return single if isinstance(single, str) else [single]
+
     def _resolve_product(
         self,
         candidate: CommerceActionCandidate,
@@ -357,10 +447,8 @@ class CommerceService:
         cart: list[CartItem],
         prefer_cart: bool,
     ) -> CartItem | str:
-        for pid in candidate.product_ids:
-            product = self._catalog.get(pid)
-            if product is not None:
-                return build_cart_item(self._catalog, product, 1)
+        # product_ids and ordinals are resolved (and verified against shown items) in
+        # _resolve_products; here we only handle the deictic / single-shown fallbacks.
         ordinal = _ordinal_ref(candidate.refs)
         if ordinal is not None:
             pool = cart if prefer_cart else session_products
@@ -479,7 +567,7 @@ def _looks_like_pending_reply(text: str) -> bool:
     stripped = text.strip()
     if _parse_refs(stripped):
         return True
-    if _chinese_number(stripped) is not None:
+    if chinese_to_int(stripped) is not None:
         return True
     return bool(re.search(r"(加|买|放|加入).*(第[一二三四五六七八九十\d]+|这个|刚才)", stripped))
 
@@ -502,7 +590,7 @@ def _pending_reply_refs(text: str) -> list[str]:
     refs = _parse_refs(text)
     if refs:
         return refs
-    ordinal = _chinese_number(text.strip())
+    ordinal = chinese_to_int(text.strip())
     if ordinal is not None:
         return [f"第{ordinal}个"]
     return []
@@ -518,11 +606,18 @@ def _parse_refs(text: str) -> list[str]:
 
 
 def _ordinal_ref(refs: list[str]) -> int | None:
+    return next(iter(_ordinal_refs(refs)), None)
+
+
+def _ordinal_refs(refs: list[str]) -> list[int]:
+    out: list[int] = []
     for ref in refs:
         match = re.search(r"第([一二三四五六七八九十\d]+)", ref)
         if match:
-            return _chinese_number(match.group(1))
-    return None
+            value = chinese_to_int(match.group(1))
+            if value is not None:
+                out.append(value)
+    return out
 
 
 def _has_deictic_ref(refs: list[str]) -> bool:
@@ -539,24 +634,7 @@ def _parse_quantity(text: str) -> int | None:
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
-            return _chinese_number(match.group(1))
-    return None
-
-
-def _chinese_number(value: str) -> int | None:
-    value = value.strip()
-    if value.isdigit():
-        return int(value)
-    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    if value in digits:
-        return digits[value]
-    if value == "十":
-        return 10
-    if "十" in value:
-        left, _, right = value.partition("十")
-        tens = digits.get(left, 1) if left else 1
-        ones = digits.get(right, 0) if right else 0
-        return tens * 10 + ones
+            return chinese_to_int(match.group(1))
     return None
 
 
@@ -568,7 +646,7 @@ def _coerce_int(value: Any) -> int | None:
     if isinstance(value, float):
         return int(value)
     if isinstance(value, str):
-        return _chinese_number(value) if not value.isdigit() else int(value)
+        return chinese_to_int(value) if not value.isdigit() else int(value)
     return None
 
 

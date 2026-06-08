@@ -118,6 +118,28 @@ INTENT_SYSTEM_PROMPT = (
 )
 
 
+# --- Pending cart clarification: resolve the reply to an open "which item?" question ----------
+
+PENDING_REPLY_SYSTEM = (
+    "你是电商导购的购物车澄清解析器。刚才助手问用户“要操作哪一个商品”，现在在等用户指明。"
+    "给你：待执行的购物车动作、候选商品列表（含 id、名称、价格、评分）、以及用户的回复。"
+    "判断用户回复属于哪种情况，只输出 JSON：\n"
+    "1. 指明了其中某个商品（可用序号、名称，或价格/评分等特征，如“便宜的那个”“评价好的那个”“理肤泉那款”）"
+    "→ outcome=resolve，product_id 填对应商品 id（按价格选最便宜/最贵，按评分选评价最高，必须来自候选列表，禁止自造）。\n"
+    "2. 放弃这次操作或改主意（如“算了”“先不买了”“看看别的”）→ outcome=abandon，product_id=null。\n"
+    "3. 回复和这次澄清无关，是一个全新的请求 → outcome=not_a_reply，product_id=null。\n"
+    '只输出：{"outcome":"resolve|abandon|not_a_reply","product_id":string|null}'
+)
+
+
+def pending_reply_messages(message: str, action: str, products: list[dict]) -> list[dict[str, str]]:
+    payload = {"待执行动作": action, "候选商品": products, "用户回复": message}
+    return [
+        {"role": "system", "content": PENDING_REPLY_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 def intent_messages(
     query: str,
     categories: set[str],
@@ -151,12 +173,18 @@ COMMERCE_INTENT_SYSTEM = (
     "规则："
     "1. refs 放用户原话里的商品引用，如“第一个”“第二个”“这个”“刚才那个”。"
     "2. product_ids 只能从 session_products 或 cart_items 里复制，禁止自造。无法确定就留空并保留 refs。"
+    "“都/全部/所有”默认指 session_products 里最近一次展示的那批商品（排在最前的连续一组），不要把历史上看过的全都算进来。"
+    "给了 comparison_winner_id 时，“更适合的/更好的/胜出的那个”就指这个 id。"
     "3. target_scope：加购通常是 shown_products；删除/改数量通常是 cart_items；不确定填 unknown。"
-    "4. quantity 只放用户明确说出的数量；没有就填 null。"
-    "5. 价格、规格、库存和订单号不由你判断。"
-    "6. 如果不是购物车或下单意图，action=none。"
+    "4. quantity 是「每个商品各买几件」，只放用户对单个商品明确说出的件数，没有就填 null。"
+    "注意：「两款」「三个」「最便宜的两双」这类说的是要选几个不同商品，数量体现在 product_ids 的个数上，"
+    "不要写进 quantity（这种情况 quantity 填 null）。"
+    "5. 当用户对不同商品要不同件数（如“第一个买两瓶，第二个买三瓶”）时，用 items 列出每个 {product_id, quantity}；"
+    "件数一致或只有一个商品时不用 items。"
+    "6. 价格、规格、库存和订单号不由你判断。"
+    "7. 如果不是购物车或下单意图，action=none。"
     '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|checkout|confirm_order|cancel_order|none",'
-    '"refs":[string],"product_ids":[string],"quantity":number|null,'
+    '"refs":[string],"product_ids":[string],"items":[{"product_id":string,"quantity":number}],"quantity":number|null,'
     '"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
 )
 
@@ -165,12 +193,15 @@ def commerce_intent_messages(
     query: str,
     cart_items: list[dict],
     session_products: list[dict] | None = None,
+    comparison_winner_id: str | None = None,
 ) -> list[dict[str, str]]:
     payload = {
         "query": query,
         "cart_items": cart_items,
         "session_products": session_products or [],
     }
+    if comparison_winner_id:
+        payload["comparison_winner_id"] = comparison_winner_id
     return [
         {"role": "system", "content": COMMERCE_INTENT_SYSTEM},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
