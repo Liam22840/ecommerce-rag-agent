@@ -331,11 +331,17 @@ private struct CartItemPayload: Codable {
     let product: Product?
     let productID: String?
     let quantity: Int
+    let skuID: String?
+    let priceLabel: String?
+    let unitPrice: Double?
 
     enum CodingKeys: String, CodingKey {
         case product
         case productID = "product_id"
         case quantity
+        case skuID = "sku_id"
+        case priceLabel = "price_label"
+        case unitPrice = "unit_price"
     }
 
     var cartItem: CartItem? {
@@ -343,13 +349,22 @@ private struct CartItemPayload: Codable {
             return nil
         }
 
-        return CartItem(product: product, quantity: quantity)
+        return CartItem(
+            product: product,
+            quantity: quantity,
+            skuID: skuID,
+            priceLabel: priceLabel,
+            unitPrice: unitPrice
+        )
     }
 
     init(cartItem: CartItem) {
         self.product = cartItem.product
         self.productID = cartItem.product.id
         self.quantity = cartItem.quantity
+        self.skuID = cartItem.skuID
+        self.priceLabel = cartItem.priceLabel
+        self.unitPrice = cartItem.unitPrice
     }
 }
 
