@@ -84,7 +84,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             raise HTTPException(status_code=400, detail="message cannot be empty")
         image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
-        key, cached = _cache_lookup(cache, message, request)
+        key, cached = _cache_lookup(cache, message, request, app.state.assistant)
         if cached is not None:
             # A cache hit skips the assistant, so record the turn into session memory anyway,
             # otherwise the next message has no context to carry over or resolve against.
@@ -111,7 +111,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             raise HTTPException(status_code=400, detail="message cannot be empty")
         image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
-        key, cached = _cache_lookup(cache, message, request)
+        key, cached = _cache_lookup(cache, message, request, app.state.assistant)
         if cached is not None:
             assistant = app.state.assistant
             assistant.record_cached_turn(request.effective_session_id, message, cached)
@@ -142,12 +142,18 @@ def _decode_image(request: ChatRequest) -> bytes | None:
         raise HTTPException(status_code=400, detail="图片格式无法识别，请重新拍一张。")
 
 
-def _cache_lookup(cache: QueryCache, message: str, request: ChatRequest) -> tuple[str | None, dict | None]:
+def _cache_lookup(
+    cache: QueryCache, message: str, request: ChatRequest, assistant: ShoppingAssistant
+) -> tuple[str | None, dict | None]:
+    # A turn in a session that already has history may be a context-dependent refinement ("便宜点的")
+    # whose meaning the text key can't capture, so it must neither hit nor populate the text cache —
+    # the server's own session memory is the source of truth here, not the client-sent recent ids.
     if (
         looks_like_planned_task(message)
         or looks_like_commerce(message)
         or request.client_context.cart_items
         or request.attachments
+        or assistant.has_session_history(request.effective_session_id)
     ):
         return None, None
     compare_ids = request.effective_compare_product_ids

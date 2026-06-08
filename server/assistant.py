@@ -43,6 +43,10 @@ ResultStatus = Literal["ok", "no_results", "no_cheaper", "no_improvement", "exha
 # Fields of a shown product remembered for the turn history and the recall log.
 _SHOWN_FIELDS = ("id", "title", "brand", "price", "sub_category")
 
+# When a turn sorts by price/rating, retrieval fetches up to this many candidates so the sort sees
+# the whole filtered category (larger than any single sub-category) instead of the relevance-top-k.
+_SORT_CANDIDATE_POOL = 50
+
 # Valid SearchFilters keys, computed once. Used to drop unknown keys when rebuilding filters from
 # a (possibly older-schema) cached response, so the reconstruction can't choke on a stale field.
 _SEARCH_FILTER_FIELDS = frozenset(f.name for f in fields(SearchFilters))
@@ -609,6 +613,11 @@ class ShoppingAssistant:
         raw_cart: list[dict],
         session_id: str | None,
     ) -> CommerceResult:
+        # The planner already resolved these ids this turn. Commerce only accepts product ids it can
+        # see in session_products ∪ cart, so include the targets in the pool directly — otherwise a
+        # plan whose search hasn't been written to session memory yet (e.g. a session-less turn)
+        # would fail the cart step and ask for clarification instead of adding.
+        pool = self._pool_with_ids(product_ids, self._session_products(session_id))
         result: CommerceResult | None = None
         for product_id in product_ids:
             candidate = CommerceActionCandidate(
@@ -622,7 +631,7 @@ class ShoppingAssistant:
                 candidate,
                 query,
                 cart_items=raw_cart,
-                session_products=self._session_products(session_id),
+                session_products=pool,
                 order_state=self._session(session_id).order,
             )
             if result.cart is not None:
@@ -630,6 +639,31 @@ class ShoppingAssistant:
         if result is None:
             raise ValueError("no cart target")
         return result
+
+    def _pool_with_ids(self, product_ids: list[str], existing: list[dict] | None) -> list[dict]:
+        """A commerce reference pool (session_products shape) that's guaranteed to contain the given
+        catalog ids, so an explicit, already-resolved target always resolves."""
+        pool = list(existing or [])
+        have = {entry.get("id") for entry in pool}
+        for pid in product_ids:
+            if pid in have:
+                continue
+            product = self._catalog.get(pid)
+            if product is None:
+                continue
+            pool.append(self._commerce_entry(pid, product))
+            have.add(pid)
+        return pool
+
+    def _commerce_entry(self, pid: str, product: dict) -> dict:
+        """A single commerce reference row (the session_products shape) for a catalog product."""
+        return {
+            "id": pid,
+            "title": product["title"],
+            "brand": product["brand"],
+            "price": self._catalog.lowest_price(product),
+            "sub_category": product["sub_category"],
+        }
 
     def _product_cards_from_ids(self, product_ids: list[str]) -> list[ProductCard]:
         filters = SearchFilters()
@@ -816,7 +850,16 @@ class ShoppingAssistant:
         # Over-fetch so that dropping already-seen ("换一批") or excluded ("不要油腻") items still
         # leaves enough to fill top_k.
         buffer = (len(recent_product_ids) if filters.exclude_seen else 0) + (top_k if filters.excluded_terms else 0)
-        retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=top_k + buffer)
+        limit = top_k + buffer
+        # A pure price/rating sort must see the WHOLE filtered category, not just the relevance-top-k,
+        # or retrieval truncates the true cheapest/highest-rated away before _order_hits sorts. But
+        # only when there are no soft relevance signals: with required_terms/requested_specs ("便宜的
+        # 敏感肌面霜") the relevance ranking carries the real intent, so over-fetching then price-sorting
+        # would surface the cheapest-overall instead of the cheapest-relevant. The category gate keeps
+        # the pool small, so fetching it all is cheap.
+        if filters.sort_by != "relevance" and not filters.required_terms and not filters.requested_specs:
+            limit = max(limit, _SORT_CANDIDATE_POOL)
+        retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=limit)
         hits = self._order_hits(retrieval.hits, filters)
         if filters.exclude_seen:
             seen = set(recent_product_ids)
@@ -1072,6 +1115,13 @@ class ShoppingAssistant:
     def _session(self, session_id: str | None) -> SessionState:
         return self._sessions.setdefault(session_id or "", SessionState())
 
+    def has_session_history(self, session_id: str | None) -> bool:
+        """Whether this session has any prior turns/shown products. The API uses this to bypass the
+        text-keyed query cache for follow-ups (which may be context-dependent refinements), without
+        peeking only at the client-provided recent ids. Does not create a session entry."""
+        state = self._sessions.get(session_id or "")
+        return bool(state and (state.turns or state.shown_products))
+
     def _shown_by_recency(self, session_id: str | None) -> list[dict]:
         # Single source of truth for the "most recent turn first, display order within a turn"
         # ordering. The intent prompt ("最近展示的排在最前") and the deterministic ordinal
@@ -1165,13 +1215,7 @@ class ShoppingAssistant:
             product = self._catalog.get(pid)
             if product is None or pid in seen:
                 continue
-            items.append({
-                "id": pid,
-                "title": product["title"],
-                "brand": product["brand"],
-                "price": self._catalog.lowest_price(product),
-                "sub_category": product["sub_category"],
-            })
+            items.append(self._commerce_entry(pid, product))
             seen.add(pid)
         for entry in self._session_products(session_id) or []:
             pid = entry["id"]

@@ -575,6 +575,9 @@ class _CountingAssistant:
     def record_cached_turn(self, *args, **kwargs):
         return self._inner.record_cached_turn(*args, **kwargs)
 
+    def has_session_history(self, *args, **kwargs):
+        return self._inner.has_session_history(*args, **kwargs)
+
 
 def _cached_client(tmp_path):
     settings = Settings(

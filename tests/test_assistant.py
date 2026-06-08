@@ -269,12 +269,14 @@ class _SpyRetriever:
     def __init__(self):
         self.queries: list[str] = []
         self.prewarmed: list[str] = []
+        self.limits: list[int] = []
 
     def prewarm_query(self, text):
         self.prewarmed.append(text)
 
-    def retrieve(self, query, filters, limit):
+    def retrieve(self, query, filters, limit, image_vector=None):
         self.queries.append(query)
+        self.limits.append(limit)
         return RetrievalResult(hits=[], source="none")
 
 
@@ -745,6 +747,47 @@ def test_photo_turn_records_session_memory_for_followup():
     assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8")
     shown = assistant._session_products("s")
     assert shown and shown[0]["id"] == "p_clothes_007"
+
+
+# --- verification fixes: sort over-fetch, plan-cart pool, session history ------
+
+def test_sort_query_overfetches_full_category_before_truncating():
+    # A price/rating sort must retrieve the whole filtered category, not just the relevance-top-k,
+    # or the true cheapest/highest-rated gets truncated away before _order_hits sorts.
+    from server.assistant import _SORT_CANDIDATE_POOL
+    intent_llm = _SeqLLM([json.dumps(
+        {"intent_type": "product_search", "category": "数码电子", "sub_category": "笔记本电脑", "sort_by": "price_desc"}
+    )])
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=intent_llm)
+    assistant.prepare("高端的笔记本电脑", session_id="s", top_k=3)
+    assert spy.limits[0] >= _SORT_CANDIDATE_POOL  # over-fetched, not just top_k=3
+
+
+def test_relevance_query_does_not_overfetch():
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=None)
+    assistant.prepare("推荐笔记本电脑", session_id="s", top_k=3)
+    assert spy.limits[0] == 3  # no sort -> normal top_k, no over-fetch
+
+
+def test_pool_with_ids_guarantees_the_targets_resolve():
+    assistant = _assistant(llm=None)
+    pool = assistant._pool_with_ids(["p_clothes_007"], existing=None)
+    assert any(entry["id"] == "p_clothes_007" for entry in pool)
+    # existing entries are preserved and not duplicated
+    pool2 = assistant._pool_with_ids(["p_clothes_007"], existing=[{"id": "p_clothes_007"}])
+    assert len(pool2) == 1
+
+
+def test_has_session_history_only_true_after_a_recorded_turn():
+    assistant = _assistant(llm=None)
+    assert assistant.has_session_history("s") is False  # no entry, doesn't create one
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert assistant.has_session_history("s") is True
+    assert assistant.has_session_history(None) is False
 
 
 # --- small helpers -------------------------------------------------------------
