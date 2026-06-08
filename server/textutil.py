@@ -72,6 +72,42 @@ def dedupe_ids(ids: list[str]) -> list[str]:
     return result
 
 
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+
+def chinese_to_int(token: str) -> int | None:
+    """Convert a Chinese or mixed-digit integer (三百 / 一万 / 1万 / 三百五十 / 三百五 / 二十三 / 7)
+    to an int, or None if it isn't a parseable number. The single home for this conversion, shared
+    by the intent, planner and commerce parsers. The chat model handles Chinese numbers itself;
+    this is the deterministic fallback for when it is unavailable."""
+    if not token:
+        return None
+    total = section = number = last_unit = 0
+    for ch in token:
+        if ch.isdigit():
+            number = number * 10 + int(ch)
+        elif ch in _CN_DIGIT:
+            number = _CN_DIGIT[ch]
+        elif ch in _CN_UNIT:
+            unit = _CN_UNIT[ch]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = 0
+            else:
+                section += (number or 1) * unit
+            last_unit = unit
+            number = 0
+        else:
+            return None
+    if number and last_unit >= 10:  # trailing bare digit, e.g. 三百五 -> 350
+        section += number * (last_unit // 10)
+        number = 0
+    return total + section + number
+
+
 def trim(value: str, max_len: int) -> str:
     """Trim a string to max_len characters, adding an ellipsis when truncated."""
     value = value.strip()
