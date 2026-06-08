@@ -12,6 +12,7 @@ __pycache__/
 .build/
 .swiftpm/
 DerivedData/
+.derivedData/
 client/ios/DerivedData/
 client/ios/simulator-current.png
 xcuserdata/

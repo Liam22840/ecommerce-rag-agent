@@ -12,12 +12,14 @@ from fastapi.staticfiles import StaticFiles
 
 from server.assistant import PreparedChat, ShoppingAssistant, _chunk_text
 from server.catalog import ProductCatalog
+from server.commerce import looks_like_commerce
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.llm import ArkChatClient
+from server.planner import looks_like_planned_task
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
-from server.schemas import ChatRequest, ChatResponse
+from server.schemas import ChatRequest, ChatResponse, ExecutionPlan
 
 
 def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | None = None) -> FastAPI:
@@ -88,6 +90,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             request.top_k,
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
+            request.client_context.cart_items,
         )
         if key is not None:
             _maybe_store(cache, key, response)
@@ -118,6 +121,8 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
 
 
 def _cache_lookup(cache: QueryCache, message: str, request: ChatRequest) -> tuple[str | None, dict | None]:
+    if looks_like_planned_task(message) or looks_like_commerce(message) or request.client_context.cart_items:
+        return None, None
     compare_ids = request.effective_compare_product_ids
     recent_ids = request.client_context.recent_product_ids
     if not cache.eligible(compare_ids, recent_ids):
@@ -142,22 +147,38 @@ def _sse_stream(
     # Token lands in <1s. Streaming-only — not collected into the stored answer.
     yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
     try:
-        prepared = assistant.prepare(
+        prepared = None
+        for update in assistant.prepare_stream(
             message,
             request.effective_session_id,
             request.top_k,
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
-        )
+            request.client_context.cart_items,
+        ):
+            if isinstance(update, ExecutionPlan):
+                yield _plan_frame(_model_dump(update))
+            else:
+                prepared = update
     except Exception:  # noqa: BLE001 - lead-in already sent; close the stream cleanly
         yield _token_event("抱歉，出了一点问题，请再试一次。")
         yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
         return
+    if prepared is None:
+        yield _token_event("抱歉，出了一点问题，请再试一次。")
+        yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
+        return
+
+    if prepared.cart is not None:
+        yield _cart_frame(_model_dump(prepared.cart))
+    if prepared.order is not None:
+        yield _order_frame(_model_dump(prepared.order))
 
     # Cards first: emit the products the instant retrieval finishes, then stream the prose.
     products = [_enrich_product_dict(_model_dump(p)) for p in prepared.products]
     comparison = _model_dump(prepared.comparison) if prepared.comparison is not None else None
-    yield _cards_frame(products, comparison)
+    if products or comparison is not None:
+        yield _cards_frame(products, comparison)
 
     tokens: list[str] = []
     for token in assistant.stream_answer(prepared):
@@ -189,6 +210,25 @@ def _cards_frame(products: list[dict], comparison: dict | None) -> str:
     return _sse("products", {"type": "products", "products": products, "items": products})
 
 
+def _cart_frame(cart: dict) -> str:
+    payload = dict(cart)
+    payload["type"] = "cart_updated"
+    payload["cart_items"] = payload.get("items", [])
+    return _sse("cart", payload)
+
+
+def _plan_frame(plan: dict) -> str:
+    payload = dict(plan)
+    payload["type"] = "plan"
+    return _sse("plan", payload)
+
+
+def _order_frame(order: dict) -> str:
+    payload = dict(order)
+    payload["type"] = "order_submitted" if payload.get("status") == "submitted" else "order_draft"
+    return _sse("order", payload)
+
+
 def _done_frame(session_id: str | None, retrieval_source: str | None, warnings: list[str]) -> str:
     return _sse("done", {
         "type": "done",
@@ -204,6 +244,9 @@ def _response_from_prepared(prepared: PreparedChat, answer: str) -> ChatResponse
         answer=answer,
         products=prepared.products,
         comparison=prepared.comparison,
+        cart=prepared.cart,
+        order=prepared.order,
+        plan=prepared.plan,
         session_id=prepared.session_id,
         intent=prepared.filters.to_dict(),
         retrieval_source=prepared.retrieval.source,

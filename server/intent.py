@@ -70,7 +70,7 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
 }
 
 SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
-INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat"}
+INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout"}
 
 # Rule-fallback comparison detection. Kept local (not imported from comparison.py,
 # which imports SearchFilters from here) so the rule path can set intent_type when the
@@ -108,6 +108,10 @@ class SearchFilters:
     # LLM-resolved product ids (copied from session_products) for a comparison turn
     # ("第一个和第二个"); validated against the catalog, with the ordinal/name waterfall as fallback.
     compare_product_ids: list[str] = field(default_factory=list)
+    commerce_action: str | None = None
+    commerce_refs: list[str] = field(default_factory=list)
+    commerce_quantity: int | None = None
+    commerce_target_scope: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
