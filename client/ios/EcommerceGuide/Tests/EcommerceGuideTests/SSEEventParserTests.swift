@@ -168,6 +168,31 @@ final class SSEEventParserTests: XCTestCase {
         XCTAssertEqual(submitted, .orderStatus(summary: "订单已提交"))
     }
 
+    func testParsesPlannerEvent() throws {
+        let event = try parseFrame([
+            "event: plan",
+            "data: {\"type\":\"plan\",\"steps\":[{\"step_id\":\"step-1\",\"title\":\"推荐跑鞋\",\"action\":\"product_search\",\"status\":\"done\",\"summary\":\"找到 3 款候选商品。\"},{\"step_id\":\"step-2\",\"title\":\"加入购物车\",\"action\":\"cart_action\",\"status\":\"done\",\"summary\":\"已加入购物车。\"}]}",
+            ""
+        ])
+
+        XCTAssertEqual(event, .plan([
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "done",
+                summary: "找到 3 款候选商品。"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "done",
+                summary: "已加入购物车。"
+            )
+        ]))
+    }
+
     func testParsesComparisonEventWithProductMetadata() throws {
         let event = try parseFrame([
             "event: comparison",
@@ -315,7 +340,7 @@ final class SSEChatServiceIntegrationTests: XCTestCase {
                 answer += token
             case .products(let streamedProducts):
                 products = streamedProducts
-            case .comparison:
+            case .comparison, .plan:
                 continue
             case .done:
                 sawDone = true

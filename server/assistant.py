@@ -8,11 +8,18 @@ from typing import Literal
 
 from server.comparison import ComparisonService
 from server.catalog import CatalogHit, ProductCatalog
-from server.commerce import CommerceService, CommerceResult, OrderState, looks_like_commerce
+from server.commerce import (
+    CommerceActionCandidate,
+    CommerceService,
+    CommerceResult,
+    OrderState,
+    looks_like_commerce,
+)
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import IntentParser, SearchFilters
 from server.llm import ArkChatClient, ModelUnavailable
+from server.planner import PlannedTask, PlannerService
 from server.prompts import (
     CHITCHAT_REPLY,
     build_messages,
@@ -22,7 +29,7 @@ from server.prompts import (
     lead_in_text,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
-from server.schemas import CartUpdate, ChatResponse, OrderDraft, ProductCard, ProductComparison
+from server.schemas import CartUpdate, ChatResponse, ExecutionPlan, OrderDraft, PlanStep, ProductCard, ProductComparison
 from server.textutil import dedupe_ids, json_object
 
 
@@ -57,6 +64,7 @@ class PreparedChat:
     grounded_answer: str
     messages: list[dict[str, str]]
     result_status: ResultStatus = "ok"
+    plan: ExecutionPlan | None = None
     # Set on a filter-cacheable product search so the answer can be stored under the parsed
     # intent; None when the turn isn't cacheable. from_filter_cache marks a turn served from
     # that cache, so it isn't re-stored and its (cached) answer streams via the fallback path.
@@ -116,6 +124,7 @@ class ShoppingAssistant:
         )
         self._comparison = ComparisonService(catalog, llm=llm)
         self._commerce = CommerceService(catalog, llm=llm)
+        self._planner = PlannerService(catalog.categories, catalog.sub_categories, catalog.brands, llm=llm)
         self._sessions: dict[str, SessionState] = {}
 
     @property
@@ -142,10 +151,25 @@ class ShoppingAssistant:
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
     ) -> PreparedChat:
+        session_products = self._commerce_products(session_id, client_recent_product_ids or [])
+        planned = self._planner.plan(
+            query,
+            session_products=session_products,
+            cart_items=cart_items or [],
+        )
+        if planned is not None:
+            return self._prepare_planned_task(
+                query,
+                session_id,
+                planned,
+                top_k,
+                client_recent_product_ids or [],
+                cart_items or [],
+            )
         commerce = self._commerce.maybe_handle(
             query,
             cart_items=cart_items or [],
-            session_products=self._commerce_products(session_id, client_recent_product_ids or []),
+            session_products=session_products,
             order_state=self._session(session_id).order,
         )
         if commerce is not None:
@@ -198,6 +222,243 @@ class ShoppingAssistant:
             grounded_answer=commerce.answer,
             messages=[],
         )
+
+    def _prepare_planned_task(
+        self,
+        query: str,
+        session_id: str | None,
+        planned: PlannedTask,
+        top_k: int,
+        client_recent_product_ids: list[str],
+        cart_items: list[dict],
+    ) -> PreparedChat:
+        plan_steps = [
+            PlanStep(
+                step_id=f"step-{idx}",
+                title=step.title,
+                action=step.action,
+                status="pending",
+            )
+            for idx, step in enumerate(planned.steps, start=1)
+        ]
+
+        retrieval = RetrievalResult(hits=[], source="none")
+        products: list[ProductCard] = self._product_cards_from_ids(
+            self._recent_product_ids(session_id, client_recent_product_ids)
+        )
+        selected_ids: list[str] = [product.product_id for product in products]
+        comparison: ProductComparison | None = None
+        cart: CartUpdate | None = None
+        order: OrderDraft | None = None
+        summaries: list[str] = []
+        active_filters = SearchFilters(intent_type="planned_action", raw_query=query)
+        raw_cart = list(cart_items)
+
+        for idx, step in enumerate(planned.steps):
+            plan_steps[idx].status = "running"
+            try:
+                if step.action == "product_search":
+                    prepared = self._run_planned_search(
+                        step.query or query,
+                        session_id,
+                        top_k,
+                        client_recent_product_ids,
+                        planned,
+                    )
+                    retrieval = prepared.retrieval
+                    products = prepared.products
+                    selected_ids = [product.product_id for product in products]
+                    active_filters = prepared.filters
+                    summary = f"找到 {len(products)} 款候选商品。"
+                elif step.action == "select_products":
+                    products = self._select_products(products, step.criteria, step.count or 1)
+                    selected_ids = [product.product_id for product in products]
+                    summary = f"已选出 {len(selected_ids)} 款候选商品。"
+                elif step.action == "comparison":
+                    compare_ids = selected_ids[: max(2, step.count or len(selected_ids))]
+                    filters = self._parser.parse(
+                        step.query or query,
+                        previous_filters=self._previous_filters(session_id),
+                        history=self._history_summaries(session_id),
+                        session_products=self._session_products(session_id),
+                    )
+                    filters.intent_type = "comparison"
+                    if step.criteria == "price_asc":
+                        filters.prefer_low_price = True
+                        filters.sort_by = "price_asc"
+                    prepared = self._prepare_comparison(
+                        step.query or query,
+                        session_id,
+                        filters,
+                        compare_ids,
+                        self._recent_product_ids(session_id, client_recent_product_ids),
+                    )
+                    comparison = prepared.comparison
+                    products = prepared.products
+                    selected_ids = [product.product_id for product in products]
+                    active_filters = filters
+                    summary = comparison.summary if comparison else "已完成对比。"
+                elif step.action == "cart_action":
+                    target_ids = self._cart_target_ids(step.target, selected_ids, comparison, products)
+                    if not target_ids:
+                        raise ValueError("no product selected for cart action")
+                    cart_result = self._apply_cart_targets(target_ids, step.quantity or 1, query, raw_cart, session_id)
+                    cart = cart_result.cart
+                    order = cart_result.order
+                    raw_cart = [item.model_dump() for item in cart.items] if cart is not None else raw_cart
+                    summary = cart_result.answer
+                elif step.action == "checkout":
+                    checkout = CommerceActionCandidate(action="checkout", target_scope="cart_items", confidence="high")
+                    result = self._commerce.apply_candidate(
+                        checkout,
+                        query,
+                        cart_items=raw_cart,
+                        session_products=self._commerce_products(session_id, client_recent_product_ids),
+                        order_state=self._session(session_id).order,
+                    )
+                    cart = result.cart
+                    order = result.order
+                    summary = result.answer
+                else:
+                    summary = "需要补充信息后才能继续。"
+                plan_steps[idx].status = "done"
+                plan_steps[idx].summary = summary
+                summaries.append(summary)
+            except Exception as exc:  # noqa: BLE001 - planned execution should fail closed.
+                plan_steps[idx].status = "failed"
+                plan_steps[idx].summary = "这一步缺少可执行的商品信息，请补充说明。"
+                summaries.append(plan_steps[idx].summary or "")
+                break
+
+        plan = ExecutionPlan(steps=plan_steps, summary="；".join(summaries) if summaries else None)
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=SearchFilters(intent_type="planned_action", raw_query=query),
+            retrieval=retrieval,
+            products=products,
+            comparison=comparison,
+            cart=cart,
+            order=order,
+            grounded_answer=self._planned_answer(plan, cart, comparison),
+            messages=[],
+            plan=plan,
+            result_status="ok" if products or cart or comparison else "no_results",
+        )
+
+    def _run_planned_search(
+        self,
+        query: str,
+        session_id: str | None,
+        top_k: int,
+        client_recent_product_ids: list[str],
+        planned: PlannedTask,
+    ) -> PreparedChat:
+        filters = self._parser.parse(
+            query,
+            previous_filters=self._previous_filters(session_id),
+            history=self._history_summaries(session_id),
+            session_products=self._session_products(session_id),
+        )
+        filters.intent_type = "product_search"
+        criteria = next((step.criteria for step in planned.steps if step.action == "select_products"), None)
+        if criteria == "price_asc":
+            filters.prefer_low_price = True
+            filters.sort_by = "price_asc"
+        elif criteria == "price_desc":
+            filters.sort_by = "price_desc"
+        elif criteria == "rating_desc":
+            filters.sort_by = "rating_desc"
+        return self._prepare_search(
+            query,
+            session_id,
+            filters,
+            top_k,
+            self._recent_product_ids(session_id, client_recent_product_ids),
+        )
+
+    def _select_products(
+        self,
+        products: list[ProductCard],
+        criteria: str | None,
+        count: int,
+    ) -> list[ProductCard]:
+        if criteria == "price_asc":
+            ordered = sorted(products, key=lambda product: product.price)
+        elif criteria == "price_desc":
+            ordered = sorted(products, key=lambda product: product.price, reverse=True)
+        else:
+            ordered = products
+        return ordered[: max(1, count)]
+
+    def _cart_target_ids(
+        self,
+        target: str | None,
+        selected_ids: list[str],
+        comparison: ProductComparison | None,
+        products: list[ProductCard],
+    ) -> list[str]:
+        if target == "comparison_winner" and comparison is not None and comparison.winner_product_id:
+            return [comparison.winner_product_id]
+        if selected_ids:
+            return selected_ids
+        return [product.product_id for product in products[:1]]
+
+    def _apply_cart_targets(
+        self,
+        product_ids: list[str],
+        quantity: int,
+        query: str,
+        raw_cart: list[dict],
+        session_id: str | None,
+    ) -> CommerceResult:
+        result: CommerceResult | None = None
+        for product_id in product_ids:
+            candidate = CommerceActionCandidate(
+                action="add",
+                product_ids=[product_id],
+                quantity=quantity,
+                target_scope="shown_products",
+                confidence="high",
+            )
+            result = self._commerce.apply_candidate(
+                candidate,
+                query,
+                cart_items=raw_cart,
+                session_products=self._session_products(session_id),
+                order_state=self._session(session_id).order,
+            )
+            if result.cart is not None:
+                raw_cart = [item.model_dump() for item in result.cart.items]
+        if result is None:
+            raise ValueError("no cart target")
+        return result
+
+    def _product_cards_from_ids(self, product_ids: list[str]) -> list[ProductCard]:
+        filters = SearchFilters()
+        cards = []
+        for product_id in product_ids:
+            product = self._catalog.get(product_id)
+            if product is not None:
+                cards.append(self._catalog.product_card(product, matched_reason="已展示商品", filters=filters))
+        return cards
+
+    def _planned_answer(
+        self,
+        plan: ExecutionPlan,
+        cart: CartUpdate | None,
+        comparison: ProductComparison | None,
+    ) -> str:
+        lines = ["我已按计划完成："]
+        for step in plan.steps:
+            marker = "✓" if step.status == "done" else "!"
+            detail = f"：{step.summary}" if step.summary else ""
+            lines.append(f"{marker} {step.title}{detail}")
+        if comparison is not None and comparison.recommendation:
+            lines.append(comparison.recommendation)
+        if cart is not None:
+            lines.append(cart.summary)
+        return "\n".join(lines)
 
     def _prepare_comparison(
         self,
@@ -476,6 +737,7 @@ class ShoppingAssistant:
             comparison=prepared.comparison,
             cart=prepared.cart,
             order=prepared.order,
+            plan=prepared.plan,
             session_id=session_id,
             intent=prepared.filters.to_dict(),
             retrieval_source=prepared.retrieval.source,

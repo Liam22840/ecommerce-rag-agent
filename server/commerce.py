@@ -135,6 +135,17 @@ class CommerceService:
             return None
         return self._apply(candidate, message, cart_items, session_products, order_state)
 
+    def apply_candidate(
+        self,
+        candidate: CommerceActionCandidate,
+        message: str,
+        *,
+        cart_items: list[dict[str, Any]],
+        session_products: list[dict[str, Any]] | None,
+        order_state: OrderState,
+    ) -> CommerceResult:
+        return self._apply(candidate, message, cart_items, session_products, order_state)
+
     def _deterministic_parse(
         self,
         message: str,

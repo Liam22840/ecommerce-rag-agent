@@ -16,6 +16,7 @@ from server.commerce import looks_like_commerce
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.llm import ArkChatClient
+from server.planner import looks_like_planned_task
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
 from server.schemas import ChatRequest, ChatResponse
@@ -120,7 +121,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
 
 
 def _cache_lookup(cache: QueryCache, message: str, request: ChatRequest) -> tuple[str | None, dict | None]:
-    if looks_like_commerce(message) or request.client_context.cart_items:
+    if looks_like_planned_task(message) or looks_like_commerce(message) or request.client_context.cart_items:
         return None, None
     compare_ids = request.effective_compare_product_ids
     recent_ids = request.client_context.recent_product_ids
@@ -159,6 +160,8 @@ def _sse_stream(
         yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
         return
 
+    if prepared.plan is not None:
+        yield _plan_frame(_model_dump(prepared.plan))
     if prepared.cart is not None:
         yield _cart_frame(_model_dump(prepared.cart))
     if prepared.order is not None:
@@ -207,6 +210,12 @@ def _cart_frame(cart: dict) -> str:
     return _sse("cart", payload)
 
 
+def _plan_frame(plan: dict) -> str:
+    payload = dict(plan)
+    payload["type"] = "plan"
+    return _sse("plan", payload)
+
+
 def _order_frame(order: dict) -> str:
     payload = dict(order)
     payload["type"] = "order_submitted" if payload.get("status") == "submitted" else "order_draft"
@@ -230,6 +239,7 @@ def _response_from_prepared(prepared: PreparedChat, answer: str) -> ChatResponse
         comparison=prepared.comparison,
         cart=prepared.cart,
         order=prepared.order,
+        plan=prepared.plan,
         session_id=prepared.session_id,
         intent=prepared.filters.to_dict(),
         retrieval_source=prepared.retrieval.source,

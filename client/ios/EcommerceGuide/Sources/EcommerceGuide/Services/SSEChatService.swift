@@ -236,6 +236,7 @@ private struct StreamEventPayload: Decodable {
     let winnerProductID: String?
     let recommendation: String?
     let clarification: String?
+    let steps: [PlanStep]?
     let cartItems: [CartItemPayload]?
     let summary: String?
     let messageID: String?
@@ -253,6 +254,7 @@ private struct StreamEventPayload: Decodable {
         case winnerProductID = "winner_product_id"
         case recommendation
         case clarification
+        case steps
         case cartItems
         case cartItemsSnake = "cart_items"
         case summary
@@ -274,6 +276,7 @@ private struct StreamEventPayload: Decodable {
         self.winnerProductID = try container.decodeIfPresent(String.self, forKey: .winnerProductID)
         self.recommendation = try container.decodeIfPresent(String.self, forKey: .recommendation)
         self.clarification = try container.decodeIfPresent(String.self, forKey: .clarification)
+        self.steps = try container.decodeIfPresent([PlanStep].self, forKey: .steps)
         self.cartItems = try container.decodeIfPresent([CartItemPayload].self, forKey: .cartItems)
             ?? container.decodeIfPresent([CartItemPayload].self, forKey: .cartItemsSnake)
             ?? (try? container.decodeIfPresent([CartItemPayload].self, forKey: .items))
@@ -286,6 +289,8 @@ private struct StreamEventPayload: Decodable {
         switch type ?? event ?? fallbackType {
         case "token", "delta":
             return .token(token ?? delta ?? text ?? "")
+        case "plan":
+            return .plan(steps ?? [])
         case "products":
             return .products(products ?? items ?? [])
         case "comparison", "compare", "product_comparison", "productComparison":

@@ -115,6 +115,8 @@ private struct ChatTimelineItemView: View {
         switch item {
         case .message(let message):
             MessageBubbleView(message: message)
+        case .plan(_, let steps):
+            PlanStatusView(steps: steps)
         case .products(_, let products):
             ProductCarouselView(
                 products: products,

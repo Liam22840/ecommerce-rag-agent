@@ -177,6 +177,46 @@ def commerce_intent_messages(
     ]
 
 
+# --- Planner: multi-step task decomposition -----------------------------------
+
+PLANNER_SYSTEM = (
+    "你是电商导购任务 planner。只把用户的一句话拆成可执行步骤，不生成回答文案。"
+    "当用户只是在搜索、只是在对比、只是在操作购物车时，输出 null。"
+    "只有一句话里明确包含多个需要连续执行的动作时才输出 plan，例如：搜索后筛选、对比后加购、搜索后加购、搜索后对比后加购。"
+    "可用 action 只有 product_search、select_products、comparison、cart_action、checkout、ask_clarification。"
+    "product_search 必须保留用户要找的品类、预算、属性等检索条件。"
+    "select_products 只能从上一步结果里选择，criteria 可用 price_asc、price_desc、rating_desc、relevance，count 为需要选择的商品数。"
+    "comparison 只能比较已选或已展示商品，criteria 写用户关心的维度。"
+    "cart_action 只能对上一步确定出的真实商品执行，target 可用 selected_products、comparison_winner、previous_step。"
+    "如果缺少执行所必需的商品或数量，输出 ask_clarification。"
+    "不要编造商品 id、价格、库存、地址；这些由后端模块验证。"
+    '只输出 JSON 或 null：{"steps":[{"action":"product_search|select_products|comparison|cart_action|checkout|ask_clarification",'
+    '"query":string,"title":string,"criteria":string|null,"count":number|null,"target":string|null,"quantity":number|null}]}'
+)
+
+
+def planner_messages(
+    query: str,
+    categories: set[str],
+    sub_categories: set[str],
+    brands: set[str],
+    session_products: list[dict] | None = None,
+    cart_items: list[dict] | None = None,
+) -> list[dict[str, str]]:
+    payload = {
+        "query": query,
+        "categories": sorted(categories),
+        "sub_categories": sorted(sub_categories),
+        "brands": sorted(brands),
+        "session_products": session_products or [],
+        "cart_items": cart_items or [],
+    }
+    return [
+        {"role": "system", "content": PLANNER_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 # --- Exclusion judge: which shortlisted products actually have the unwanted attribute ----------
 
 EXCLUSION_JUDGE_SYSTEM = (

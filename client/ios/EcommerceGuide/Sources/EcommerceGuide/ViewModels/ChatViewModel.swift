@@ -134,6 +134,9 @@ public final class ChatViewModel: ObservableObject {
         switch event {
         case .token(let token):
             appendToken(token)
+        case .plan(let steps):
+            finishStreamingMessage()
+            timeline.append(.plan(id: UUID(), steps: steps))
         case .products(let products):
             finishStreamingMessage()
             timeline.append(.products(id: UUID(), products: products))
@@ -218,7 +221,7 @@ public final class ChatViewModel: ObservableObject {
                 ids.append(contentsOf: products.map(\.id))
             case .comparison(_, let comparison):
                 ids.append(contentsOf: comparison.products.map(\.id))
-            case .message, .cartStatus, .orderStatus, .error:
+            case .message, .plan, .cartStatus, .orderStatus, .error:
                 continue
             }
             if ids.count >= 10 {

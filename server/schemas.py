@@ -105,12 +105,33 @@ class OrderDraft(BaseModel):
     summary: str
 
 
+class PlanStep(BaseModel):
+    step_id: str
+    title: str
+    action: Literal[
+        "product_search",
+        "select_products",
+        "comparison",
+        "cart_action",
+        "checkout",
+        "ask_clarification",
+    ]
+    status: Literal["pending", "running", "done", "skipped", "failed"] = "pending"
+    summary: str | None = None
+
+
+class ExecutionPlan(BaseModel):
+    steps: list[PlanStep] = Field(default_factory=list)
+    summary: str | None = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     products: list[ProductCard]
     comparison: ProductComparison | None = None
     cart: CartUpdate | None = None
     order: OrderDraft | None = None
+    plan: ExecutionPlan | None = None
     session_id: str | None = None
     intent: dict[str, Any]
     retrieval_source: Literal["vector", "lexical", "hybrid", "none"]

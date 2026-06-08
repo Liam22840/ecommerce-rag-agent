@@ -117,6 +117,47 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertEqual(comparison.winnerProductID, firstProduct.id)
     }
 
+    func testPlanEventAppendsPlanTimelineItem() async throws {
+        let steps = [
+            PlanStep(
+                stepID: "step-1",
+                title: "推荐跑鞋",
+                action: "product_search",
+                status: "done",
+                summary: "找到 3 款候选商品。"
+            ),
+            PlanStep(
+                stepID: "step-2",
+                title: "加入购物车",
+                action: "cart_action",
+                status: "done",
+                summary: "已加入购物车。"
+            )
+        ]
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("我来执行。"),
+                .plan(steps),
+                .done(messageID: "plan-1")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐跑鞋并加入购物车"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        guard case .plan(_, let timelineSteps)? = viewModel.timeline.first(where: { item in
+            if case .plan = item { return true }
+            return false
+        }) else {
+            return XCTFail("Expected plan timeline item")
+        }
+
+        XCTAssertEqual(timelineSteps, steps)
+    }
+
     func testFollowupRequestIncludesRecentProductIDs() async throws {
         let firstProduct = Product.fixture(id: "FACE-1", title: "First Cream")
         let secondProduct = Product.fixture(id: "FACE-2", title: "Second Cream")
