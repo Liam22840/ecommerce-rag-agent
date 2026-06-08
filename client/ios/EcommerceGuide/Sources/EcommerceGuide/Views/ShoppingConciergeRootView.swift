@@ -383,15 +383,33 @@ private struct PhotoSearchScreen: View {
     }
 }
 
-/// Normalises any picked/captured image to JPEG bytes (smaller payload, honest mime). Falls
-/// through to the raw bytes if decoding isn't available on the platform.
+/// Normalises any picked/captured image to a small JPEG: downscale the longest side to 1024px before
+/// encoding. A raw camera photo is several MB, which both slows the upload (so the instant opener is
+/// delayed until the request lands) and makes the server-side embed + VLM slower. 1024px keeps plenty
+/// of detail for visual search. Falls through to the raw bytes if decoding isn't available.
 private func normalizedJPEG(_ data: Data) -> Data {
     #if canImport(UIKit)
-    return UIImage(data: data)?.jpegData(compressionQuality: 0.85) ?? data
+    guard let image = UIImage(data: data) else { return data }
+    return downscaled(image, maxDimension: 1024).jpegData(compressionQuality: 0.85) ?? data
     #else
     return data
     #endif
 }
+
+#if canImport(UIKit)
+private func downscaled(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    let longest = max(image.size.width, image.size.height)
+    guard longest > maxDimension else { return image }
+    let scale = maxDimension / longest
+    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+    // Force a 1x render so the output is exactly `size` pixels, not size × screen-scale.
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        image.draw(in: CGRect(origin: .zero, size: size))
+    }
+}
+#endif
 
 @available(iOS 17.0, macOS 13.0, *)
 private extension View {
