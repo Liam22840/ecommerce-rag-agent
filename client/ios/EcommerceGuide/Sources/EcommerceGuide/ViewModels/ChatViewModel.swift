@@ -52,6 +52,11 @@ public final class ChatViewModel: ObservableObject {
         send(message: lastSubmittedMessage)
     }
 
+    /// Send a fixed reply on the user's behalf, e.g. the order card's 确认 / 取消订单 buttons.
+    public func sendQuickReply(_ text: String) {
+        send(message: text)
+    }
+
     public func addToCart(product: Product) {
         if let index = cartItems.firstIndex(where: { $0.product.id == product.id }) {
             cartItems[index].quantity += 1
@@ -157,8 +162,8 @@ public final class ChatViewModel: ObservableObject {
             timeline.append(.cartStatus(id: UUID(), text: summary))
         case .cartStatus(let summary):
             timeline.append(.cartStatus(id: UUID(), text: summary))
-        case .orderStatus(let summary):
-            timeline.append(.orderStatus(id: UUID(), text: summary))
+        case .orderStatus(let order):
+            timeline.append(.orderStatus(id: UUID(), order: order))
         case .done:
             finishCompletedStream()
         }

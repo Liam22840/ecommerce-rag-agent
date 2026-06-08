@@ -299,7 +299,7 @@ final class ChatViewModelFlowTests: XCTestCase {
         let product = Product.fixture(id: "BAG-2", title: "Carry Bag")
         let viewModel = ChatViewModel(
             service: ScriptedChatService(events: [
-                .orderStatus(summary: "订单待确认"),
+                .orderStatus(Order(status: "awaiting_confirmation", summary: "订单待确认")),
                 .done(messageID: "order-status")
             ]),
             conversationID: UUID(),
@@ -505,8 +505,8 @@ private extension Array where Element == ChatTimelineItem {
 
     func containsOrderStatus(_ message: String) -> Bool {
         contains {
-            guard case .orderStatus(_, let itemMessage) = $0 else { return false }
-            return itemMessage == message
+            guard case .orderStatus(_, let order) = $0 else { return false }
+            return order.summary == message
         }
     }
 }

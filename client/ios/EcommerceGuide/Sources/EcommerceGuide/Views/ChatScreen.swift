@@ -51,7 +51,8 @@ public struct ChatScreen: View {
                                     item: item,
                                     retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
-                                    addToCartAction: { viewModel.addToCart(product: $0) }
+                                    addToCartAction: { viewModel.addToCart(product: $0) },
+                                    orderReplyAction: { viewModel.sendQuickReply($0) }
                                 )
                                 .id(item.id)
                             }
@@ -110,6 +111,7 @@ private struct ChatTimelineItemView: View {
     let retryAction: () -> Void
     let productAction: (Product) -> Void
     let addToCartAction: (Product) -> Void
+    let orderReplyAction: (String) -> Void
 
     var body: some View {
         switch item {
@@ -131,8 +133,8 @@ private struct ChatTimelineItemView: View {
             )
         case .cartStatus(_, let text):
             CartStatusView(text: text)
-        case .orderStatus(_, let text):
-            CartStatusView(text: text)
+        case .orderStatus(_, let order):
+            OrderCardView(order: order, replyAction: orderReplyAction)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
         }

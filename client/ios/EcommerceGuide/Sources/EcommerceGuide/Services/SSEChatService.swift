@@ -240,6 +240,10 @@ private struct StreamEventPayload: Decodable {
     let cartItems: [CartItemPayload]?
     let summary: String?
     let messageID: String?
+    let orderID: String?
+    let status: String?
+    let address: String?
+    let subtotal: Double?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -260,6 +264,10 @@ private struct StreamEventPayload: Decodable {
         case summary
         case messageID
         case messageIDSnake = "message_id"
+        case orderID = "order_id"
+        case status
+        case address
+        case subtotal
     }
 
     init(from decoder: Decoder) throws {
@@ -283,6 +291,10 @@ private struct StreamEventPayload: Decodable {
         self.summary = try container.decodeIfPresent(String.self, forKey: .summary)
         self.messageID = try container.decodeIfPresent(String.self, forKey: .messageID)
             ?? container.decodeIfPresent(String.self, forKey: .messageIDSnake)
+        self.orderID = try container.decodeIfPresent(String.self, forKey: .orderID)
+        self.status = try container.decodeIfPresent(String.self, forKey: .status)
+        self.address = try container.decodeIfPresent(String.self, forKey: .address)
+        self.subtotal = try container.decodeIfPresent(Double.self, forKey: .subtotal)
     }
 
     func streamEvent(fallbackType: String?) -> ChatStreamEvent? {
@@ -316,7 +328,13 @@ private struct StreamEventPayload: Decodable {
 
             return .cartUpdated(parsedItems, summary: summary)
         case "order", "order_draft", "orderDraft", "order_submitted", "orderSubmitted":
-            return .orderStatus(summary: summary ?? "订单状态已更新。")
+            return .orderStatus(Order(
+                orderID: orderID,
+                status: status ?? "awaiting_confirmation",
+                address: address ?? "默认地址",
+                subtotal: subtotal ?? 0,
+                summary: summary ?? "订单状态已更新。"
+            ))
         case "done":
             return .done(messageID: messageID)
         case "meta", "metadata", "debug", "warning", "warnings":
