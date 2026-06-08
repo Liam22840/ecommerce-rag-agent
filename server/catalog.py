@@ -291,6 +291,18 @@ class ProductCatalog:
                     return item
         return self.lowest_price_sku(product)
 
+    def sku_id_for_phrase(self, product: dict[str, Any], phrase: str | None) -> str | None:
+        """Resolve a user's 规格 phrase ("50g标准装") to a real sku_id, or None when it matches nothing
+        (so the caller falls back to the default/lowest SKU). Same normalize_spec matching as
+        selected_price_sku, but only ever returns an actual SKU id."""
+        spec = normalize_spec(phrase or "")
+        if not spec:
+            return None
+        for item in self.sku_prices(product):
+            if item["sku_id"] is not None and spec in normalize_spec(item["label"]):
+                return item["sku_id"]
+        return None
+
     def price_label(self, product: dict[str, Any], filters: SearchFilters | None = None) -> str:
         sku_prices = self.sku_prices(product)
         if not sku_prices:

@@ -420,3 +420,12 @@ def test_product_facts_is_slim_for_a_compact_answer_prompt():
     assert "price_instruction" not in facts
     assert len(facts["description"]) <= 160  # long marketing copy is truncated
     assert facts["sku_count"] == 0
+
+
+def test_sku_id_for_phrase_matches_label_and_falls_back():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    product = next(p for p in catalog.products if len(catalog.sku_prices(p)) >= 2)
+    target = catalog.sku_prices(product)[-1]
+    assert catalog.sku_id_for_phrase(product, target["label"]) == target["sku_id"]
+    assert catalog.sku_id_for_phrase(product, "完全不存在的规格xyz") is None
+    assert catalog.sku_id_for_phrase(product, None) is None

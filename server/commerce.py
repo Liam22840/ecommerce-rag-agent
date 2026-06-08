@@ -42,6 +42,8 @@ class CommerceActionCandidate:
     # Per-item quantities for a multi-add with different counts ("第一个买两瓶，第二个买三瓶"):
     # product_id -> quantity. Falls back to `quantity` (then 1) for ids not listed here.
     item_quantities: dict[str, int] = field(default_factory=dict)
+    # The 规格/SKU phrase the user named ("50g标准装"), resolved to a real sku_id at add time.
+    sku: str | None = None
 
     @property
     def is_commerce(self) -> bool:
@@ -278,6 +280,8 @@ class CommerceService:
                     product_ids.append(pid)
                 if qty is not None:
                     item_quantities[pid] = qty
+        sku_raw = payload.get("sku")
+        sku = sku_raw.strip() or None if isinstance(sku_raw, str) else None
         return CommerceActionCandidate(
             action=action,
             refs=[str(ref).strip() for ref in payload.get("refs", []) if str(ref).strip()],
@@ -286,6 +290,7 @@ class CommerceService:
             target_scope=payload.get("target_scope") if payload.get("target_scope") in {"shown_products", "cart_items", "unknown"} else "unknown",
             confidence=payload.get("confidence") if payload.get("confidence") in {"high", "medium", "low"} else "low",
             item_quantities=item_quantities,
+            sku=sku,
         )
 
     def _apply(
@@ -333,8 +338,13 @@ class CommerceService:
             # quantity is per item; the LLM is told a count of products ("两双") goes in product_ids,
             # not here, so we trust it and default to 1 when unset. item_quantities overrides per id.
             qty = candidate.quantity or 1
+            # A named 规格 ("50g标准装") only disambiguates a single-product add; resolve it to a real
+            # sku_id so the line is priced for that SKU (None -> the default lowest SKU, as before).
+            sku_id = None
+            if candidate.sku and len(resolved) == 1:
+                sku_id = self._catalog.sku_id_for_phrase(self._catalog.require(resolved[0].product_id), candidate.sku)
             for item in resolved:
-                cart = self._upsert(cart, item.product_id, candidate.item_quantities.get(item.product_id, qty))
+                cart = self._upsert(cart, item.product_id, candidate.item_quantities.get(item.product_id, qty), sku_id)
             order_state.pending_action = None
             order_state.draft = None
             if len(resolved) == 1:
@@ -486,14 +496,14 @@ class CommerceService:
             return cart[0]
         return "购物车里有多件商品，请告诉我想调整哪一件，或说明第几个商品。"
 
-    def _upsert(self, cart: list[CartItem], product_id: str, quantity_delta: int) -> list[CartItem]:
-        for index, item in enumerate(cart):
+    def _upsert(self, cart: list[CartItem], product_id: str, quantity_delta: int, sku_id: str | None = None) -> list[CartItem]:
+        for item in cart:
             if item.product_id == product_id:
-                return self._set_quantity(cart, product_id, item.quantity + quantity_delta)
+                return self._set_quantity(cart, product_id, item.quantity + quantity_delta, sku_id)
         product = self._catalog.require(product_id)
-        return cart + [build_cart_item(self._catalog, product, max(1, quantity_delta))]
+        return cart + [build_cart_item(self._catalog, product, max(1, quantity_delta), sku_id)]
 
-    def _set_quantity(self, cart: list[CartItem], product_id: str, quantity: int) -> list[CartItem]:
+    def _set_quantity(self, cart: list[CartItem], product_id: str, quantity: int, sku_id: str | None = None) -> list[CartItem]:
         next_items: list[CartItem] = []
         for item in cart:
             if item.product_id != product_id:
@@ -501,7 +511,8 @@ class CommerceService:
                 continue
             if quantity > 0:
                 product = self._catalog.require(product_id)
-                next_items.append(build_cart_item(self._catalog, product, quantity, item.sku_id))
+                # A new sku_id overrides; otherwise keep the line's existing SKU (decrement/set_quantity).
+                next_items.append(build_cart_item(self._catalog, product, quantity, sku_id if sku_id is not None else item.sku_id))
         return next_items
 
     def _quantity_for(self, cart: list[CartItem], product_id: str) -> int:

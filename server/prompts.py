@@ -310,6 +310,8 @@ COMMERCE_INTENT_SYSTEM = (
     "1. refs 放用户原话里的商品引用，如“第一个”“第二个”“这个”“刚才那个”。"
     "2. product_ids 只能从 session_products 或 cart_items 里复制，禁止自造。无法确定就留空并保留 refs。"
     "“都/全部/所有”默认指 session_products 里最近一次展示的那批商品（排在最前的连续一组），不要把历史上看过的全都算进来。"
+    "加购时的指代（“这个/这款/它/这个手机”等）指向 session_products 里最近展示的那批商品（排在最前的），"
+    "不要解析成购物车里已有的旧商品；只有用户明确说“购物车里那个/已经加购的那个”时才用 cart_items。"
     "给了 comparison_winner_id 时，“更适合的/更好的/胜出的那个”就指这个 id。"
     "3. target_scope：加购通常是 shown_products；删除/改数量通常是 cart_items；不确定填 unknown。"
     "4. quantity 是「每个商品各买几件」，只放用户对单个商品明确说出的件数，没有就填 null。"
@@ -317,11 +319,12 @@ COMMERCE_INTENT_SYSTEM = (
     "不要写进 quantity（这种情况 quantity 填 null）。"
     "5. 当用户对不同商品要不同件数（如“第一个买两瓶，第二个买三瓶”）时，用 items 列出每个 {product_id, quantity}；"
     "件数一致或只有一个商品时不用 items。"
-    "6. 价格、规格、库存和订单号不由你判断。"
-    "7. 如果不是购物车或下单意图，action=none。"
+    "6. 当用户点名某个规格/型号/版本（如“50g标准装”“512GB版本”“滋润型”）时，把该原话照抄进 sku（只抄写，不算价格）；没点名就填 null。"
+    "7. 价格、库存和订单号不由你判断。"
+    "8. 如果不是购物车或下单意图，action=none。"
     '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|checkout|confirm_order|cancel_order|none",'
     '"refs":[string],"product_ids":[string],"items":[{"product_id":string,"quantity":number}],"quantity":number|null,'
-    '"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
+    '"sku":string|null,"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
 )
 
 

@@ -439,6 +439,25 @@ def test_per_item_quantities_on_a_multi_add():
     assert {i.product_id: i.quantity for i in res.cart.items} == {p0: 2, p1: 3}
 
 
+def test_add_honours_a_named_sku_price():
+    # The user names a 规格; the cart line is priced for that SKU, not the lowest one.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    pid = next(p["product_id"] for p in catalog.products
+               if len({s["price"] for s in catalog.sku_prices(p)}) >= 2)
+    skus = sorted(catalog.sku_prices(catalog.get(pid)), key=lambda s: s["price"])
+    dearer = skus[-1]
+    session = [{"id": pid, "title": catalog.get(pid)["title"]}]
+
+    svc = CommerceService(catalog, llm=_StubLLM({"action": "add", "product_ids": [pid], "sku": dearer["label"]}))
+    res = svc.maybe_handle(f"要{dearer['label']}的加入购物车", cart_items=[], session_products=session, order_state=OrderState())
+    assert res.cart.items[0].unit_price == dearer["price"]
+
+    # Without a 规格 phrase the lowest SKU is used, as before.
+    svc2 = CommerceService(catalog, llm=_StubLLM({"action": "add", "product_ids": [pid]}))
+    res2 = svc2.maybe_handle("加入购物车", cart_items=[], session_products=session, order_state=OrderState())
+    assert res2.cart.items[0].unit_price == skus[0]["price"]
+
+
 def test_add_rejects_an_llm_id_that_was_not_shown():
     # Regression: "最便宜的那个" must resolve among shown items, not let the LLM cart an off-screen
     # product (it once added the globally cheapest catalogue item the user never saw).
