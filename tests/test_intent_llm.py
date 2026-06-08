@@ -429,3 +429,36 @@ def test_parse_image_keeps_a_text_typed_brand_as_a_hard_gate():
     parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
     f = parser.parse_image(b"\xff\xd8\xff\xd9", text="要耐克的")
     assert f.brand == "耐克"             # text-typed brand survives as a gate
+
+
+# --- router classification + degradation -------------------------------------
+
+def _route_kwargs():
+    return dict(has_cart=False, has_results=False, has_draft=False, just_compared=False)
+
+
+def test_classify_route_maps_the_short_label_to_an_intent_type():
+    route, _ = _parser('{"route":"comparison","reply":""}').classify_route("A和B哪个好", **_route_kwargs())
+    assert route == "comparison"
+
+
+def test_classify_route_degrades_to_keyword_fallback_when_llm_raises():
+    route, reply = _parser(RuntimeError("router down")).classify_route("推荐面霜", **_route_kwargs())
+    assert route is None and reply == ""
+
+
+def test_classify_route_returns_none_when_llm_unavailable():
+    route, reply = _parser("{}", available=False).classify_route("推荐面霜", **_route_kwargs())
+    assert route is None and reply == ""
+
+
+def test_llm_available_reflects_the_intent_llm_state():
+    assert _parser("{}").llm_available is True
+    assert _parser("{}", available=False).llm_available is False
+
+
+def test_parse_image_falls_back_to_low_confidence_when_the_vlm_raises():
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(RuntimeError("vlm down")))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="便宜的")
+    assert f.vision_confidence == "low"   # VLM failure degrades to the text rule parser
+    assert f.prefer_low_price is True
