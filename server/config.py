@@ -14,9 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 @dataclass(frozen=True)
 class Settings:
-    project_root: Path = PROJECT_ROOT
     dataset_root: Path = PROJECT_ROOT / "ecommerce_agent_dataset"
-    data_dir: Path = PROJECT_ROOT / "data"
     milvus_path: Path = PROJECT_ROOT / "data" / "milvus.db"
     embedding_cache_path: Path = PROJECT_ROOT / "data" / "embedding_cache.jsonl"
     query_cache_path: Path = PROJECT_ROOT / "data" / "query_cache.jsonl"

@@ -314,7 +314,6 @@ class ShoppingAssistant:
         cart: CartUpdate | None = None
         order: OrderDraft | None = None
         summaries: list[str] = []
-        active_filters = SearchFilters(intent_type="planned_action", raw_query=query)
         raw_cart = list(cart_items)
 
         for idx, step in enumerate(planned.steps):
@@ -332,7 +331,6 @@ class ShoppingAssistant:
                     retrieval = prepared.retrieval
                     products = prepared.products
                     selected_ids = [product.product_id for product in products]
-                    active_filters = prepared.filters
                     summary = f"找到 {len(products)} 款候选商品。"
                 elif step.action == "select_products":
                     products = self._select_products(products, step.criteria, step.count or 1)
@@ -360,7 +358,6 @@ class ShoppingAssistant:
                     comparison = prepared.comparison
                     products = prepared.products
                     selected_ids = [product.product_id for product in products]
-                    active_filters = filters
                     summary = comparison.summary if comparison else "已完成对比。"
                 elif step.action == "cart_action":
                     target_ids = self._cart_target_ids(step.target, selected_ids, comparison, products)
@@ -389,7 +386,7 @@ class ShoppingAssistant:
                 plan_steps[idx].summary = summary
                 summaries.append(summary)
                 yield _copy_plan(ExecutionPlan(steps=plan_steps, summary="；".join(summaries)))
-            except Exception as exc:  # noqa: BLE001 (planned execution should fail closed)
+            except Exception:  # noqa: BLE001 (planned execution should fail closed)
                 plan_steps[idx].status = "failed"
                 plan_steps[idx].summary = "这一步缺少可执行的商品信息，请补充说明。"
                 summaries.append(plan_steps[idx].summary or "")

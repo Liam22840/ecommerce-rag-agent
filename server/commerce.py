@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -12,7 +11,7 @@ from server.llm import ChatClient
 from server.pricing import build_cart_item, cart_subtotal, money
 from server.prompts import commerce_intent_messages
 from server.schemas import CartItem, CartUpdate, OrderDraft
-from server.textutil import json_object, normalize
+from server.textutil import json_object
 
 
 ActionType = Literal[
