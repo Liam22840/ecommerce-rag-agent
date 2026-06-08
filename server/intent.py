@@ -112,6 +112,10 @@ class SearchFilters:
     commerce_refs: list[str] = field(default_factory=list)
     commerce_quantity: int | None = None
     commerce_target_scope: str | None = None
+    # VLM-only (photo-find): a standalone retrieval phrase describing the image subject,
+    # and the VLM's confidence that the subject maps to a stocked category (high|low|"").
+    vision_description: str = ""
+    vision_confidence: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -158,6 +162,72 @@ class IntentParser:
             base.brand = None
         self._widen_approximate_price(base, message)
         return base
+
+    def parse_image(
+        self,
+        image_bytes: bytes,
+        text: str = "",
+        history: list[dict[str, Any]] | None = None,
+        session_products: list[dict[str, Any]] | None = None,
+    ) -> SearchFilters:
+        """Photo-find intent: the VLM reads the image (+ accompanying text) and proposes the same
+        SearchFilters the text parser produces, plus a description and a confidence. The rule pass
+        over the accompanying text disposes (price/excludes), and is the whole fallback when the
+        VLM is unavailable."""
+        rule = self._rule_parse(text or "")
+        if not self._should_use_llm():
+            rule.vision_confidence = "low"  # no VLM -> can't judge category match
+            return rule
+        vision = self._vision_parse(image_bytes, text or "", history, session_products)
+        if vision is None:
+            rule.vision_confidence = "low"
+            return rule
+        merged = self._merge(rule, vision, text or "")
+        if merged.brand and merged.brand in merged.excluded_brands:
+            merged.brand = None
+        # A brand read off the photo's logo is a soft hint, not a hard constraint: a photo means
+        # "find similar", so we must not zero out results just because we don't stock that exact
+        # brand (e.g. an Adidas-shoe photo when we carry Nike/Anta basketball shoes). It stays in
+        # required_terms / vision_description, so same-brand items still rank up; it just no longer
+        # gates. A brand the user actually typed in text still gates.
+        if merged.brand and merged.brand != rule.brand:
+            merged.brand = None
+        if not merged.vision_confidence:
+            merged.vision_confidence = "low"
+        if merged.vision_confidence != "high":
+            # A shaky visual category guess shouldn't hard-filter retrieval (it may not even be a
+            # stocked category). Fall back to only what the user's text named, so visual similarity
+            # can surface the nearest items. A category the user typed always survives.
+            merged.category = rule.category
+            merged.sub_category = rule.sub_category
+        return merged
+
+    def _vision_parse(
+        self,
+        image_bytes: bytes,
+        text: str,
+        history: list[dict[str, Any]] | None,
+        session_products: list[dict[str, Any]] | None,
+    ) -> SearchFilters | None:
+        data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+        try:
+            raw = self._llm.complete(
+                vision_intent_messages(
+                    text,
+                    self._categories,
+                    self._sub_categories,
+                    self._brands,
+                    data_url,
+                    history=history,
+                    session_products=session_products,
+                )
+            )
+            payload = json_object(raw)
+        except Exception:  # noqa: BLE001 (VLM parse must degrade to the text rule parser)
+            return None
+        if not payload:
+            return None
+        return self._filters_from_llm_payload(payload, text)
 
     def lead_in_hint(self, message: str) -> tuple[str, str | None]:
         """Instant, deterministic guess for the streaming opener, no LLM call. Rule-parse the
@@ -265,6 +335,8 @@ class IntentParser:
         filters.exclude_seen = _coerce_bool(payload.get("exclude_seen"))
         filters.recall_product_ids = _coerce_str_list(payload.get("recall_product_ids"))
         filters.compare_product_ids = _coerce_str_list(payload.get("compare_product_ids"))
+        filters.vision_description = _coerce_query(payload.get("vision_description"))
+        filters.vision_confidence = _coerce_enum(payload.get("vision_confidence"), {"high", "low"}, "")
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -286,6 +358,8 @@ class IntentParser:
         merged.exclude_seen = llm.exclude_seen  # novelty flag is only produced by the LLM
         merged.recall_product_ids = llm.recall_product_ids  # recall ids only come from the LLM
         merged.compare_product_ids = llm.compare_product_ids  # comparison ids only come from the LLM
+        merged.vision_description = llm.vision_description  # vision fields only come from the VLM
+        merged.vision_confidence = llm.vision_confidence
         self._backfill_category(merged)
         return merged
 

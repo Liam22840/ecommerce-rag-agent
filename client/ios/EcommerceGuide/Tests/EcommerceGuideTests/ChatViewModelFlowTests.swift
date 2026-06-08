@@ -52,6 +52,47 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertEqual(status, "2 Rain Shells in cart")
     }
 
+    func testSendPhotoAppendsImageBubbleAndStreamsRequestWithImageData() async throws {
+        let product = Product.fixture(id: "SHOE-1", title: "Trail Runner")
+        let service = ScriptedChatService(events: [
+            .token("这几款接近你的图片。"),
+            .products([product]),
+            .done(messageID: "photo-1")
+        ])
+        let viewModel = ChatViewModel(service: service, conversationID: UUID(), timeline: [])
+
+        let imageData = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        viewModel.sendPhoto(imageData: imageData, caption: "找同款")
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(service.requests.last?.imageData, imageData)
+        XCTAssertEqual(service.requests.last?.message, "找同款")
+
+        guard case .message(let userMessage) = viewModel.timeline[0] else {
+            return XCTFail("Expected a user photo message")
+        }
+        XCTAssertEqual(userMessage.role, .user)
+        XCTAssertEqual(userMessage.imageData, imageData)
+
+        guard case .products(_, let products)? = viewModel.timeline.first(where: { item in
+            if case .products = item { return true }
+            return false
+        }) else {
+            return XCTFail("Expected product results")
+        }
+        XCTAssertEqual(products, [product])
+    }
+
+    func testSendPhotoUsesDefaultCaptionWhenEmpty() async throws {
+        let service = ScriptedChatService(events: [.done(messageID: "photo-2")])
+        let viewModel = ChatViewModel(service: service, conversationID: UUID(), timeline: [])
+
+        viewModel.sendPhoto(imageData: Data([0xFF, 0xD8]), caption: "   ")
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(service.requests.last?.message, "找同款")  // blank caption -> default
+    }
+
     func testAddToCartIncrementsExistingProductAndAppendsStatus() {
         let product = Product.fixture(id: "TEE-1", title: "Cotton Tee")
         let viewModel = ChatViewModel(

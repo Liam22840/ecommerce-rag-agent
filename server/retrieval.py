@@ -58,6 +58,13 @@ class ProductRetriever:
             if text not in self._pending:
                 self._pending[text] = self._embed_pool.submit(embedder.embed_text, text)
 
+    def embed_image(self, image_bytes: bytes) -> list[float] | None:
+        """Embed an uploaded image for visual search. None when vector search is unavailable, so
+        the caller degrades to lexical instead of crashing."""
+        if not (self._vector_ready and self._embedder is not None):
+            return None
+        return self._embedder.embed_image(image_bytes)
+
     def _embed_query(self, text: str) -> list[float]:
         """Embed the retrieval query, reusing an in-flight pre-warm if one exists so a query is
         never embedded twice. Falls back to a direct embed (which hits the warm cache when a
@@ -69,12 +76,14 @@ class ProductRetriever:
         assert self._embedder is not None  # guarded by the caller (_vector_candidates)
         return self._embedder.embed_text(text)
 
-    def retrieve(self, query: str, filters: SearchFilters, limit: int) -> RetrievalResult:
+    def retrieve(
+        self, query: str, filters: SearchFilters, limit: int, image_vector: list[float] | None = None
+    ) -> RetrievalResult:
         warnings: list[str] = []
         if self._startup_warning:
             warnings.append(self._startup_warning)
 
-        vector_ranked, used_vector = self._vector_candidates(query, filters, warnings)
+        vector_ranked, used_vector = self._vector_candidates(query, filters, warnings, image_vector)
         lexical_hits = self._catalog.search_lexical(query, filters, limit=max(limit * 3, 12))
 
         # Reciprocal Rank Fusion: each source contributes by RANK, not raw score, so the two
@@ -96,20 +105,33 @@ class ProductRetriever:
         return RetrievalResult(hits=hits, source=source, warnings=warnings)
 
     def _vector_candidates(
-        self, query: str, filters: SearchFilters, warnings: list[str]
+        self,
+        query: str,
+        filters: SearchFilters,
+        warnings: list[str],
+        image_vector: list[float] | None = None,
     ) -> tuple[list[CatalogHit], bool]:
-        """Vector hits as one CatalogHit per product (best-scoring chunk), filtered and ranked by
-        similarity. Returns (ranked_hits, used_vector). Degrades to ([], False) on any failure."""
-        if not (self._vector_ready and self._embedder is not None and self._store is not None):
+        """Vector hits as one CatalogHit per product, filtered and ranked by similarity. Embeds the
+        text query, or searches with a pre-computed image vector when one is given (photo-find).
+        Returns (ranked_hits, used_vector). Degrades to ([], False) on any failure."""
+        # A pre-computed image vector doesn't need the text embedder; a text query does.
+        if not (self._vector_ready and self._store is not None):
             return [], False
+        if image_vector is None and self._embedder is None:
+            return [], False
+        kind = "image vector search" if image_vector is not None else "vector search"
         try:
-            vector = self._embed_query(query)
+            vector = image_vector if image_vector is not None else self._embed_query(query)
             raw_hits = self._store.search(vector, k=self._settings.vector_search_k)
         except Exception as exc:  # noqa: BLE001 (vector retrieval must degrade, not crash demo)
-            warnings.append(f"vector search unavailable: {exc}")
+            warnings.append(f"{kind} unavailable: {exc}")
             return [], False
-        # Keep the best-scoring chunk per product (score only orders the vector list, RRF
-        # overwrites it with the rank contribution later, so the raw magnitude doesn't matter).
+        return self._rank_product_hits(raw_hits, filters), True
+
+    def _rank_product_hits(self, raw_hits: list[dict], filters: SearchFilters) -> list[CatalogHit]:
+        """Best-scoring chunk per product, filtered, ranked by similarity. Shared by the text-query
+        and image-query vector paths. Score only orders the list here, RRF overwrites it later with
+        the rank contribution, so the raw magnitude doesn't matter."""
         best: dict[str, CatalogHit] = {}
         for raw in raw_hits:
             product = self._catalog.get(raw["product_id"])
@@ -121,8 +143,7 @@ class ProductRetriever:
             if existing is None or score > existing.score:
                 snippet = raw.get("text") or product["title"]
                 best[pid] = CatalogHit(product=product, score=score, snippets=[snippet], source="vector")
-        ranked = sorted(best.values(), key=lambda hit: hit.score, reverse=True)
-        return ranked, True
+        return sorted(best.values(), key=lambda hit: hit.score, reverse=True)
 
     def _fuse_by_rank(self, merged: dict[str, CatalogHit], ranked_hits: list[CatalogHit]) -> None:
         """Replace each hit's raw score with its reciprocal-rank contribution and merge it in.

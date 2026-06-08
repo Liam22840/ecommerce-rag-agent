@@ -10,17 +10,20 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     public let role: ChatRole
     public var text: String
     public var isStreaming: Bool
+    public var imageData: Data?
 
     public init(
         id: UUID = UUID(),
         role: ChatRole,
         text: String,
-        isStreaming: Bool = false
+        isStreaming: Bool = false,
+        imageData: Data? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.isStreaming = isStreaming
+        self.imageData = imageData
     }
 }
 

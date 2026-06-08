@@ -9,17 +9,31 @@ from pydantic import BaseModel, Field
 from server.textutil import dedupe_ids
 
 
+class Attachment(BaseModel):
+    type: Literal["image"] = "image"
+    data: str = Field(..., max_length=14_000_000)  # base64 of an image up to ~10MB
+    mime: str = "image/jpeg"
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
     session_id: str | None = Field(default=None, max_length=128)
     conversation_id: str | None = Field(default=None, max_length=128)
     top_k: int = Field(default=3, ge=1, le=10)
     compare_product_ids: list[str] = Field(default_factory=list, max_length=3)
+    attachments: list[Attachment] = Field(default_factory=list, max_length=1)
     client_context: "ClientContext" = Field(default_factory=lambda: ClientContext())
 
     @property
     def effective_session_id(self) -> str | None:
         return self.session_id or self.conversation_id
+
+    @property
+    def image_attachment(self) -> Attachment | None:
+        for attachment in self.attachments:
+            if attachment.type == "image":
+                return attachment
+        return None
 
     @property
     def effective_compare_product_ids(self) -> list[str]:

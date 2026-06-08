@@ -570,9 +570,85 @@ class ShoppingAssistant:
             comparison=None,
             cart=None,
             order=None,
-            grounded_answer=CHITCHAT_REPLY,
-            messages=chitchat_messages(query, self._catalog.scope_summary()),
+            grounded_answer=reply if reply is not None else CHITCHAT_REPLY,
+            messages=[] if reply is not None else chitchat_messages(query, self._catalog.scope_summary()),
         )
+
+    def _prepare_photo_search(
+        self,
+        query: str,
+        session_id: str | None,
+        top_k: int,
+        image_bytes: bytes,
+        recent_product_ids: list[str],
+    ) -> PreparedChat:
+        # Understand the photo (VLM proposes the same SearchFilters the text parser does, plus a
+        # description and a confidence), embed the photo for visual search, then run the existing
+        # hybrid retriever with the image vector as an extra RRF source. A photo turn never declines
+        # (unlike out-of-catalog text, which routes to chitchat); honesty comes from the confidence.
+        image_vector = self._safe_embed_image(image_bytes)
+        filters = self._parser.parse_image(
+            image_bytes,
+            text=query,
+            history=self._history_summaries(session_id),
+            session_products=self._session_products(session_id),
+        )
+        filters.intent_type = "product_search"
+        # parse_image already relaxed an uncertain visual category to only what the text named, so
+        # low confidence here just drives the honest "approximate" narration, not the gate.
+        low_conf = filters.vision_confidence != "high"
+        search_query = filters.vision_description or query or "相似商品"
+        retrieval = self._retriever.retrieve(
+            query=search_query, filters=filters, limit=top_k, image_vector=image_vector
+        )
+        hits = self._order_hits(retrieval.hits, filters)[:top_k]
+        products = [
+            self._catalog.product_card(hit.product, matched_reason=_photo_reason(low_conf), filters=filters)
+            for hit in hits
+        ]
+        result_status: ResultStatus = "ok" if products else "no_results"
+        self._remember_shown_products(session_id, products)
+        self._remember_turn(session_id, query, filters, products)
+        grounded = self._photo_grounded_answer(filters, hits, low_conf)
+        messages = photo_answer_messages(query, filters, hits, self._catalog, low_conf) if hits else []
+        return PreparedChat(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            retrieval=retrieval,
+            products=products,
+            comparison=None,
+            cart=None,
+            order=None,
+            grounded_answer=grounded,
+            messages=messages,
+            result_status=result_status,
+        )
+
+    def _safe_embed_image(self, image_bytes: bytes) -> list[float] | None:
+        try:
+            return self._retriever.embed_image(image_bytes)
+        except Exception:  # noqa: BLE001 (a failed embed degrades to lexical, never crashes)
+            return None
+
+    def _photo_grounded_answer(
+        self, filters: SearchFilters, hits: list[CatalogHit], low_conf: bool
+    ) -> str:
+        if not hits:
+            return "没能从图片里识别出本店在售的商品。可以换个角度再拍一张，或直接告诉我你想找什么。"
+        count = len(hits[:3])
+        lead = (
+            f"没找到完全同款，这{count}款风格或品类接近你的图片："
+            if low_conf
+            else f"根据你的图片，这{count}款最接近："
+        )
+        lines = [lead]
+        for idx, hit in enumerate(hits[:3], start=1):
+            product = hit.product
+            price_label = self._catalog.price_label(product, filters)
+            lines.append(f"{idx}. {product['title']}，{product['brand']}，价格：{price_label}。")
+        lines.append("以上商品均来自当前商品库；图片仅用于检索，不代表本店有完全相同的商品。")
+        return "\n".join(lines)
 
     def _prepare_search(
         self,
@@ -1059,6 +1135,10 @@ def _reason(hit: CatalogHit, filters: SearchFilters, catalog: ProductCatalog) ->
     if hit.snippets:
         reasons.append("商品描述或评价中有相关信息")
     return "，".join(reasons) if reasons else "与当前需求语义匹配"
+
+
+def _photo_reason(low_conf: bool) -> str:
+    return "与你的图片整体风格接近" if low_conf else "与你的图片在品类与外观上接近"
 
 
 def _copy_plan(plan: ExecutionPlan) -> ExecutionPlan:

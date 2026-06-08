@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -10,6 +11,11 @@ from server.retrieval import ProductRetriever
 
 
 DATASET_ROOT = Path(__file__).parent.parent / "ecommerce_agent_dataset"
+
+
+def _jpeg_attachment() -> dict:
+    raw = (DATASET_ROOT / "1_美妆护肤" / "images" / "p_beauty_011_live.jpg").read_bytes()
+    return {"type": "image", "data": base64.b64encode(raw).decode("ascii"), "mime": "image/jpeg"}
 
 
 def _client() -> TestClient:
@@ -674,3 +680,50 @@ def test_cache_persists_across_restart(tmp_path):
     client2, counting2 = _cached_client(tmp_path)
     client2.post("/api/chat", json={"message": "三百以内的面霜"})
     assert counting2.answer_calls == 0
+
+
+# --- photo-find (拍照找货) -------------------------------------------------------
+
+def test_chat_photo_turn_returns_grounded_cards_in_degraded_mode():
+    # No VLM and no vector search: the photo path degrades to the accompanying text. A catalog term
+    # in the caption ("面霜") still surfaces cards via lexical search and the honest photo narration.
+    client = _client()
+    resp = client.post("/api/chat", json={"message": "类似这款的面霜", "attachments": [_jpeg_attachment()]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["products"]                       # text-fold still produced cards
+    assert all(p["sub_category"] == "面霜" for p in body["products"])  # typed category survived
+    assert body["intent"]["vision_confidence"] == "low"  # no VLM -> low confidence
+    assert "图片" in body["answer"]
+
+
+def test_chat_photo_turn_rejects_invalid_base64():
+    client = _client()
+    resp = client.post(
+        "/api/chat",
+        json={"message": "找同款", "attachments": [{"type": "image", "data": "!!!not-base64!!!"}]},
+    )
+    assert resp.status_code == 400
+    assert "图片" in resp.json()["detail"]
+
+
+def test_photo_turn_bypasses_query_cache(tmp_path):
+    client, counting = _cached_client(tmp_path)
+    client.post("/api/chat", json={"message": "找同款", "attachments": [_jpeg_attachment()]})
+    assert counting.answer_calls == 1
+    # An identical photo turn is never served from cache (attachments bypass it) -> recompute.
+    client.post("/api/chat", json={"message": "找同款", "attachments": [_jpeg_attachment()]})
+    assert counting.answer_calls == 2
+
+
+def test_stream_photo_turn_emits_cards_and_done():
+    # Degraded mode (no VLM/vector): a catalog term in the caption lets the text-fold surface cards.
+    client = _client()
+    with client.stream(
+        "POST", "/api/chat/stream",
+        json={"message": "类似这款的面霜", "attachments": [_jpeg_attachment()]},
+    ) as resp:
+        body = "".join(resp.iter_text())
+    assert resp.status_code == 200
+    assert "event: products" in body
+    assert "event: done" in body

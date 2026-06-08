@@ -164,6 +164,84 @@ def intent_messages(
     ]
 
 
+# --- Vision intent parsing (photo-find) ----------------------------------------
+
+VISION_INTENT_SYSTEM = (
+    "你是电商导购的图片意图解析器。用户上传了一张商品图片，可能还附带一句话。只输出 JSON，不写解释。"
+    "任务：看懂图片里的主体商品，结合附带文字，解析成结构化筛选条件，字段含义与文字版意图解析一致。\n"
+    "规则：\n"
+    "1. category、sub_category、brand 必须从给定可选值里原样选取；图片里看不出或本店没有对应品类时填 null，禁止自造。\n"
+    "2. 把图片里的颜色、风格、版型、材质等可检索卖点写进 required_terms（如 黑色、机能风、宽松、针织）。\n"
+    "3. 价格、否定、规格等约束只从附带文字里取（min_price/max_price/excluded_terms/excluded_brands/requested_specs），图片不负责这些。\n"
+    "4. vision_description：用一句话客观描述图片主体（品类+主要外观特征），作为可独立检索的中文查询。\n"
+    "5. vision_confidence：当你确信图片主体能明确归入给定的某个 sub_category 时填 \"high\"；当它不属于本店在售品类、"
+    "或只能模糊判断时填 \"low\"。无论如何 intent_type 一律填 product_search，不要因为不在售就拒绝。\n"
+    "6. 给了 recent_turns / session_products 时，按文字版规则处理承接、相对追问与指回。\n"
+    "7. 列表字段没内容返回 []，标量没内容返回 null。\n"
+    '只输出如下 JSON：{"intent_type":"product_search",'
+    '"category":string|null,"sub_category":string|null,"brand":string|null,'
+    '"min_price":number|null,"max_price":number|null,'
+    '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
+    '"required_terms":[string],"requested_specs":[string],'
+    '"excluded_brands":[string],"excluded_terms":[string],'
+    '"vision_description":string,"vision_confidence":"high|low"}'
+)
+
+
+def vision_intent_messages(
+    text: str,
+    categories: set[str],
+    sub_categories: set[str],
+    brands: set[str],
+    image_data_url: str,
+    history: list[dict] | None = None,
+    session_products: list[dict] | None = None,
+) -> list[dict]:
+    payload = {
+        "text": text,
+        "categories": sorted(categories),
+        "sub_categories": sorted(sub_categories),
+        "brands": sorted(brands),
+    }
+    if history:
+        payload["recent_turns"] = history
+    if session_products:
+        payload["session_products"] = session_products
+    return [
+        {"role": "system", "content": VISION_INTENT_SYSTEM},
+        {"role": "user", "content": [
+            {"type": "text", "text": json.dumps(payload, ensure_ascii=False)},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]},
+    ]
+
+
+# --- Photo-find answer narration -----------------------------------------------
+
+PHOTO_ANSWER_SYSTEM = (
+    "你是电商智能导购助手，用户上传了一张商品图片。下面给你的是系统已检索出的最接近的商品事实。"
+    "只能依据这些商品事实回答，不能编造商品、价格、参数，也不能声称图片里就是这些商品。"
+    "先说明这几款和图片在品类/风格/外观上的接近之处，再给简短推荐理由。"
+    "当 match_confidence 为 low 时，要如实说明没有完全同款，这些只是风格或品类接近的替代。"
+    "价格必须照抄 price_label。用纯文本中文，不要使用任何 Markdown 标记。"
+)
+
+
+def photo_answer_messages(query, filters, hits, catalog, low_confidence: bool) -> list[dict]:
+    facts = [catalog.product_facts(hit.product, filters) for hit in hits]
+    payload = {
+        "user_text": query,
+        "image_description": filters.vision_description,
+        "match_confidence": "low" if low_confidence else "high",
+        "candidate_products": facts,
+        "instruction": "最多推荐3款，所有商品事实和价格必须来自 candidate_products。",
+    }
+    return [
+        {"role": "system", "content": PHOTO_ANSWER_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
 # --- Commerce intent parsing ---------------------------------------------------
 
 COMMERCE_INTENT_SYSTEM = (

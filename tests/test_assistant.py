@@ -582,6 +582,91 @@ def test_recall_ignores_ids_not_in_catalog():
     assert all(product.product_id != "p_nope_999" for product in prepared.products)
 
 
+# --- photo-find (拍照找货) -------------------------------------------------------
+
+class _PhotoRetriever:
+    """Fake retriever for photo turns: returns a fixed product and records calls."""
+
+    def __init__(self, catalog, product_id, vector=None):
+        self._catalog = catalog
+        self._product_id = product_id
+        self._vector = vector if vector is not None else [0.5, 0.5]
+        self.retrieve_calls = []
+        self.embed_calls = []
+
+    def prewarm_query(self, text):
+        pass
+
+    def embed_image(self, image_bytes):
+        self.embed_calls.append(image_bytes)
+        return self._vector
+
+    def retrieve(self, query, filters, limit, image_vector=None):
+        self.retrieve_calls.append((query, filters, image_vector))
+        hit = CatalogHit(product=self._catalog.require(self._product_id), score=1.0, source="vector")
+        return RetrievalResult(hits=[hit], source="vector")
+
+
+def _photo_assistant(intent_llm, product_id="p_clothes_007"):
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = _PhotoRetriever(catalog, product_id)
+    assistant = ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=None, intent_llm=intent_llm, settings=_settings()
+    )
+    return assistant, retriever
+
+
+def test_photo_turn_embeds_image_and_retrieves_with_vector():
+    intent_llm = FakeLLM(complete_result=json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "跑步鞋",
+        "vision_description": "白色跑鞋", "vision_confidence": "high",
+    }))
+    assistant, retriever = _photo_assistant(intent_llm)
+
+    prepared = assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8\xff\xd9")
+
+    assert retriever.embed_calls == [b"\xff\xd8\xff\xd9"]
+    query, filters, image_vector = retriever.retrieve_calls[0]
+    assert image_vector == [0.5, 0.5]
+    assert query == "白色跑鞋"
+    assert [p.product_id for p in prepared.products] == ["p_clothes_007"]
+    assert prepared.filters.intent_type == "product_search"
+
+
+def test_photo_low_confidence_drops_category_gate():
+    intent_llm = FakeLLM(complete_result=json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "跑步鞋",
+        "vision_description": "某种外套", "vision_confidence": "low",
+    }))
+    assistant, retriever = _photo_assistant(intent_llm)
+
+    assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8\xff\xd9")
+
+    _, filters, _ = retriever.retrieve_calls[0]
+    assert filters.category is None and filters.sub_category is None
+
+
+def test_photo_turn_degrades_to_lexical_when_embed_fails():
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, retriever = _photo_assistant(intent_llm)
+    retriever.embed_image = lambda b: (_ for _ in ()).throw(RuntimeError("embed down"))
+
+    prepared = assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8")
+
+    _, _, image_vector = retriever.retrieve_calls[0]
+    assert image_vector is None
+    assert prepared.products
+
+
+def test_photo_turn_records_session_memory_for_followup():
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, _ = _photo_assistant(intent_llm)
+
+    assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8")
+    shown = assistant._session_products("s")
+    assert shown and shown[0]["id"] == "p_clothes_007"
+
+
 # --- small helpers -------------------------------------------------------------
 
 def test_chunk_text_splits_into_fixed_windows():

@@ -360,3 +360,58 @@ def test_llm_relative_cheaper_emits_tighter_max_price_with_carry():
     assert f.sub_category == "面霜"
     assert f.max_price == 80.0
     assert f.prefer_low_price is True
+
+
+# --- photo-find: VLM intent over an image --------------------------------------
+
+def test_parse_image_merges_vlm_filters_with_text_rules():
+    # VLM reads the photo (category + style + confidence); the accompanying text supplies price.
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "短袖T恤",
+        "required_terms": ["黑色"], "vision_description": "黑色短袖T恤", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="300以内的")
+    assert f.sub_category == "短袖T恤"
+    assert "黑色" in f.required_terms
+    assert f.max_price == 300.0          # picked up from the text by the rule parser
+    assert f.vision_confidence == "high"
+    assert f.vision_description == "黑色短袖T恤"
+
+
+def test_parse_image_degrades_to_low_confidence_without_llm():
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"})  # no VLM
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="便宜的")
+    assert f.vision_confidence == "low"   # can't gauge category match without the VLM
+    assert f.prefer_low_price is True     # text rule still applies
+
+
+def test_parse_image_low_confidence_defaulted_when_vlm_omits_it():
+    resp = json.dumps({"intent_type": "product_search", "vision_description": "某物"})
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="")
+    assert f.vision_confidence == "low"   # absent -> treated as low
+
+
+def test_parse_image_drops_vision_only_brand_so_it_does_not_hard_gate():
+    # A brand the VLM read off the logo (no text brand) must not hard-filter: a photo of an
+    # Adidas shoe should still surface our Nike/Anta basketball shoes (brand stays soft).
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "篮球鞋",
+        "brand": "阿迪达斯", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="")
+    assert f.brand is None              # vision-only brand dropped from the gate
+    assert f.sub_category == "篮球鞋"     # category gate kept (high confidence)
+
+
+def test_parse_image_keeps_a_text_typed_brand_as_a_hard_gate():
+    # When the user actually typed the brand, it should still gate.
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "篮球鞋",
+        "brand": "耐克", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="要耐克的")
+    assert f.brand == "耐克"             # text-typed brand survives as a gate

@@ -353,18 +353,32 @@ private struct CartItemPayload: Codable {
     }
 }
 
-private struct ChatRequestPayload: Encodable {
+struct AttachmentPayload: Encodable {
+    let type: String
+    let data: String
+    let mime: String
+}
+
+struct ChatRequestPayload: Encodable {
     let conversationID: UUID
     let message: String
     let compareProductIDs: [String]
-    let attachments: [String]
-    let clientContext: ClientContextPayload
+    let attachments: [AttachmentPayload]
+    private let clientContext: ClientContextPayload
 
     init(request: ChatRequest) {
         self.conversationID = request.conversationID
         self.message = request.message
         self.compareProductIDs = request.compareProductIDs
-        self.attachments = []
+        if let imageData = request.imageData {
+            self.attachments = [AttachmentPayload(
+                type: "image",
+                data: imageData.base64EncodedString(),
+                mime: "image/jpeg"
+            )]
+        } else {
+            self.attachments = []
+        }
         self.clientContext = ClientContextPayload(
             cartItems: request.cartItems.map(CartItemPayload.init(cartItem:)),
             recentProductIDs: request.recentProductIDs,

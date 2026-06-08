@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 @available(iOS 17.0, macOS 13.0, *)
 public struct ShoppingConciergeRootView: View {
@@ -39,7 +40,8 @@ public struct ShoppingConciergeRootView: View {
                         screen = .chat
                     }
                 },
-                captureAction: {
+                captureAction: { imageData in
+                    viewModel.sendPhoto(imageData: imageData, caption: "找同款")
                     withAnimation(.easeInOut(duration: 0.18)) {
                         screen = .chat
                     }
@@ -161,8 +163,9 @@ private struct OnboardingScreen: View {
 @available(iOS 17.0, macOS 13.0, *)
 private struct PhotoSearchScreen: View {
     let backAction: () -> Void
-    let captureAction: () -> Void
+    let captureAction: (Data) -> Void
 
+    @State private var pickerItem: PhotosPickerItem?
     @State private var isSearching = false
 
     var body: some View {
@@ -252,16 +255,7 @@ private struct PhotoSearchScreen: View {
                 .frame(width: 44, height: 44)
                 .accessibilityHidden(true)
 
-            Button {
-                guard !isSearching else { return }
-                isSearching = true
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    await MainActor.run {
-                        captureAction()
-                    }
-                }
-            } label: {
+            PhotosPicker(selection: $pickerItem, matching: .images) {
                 Circle()
                     .fill(isSearching ? Color.white.opacity(0.3) : GuideTheme.accent)
                     .frame(width: 56, height: 56)
@@ -272,15 +266,27 @@ private struct PhotoSearchScreen: View {
                             .stroke(Color.white.opacity(0.82), lineWidth: 4)
                     }
             }
-            .buttonStyle(.plain)
             .disabled(isSearching)
-            .accessibilityLabel("拍照识别商品")
+            .accessibilityLabel("从相册选择商品图片")
 
             Color.clear
                 .frame(width: 44, height: 44)
         }
         .padding(.top, 24)
         .padding(.bottom, 32)
+        .onChange(of: pickerItem) { newItem in
+            guard let newItem else { return }
+            isSearching = true
+            Task {
+                let data = try? await newItem.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    isSearching = false
+                    if let data {
+                        captureAction(data)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -38,6 +38,12 @@ public final class ChatViewModel: ObservableObject {
         send(message: draftMessage)
     }
 
+    public func sendPhoto(imageData: Data, caption: String) {
+        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = trimmed.isEmpty ? "找同款" : trimmed
+        send(message: message, imageData: imageData)
+    }
+
     public func retryLastMessage() {
         guard let lastSubmittedMessage else {
             return
@@ -83,7 +89,7 @@ public final class ChatViewModel: ObservableObject {
         finishStreamingMessage()
     }
 
-    private func send(message: String) {
+    private func send(message: String, imageData: Data? = nil) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedMessage.isEmpty, !isSending else {
@@ -106,14 +112,15 @@ public final class ChatViewModel: ObservableObject {
             return false
         }
 
-        timeline.append(.message(ChatMessage(role: .user, text: trimmedMessage)))
+        timeline.append(.message(ChatMessage(role: .user, text: trimmedMessage, imageData: imageData)))
         timeline.append(.message(ChatMessage(id: assistantID, role: .assistant, text: "", isStreaming: true)))
 
         let request = ChatRequest(
             conversationID: conversationID,
             message: trimmedMessage,
             cartItems: cartItems,
-            recentProductIDs: recentProductIDs
+            recentProductIDs: recentProductIDs,
+            imageData: imageData
         )
 
         streamTask?.cancel()
