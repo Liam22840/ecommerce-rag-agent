@@ -704,6 +704,15 @@ def test_photo_turn_embeds_image_and_retrieves_with_vector():
     assert prepared.filters.intent_type == "product_search"
 
 
+def test_photo_turn_streams_an_instant_lead_before_the_slow_search():
+    # 首Token: the photo path flushes an instant opener before the (slow) embed + VLM, then the result.
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, _ = _photo_assistant(intent_llm)
+    items = list(assistant.prepare_stream("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8"))
+    assert isinstance(items[0], str) and "识别图片" in items[0]  # instant lead first
+    assert any(not isinstance(it, str) for it in items)  # the prepared result follows
+
+
 def test_photo_low_confidence_drops_category_gate():
     intent_llm = FakeLLM(complete_result=json.dumps({
         "intent_type": "product_search", "category": "服饰运动", "sub_category": "跑步鞋",

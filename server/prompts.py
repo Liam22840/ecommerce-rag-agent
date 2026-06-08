@@ -57,6 +57,12 @@ def opener_text(route: str, label: str | None = None) -> str:
     return opener_lead() + opener_continuation(route, label)
 
 
+def photo_opener() -> str:
+    """Instant opener for a photo turn (拍照找货). The visual search (image embed + VLM) is slow, so this
+    is flushed before any of it runs to keep 首Token under a second; the kind is known (it's an image)."""
+    return f"{opener_lead()}正在识别图片帮您找相似商品～\n"
+
+
 # --- Recommendation answer -----------------------------------------------------
 
 SYSTEM_PROMPT = """你是一个电商智能导购助手。

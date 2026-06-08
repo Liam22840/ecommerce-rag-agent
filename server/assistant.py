@@ -30,6 +30,7 @@ from server.prompts import (
     opener_lead,
     opener_text,
     photo_answer_messages,
+    photo_opener,
 )
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.schemas import CartUpdate, ChatResponse, ExecutionPlan, OrderDraft, PlanStep, ProductCard, ProductComparison
@@ -203,6 +204,8 @@ class ShoppingAssistant:
         image_bytes: bytes | None = None,
     ) -> Iterator[str | ExecutionPlan | PreparedChat]:
         if image_bytes is not None:
+            # The visual search is slow; flush an instant lead first so 首Token still lands under 1s.
+            yield photo_opener()
             yield self.prepare(
                 query, session_id, top_k, compare_product_ids,
                 client_recent_product_ids, cart_items, image_bytes=image_bytes,
