@@ -1,5 +1,8 @@
 import SwiftUI
 import PhotosUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @available(iOS 17.0, macOS 13.0, *)
 public struct ShoppingConciergeRootView: View {
@@ -166,7 +169,17 @@ private struct PhotoSearchScreen: View {
     let captureAction: (Data) -> Void
 
     @State private var pickerItem: PhotosPickerItem?
+    @State private var isCameraPresented = false
     @State private var isSearching = false
+
+    // The Simulator has no camera, so the shutter is only live on a real device.
+    private var cameraAvailable: Bool {
+        #if os(iOS)
+        return UIImagePickerController.isSourceTypeAvailable(.camera)
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -185,6 +198,9 @@ private struct PhotoSearchScreen: View {
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
+        .cameraCover(isPresented: $isCameraPresented) { data in
+            captureAction(normalizedJPEG(data))
+        }
     }
 
     private var header: some View {
@@ -248,31 +264,39 @@ private struct PhotoSearchScreen: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 32) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.42), lineWidth: 2)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .frame(width: 44, height: 44)
-                .accessibilityHidden(true)
-
+        HStack(spacing: 36) {
+            // Pick an existing photo (works on Simulator and device).
             PhotosPicker(selection: $pickerItem, matching: .images) {
-                Circle()
-                    .fill(isSearching ? Color.white.opacity(0.3) : GuideTheme.accent)
-                    .frame(width: 56, height: 56)
-                    .padding(6)
-                    .background(Color.white, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(Color.white.opacity(0.82), lineWidth: 4)
-                    }
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 54, height: 54)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .disabled(isSearching)
             .accessibilityLabel("从相册选择商品图片")
 
-            Color.clear
-                .frame(width: 44, height: 44)
+            // Shutter: opens the live camera (device only; dimmed where there's no camera).
+            Button {
+                guard cameraAvailable, !isSearching else { return }
+                isCameraPresented = true
+            } label: {
+                Circle()
+                    .fill(GuideTheme.accent)
+                    .frame(width: 56, height: 56)
+                    .padding(6)
+                    .background(Color.white, in: Circle())
+                    .overlay { Circle().stroke(Color.white.opacity(0.82), lineWidth: 4) }
+                    .opacity(cameraAvailable ? 1 : 0.35)
+            }
+            .buttonStyle(.plain)
+            .disabled(!cameraAvailable || isSearching)
+            .accessibilityLabel("拍照")
+
+            // Keeps the shutter centred opposite the album button.
+            Color.clear.frame(width: 54, height: 54)
         }
-        .padding(.top, 24)
+        .padding(.top, 20)
         .padding(.bottom, 32)
         .onChange(of: pickerItem) { newItem in
             guard let newItem else { return }
@@ -282,13 +306,78 @@ private struct PhotoSearchScreen: View {
                 await MainActor.run {
                     isSearching = false
                     if let data {
-                        captureAction(data)
+                        captureAction(normalizedJPEG(data))
                     }
                 }
             }
         }
     }
 }
+
+/// Normalises any picked/captured image to JPEG bytes (smaller payload, honest mime). Falls
+/// through to the raw bytes if decoding isn't available on the platform.
+private func normalizedJPEG(_ data: Data) -> Data {
+    #if canImport(UIKit)
+    return UIImage(data: data)?.jpegData(compressionQuality: 0.85) ?? data
+    #else
+    return data
+    #endif
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+private extension View {
+    /// Presents the live-camera capture sheet on iOS; a no-op where there's no camera support.
+    @ViewBuilder
+    func cameraCover(isPresented: Binding<Bool>, onCapture: @escaping (Data) -> Void) -> some View {
+        #if os(iOS)
+        fullScreenCover(isPresented: isPresented) {
+            CameraPicker(onCapture: onCapture).ignoresSafeArea()
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+/// Thin SwiftUI wrapper over the system camera. Returns JPEG bytes via `onCapture`.
+@available(iOS 17.0, *)
+private struct CameraPicker: UIViewControllerRepresentable {
+    let onCapture: (Data) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+
+        init(_ parent: CameraPicker) { self.parent = parent }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.85) {
+                parent.onCapture(data)
+            }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+#endif
 
 @available(iOS 17.0, macOS 13.0, *)
 private enum PhotoCorner: CaseIterable {
