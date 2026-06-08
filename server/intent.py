@@ -162,8 +162,22 @@ class IntentParser:
         # emits a brand it simultaneously excluded, which would otherwise match nothing.
         if base.brand and base.brand in base.excluded_brands:
             base.brand = None
+        self._clean_redundant_terms(base)
         self._widen_approximate_price(base, message)
         return base
+
+    @staticmethod
+    def _clean_redundant_terms(filters: SearchFilters) -> None:
+        """Drop term-list noise the LLM sometimes emits, so it doesn't muddy honest narration. A
+        negation ("不含酒精") is never a positive sellpoint, and a brand already in excluded_brands
+        shouldn't also sit in excluded_terms as a phrase ("耐克的跑步鞋"). Price/tier adjectives are
+        kept out of required_terms by the intent prompt, not patched here."""
+        filters.required_terms = [t for t in filters.required_terms if not t.startswith("不")]
+        if filters.excluded_brands:
+            filters.excluded_terms = [
+                t for t in filters.excluded_terms
+                if not any(brand in t for brand in filters.excluded_brands)
+            ]
 
     def parse_image(
         self,

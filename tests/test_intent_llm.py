@@ -393,6 +393,20 @@ def test_parse_image_low_confidence_defaulted_when_vlm_omits_it():
     assert f.vision_confidence == "low"   # absent -> treated as low
 
 
+def test_clean_redundant_terms_drops_negation_required_and_brand_excluded_terms():
+    # The LLM sometimes emits a negation as a "required" term ("不含酒精") or repeats the excluded
+    # brand inside excluded_terms ("耐克的跑步鞋"). Both are dropped so honest narration isn't muddied.
+    resp = json.dumps({
+        "intent_type": "product_search", "sub_category": "面霜",
+        "required_terms": ["不含酒精", "保湿"],
+        "excluded_brands": ["耐克"], "excluded_terms": ["耐克的跑步鞋", "油腻"],
+    })
+    parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS | {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse("推荐保湿面霜")
+    assert "不含酒精" not in f.required_terms and "保湿" in f.required_terms   # negation dropped, sellpoint kept
+    assert "耐克的跑步鞋" not in f.excluded_terms and "油腻" in f.excluded_terms  # brand-phrase dropped, exclusion kept
+
+
 def test_parse_image_drops_vision_only_brand_so_it_does_not_hard_gate():
     # A brand the VLM read off the logo (no text brand) must not hard-filter: a photo of an
     # Adidas shoe should still surface our Nike/Anta basketball shoes (brand stays soft).
