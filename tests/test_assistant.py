@@ -7,6 +7,7 @@ from pathlib import Path
 
 from server.assistant import ShoppingAssistant, _chunk_text, _looks_like_greeting, _reason
 from server.catalog import CatalogHit, ProductCatalog
+from server.commerce import CommerceActionCandidate
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import SearchFilters
@@ -971,3 +972,122 @@ def test_unmet_required_term_surfaces_closest_and_flags_honestly():
     assert "没有" in prepared.grounded_answer and "防水" in prepared.grounded_answer  # honest line
     # no card claims the unmet attribute
     assert all("匹配防水需求" not in (product.matched_reason or "") for product in prepared.products)
+
+
+# --- planner-engine helpers, id resolution, sort variants, router branches ----
+
+def test_order_hits_sorts_by_rating_descending():
+    assistant = _assistant(llm=None)
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008", "p_beauty_011")
+    ordered = assistant._order_hits(hits, SearchFilters(sort_by="rating_desc"))
+    ratings = [assistant.catalog.avg_rating(hit.product) for hit in ordered]
+    assert ratings == sorted(ratings, reverse=True)
+
+
+def test_select_products_orders_by_price_and_truncates():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_beauty_007", "p_beauty_008", "p_beauty_011"])
+    desc = assistant._select_products(cards, "price_desc", 2)
+    assert [c.price for c in desc] == sorted([c.price for c in cards], reverse=True)[:2]
+    # an unknown criteria keeps the given order, just truncates
+    kept = assistant._select_products(cards, None, 2)
+    assert [c.product_id for c in kept] == [c.product_id for c in cards[:2]]
+
+
+def test_cart_target_ids_falls_back_to_the_first_product():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_beauty_007", "p_beauty_008"])
+    assert assistant._cart_target_ids(None, [], None, cards) == ["p_beauty_007"]
+
+
+def test_pool_with_ids_skips_an_unresolvable_id():
+    assistant = _assistant(llm=None)
+    pool = assistant._pool_with_ids(["p_nope_999", "p_beauty_007"], existing=None)
+    assert [entry["id"] for entry in pool] == ["p_beauty_007"]
+
+
+def test_product_cards_from_ids_skips_unknown_ids():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_nope_999", "p_beauty_007"])
+    assert [c.product_id for c in cards] == ["p_beauty_007"]
+
+
+def test_cart_for_intent_drops_rows_whose_product_is_unknown():
+    assistant = _assistant(llm=None)
+    rows = assistant._cart_for_intent([{"product_id": "p_nope_999"}, {"product_id": "p_beauty_007", "quantity": 1}])
+    assert rows is not None and len(rows) == 1 and rows[0]["title"]
+
+
+def test_display_price_falls_back_to_lowest_price_without_a_selected_sku():
+    assistant = _assistant(llm=None)
+    product = assistant.catalog.require("p_beauty_007")
+    assert assistant._display_price(product, SearchFilters()) == assistant.catalog.lowest_price(product)
+
+
+def test_grounded_answer_appends_sku_detail_for_a_multi_sku_product():
+    assistant = _assistant(llm=None)
+    pid = next(p["product_id"] for p in assistant.catalog.products
+               if len({s["price"] for s in assistant.catalog.sku_prices(p)}) >= 2)
+    answer = assistant._grounded_answer("看看", SearchFilters(), _hits(assistant, pid))
+    assert "SKU价格明细" in answer
+
+
+def test_commerce_products_dedupes_and_drops_unresolvable_client_ids():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐三款保湿面霜", session_id="s", top_k=3)
+    shown_id = assistant._session_products("s")[0]["id"]
+    pool = assistant._commerce_products("s", ["p_nope_999", shown_id, shown_id])
+    ids = [entry["id"] for entry in pool]
+    assert "p_nope_999" not in ids
+    assert ids.count(shown_id) == 1  # client dup + session entry both collapse to one
+
+
+class _SearchRouteChitchatParse:
+    """Router says product_search, but the intent parse downgrades to chitchat (out of catalogue)."""
+
+    available = True
+
+    def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return json.dumps({"route": "search"})
+        return json.dumps({"intent_type": "chitchat"})
+
+    def stream(self, messages):
+        yield from []
+
+
+def test_product_search_route_downgrades_to_chitchat_for_an_out_of_catalogue_item():
+    assistant = _assistant(intent_llm=_SearchRouteChitchatParse())
+    prepared = assistant.prepare("推荐一块机械手表", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "chitchat"
+    assert prepared.products == []
+
+
+class _PlannedRouteThenSearch:
+    """Router says planned_task, but the planner (no LLM, single action) declines, so it must fall back
+    to a plain product search."""
+
+    available = True
+
+    def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return json.dumps({"route": "plan"})  # the router emits short labels; "plan" -> planned_task
+        return json.dumps({"intent_type": "product_search", "sub_category": "面霜"})
+
+    def stream(self, messages):
+        yield from []
+
+
+def test_planned_route_that_declines_falls_back_to_product_search():
+    assistant = _assistant(intent_llm=_PlannedRouteThenSearch())
+    prepared = assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.products
+
+
+def test_unrecognised_pending_reply_falls_through_to_normal_routing():
+    assistant = _assistant(llm=None)
+    assistant._session("s").order.pending_action = CommerceActionCandidate(action="add", target_scope="shown_products")
+    prepared = assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.products
