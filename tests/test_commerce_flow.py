@@ -6,7 +6,15 @@ from fastapi.testclient import TestClient
 from server.app import create_app
 from server.assistant import ShoppingAssistant
 from server.catalog import ProductCatalog
-from server.commerce import CommerceActionCandidate, CommerceService, OrderState
+from server.commerce import (
+    CommerceActionCandidate,
+    CommerceService,
+    OrderState,
+    _coerce_int,
+    _looks_like_add_ref,
+    _pool_product_id,
+    looks_like_commerce,
+)
 from server.config import Settings
 from server.retrieval import ProductRetriever
 
@@ -355,6 +363,23 @@ def test_stream_emits_cart_event_before_done():
     assert body.index("event: cart") < body.index("event: done")
 
 
+def test_stream_emits_order_event_on_checkout():
+    client = _client()
+    session_id = "stream-order"
+    products = _search(client, session_id)
+    cart = _cart_payload((products[0], 1))
+
+    with client.stream(
+        "POST", "/api/chat/stream",
+        json={"session_id": session_id, "message": "下单吧", "client_context": {"cart_items": cart}},
+    ) as resp:
+        body = "".join(resp.iter_text())
+
+    assert resp.status_code == 200
+    assert "event: order" in body
+    assert '"type": "order_draft"' in body
+
+
 # --- Single-router behaviours: fast-path, corroboration, measure-word quantity, pending replies ----
 
 
@@ -549,3 +574,341 @@ def test_pending_reply_abandonment_clears_and_does_not_act():
 
     assert res is None
     assert state.pending_action is None
+
+
+# --- degraded / edge branches (unit-level) -----------------------------------
+
+class _RaisingLLM:
+    """An available LLM whose complete() always raises, for the fall-back-to-deterministic branches."""
+
+    available = True
+
+    def complete(self, _messages):
+        raise RuntimeError("llm down")
+
+
+def _ids(catalog, n: int = 2):
+    return [catalog.products[i]["product_id"] for i in range(n)]
+
+
+def _session(catalog, *pids):
+    return [{"id": pid, "title": catalog.get(pid)["title"], "price": 1.0} for pid in pids]
+
+
+# pending-reply resolver
+
+def test_handle_pending_reply_returns_none_without_a_pending_action():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog).handle_pending_reply(
+        "第一个", cart_items=[], session_products=_session(catalog, _a_product_id()), order_state=OrderState()
+    )
+    assert res is None
+
+
+def test_pending_reply_without_ordinal_and_no_llm_leaves_pending_set():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    state = OrderState(pending_action=CommerceActionCandidate(action="add", target_scope="shown_products"))
+    res = CommerceService(catalog, llm=None).handle_pending_reply(
+        "那个便宜的", cart_items=[], session_products=_session(catalog, _a_product_id()), order_state=state
+    )
+    assert res is None
+    assert state.pending_action is not None
+
+
+def test_pending_reply_llm_failure_leaves_pending_set():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    state = OrderState(pending_action=CommerceActionCandidate(action="add", target_scope="shown_products"))
+    res = CommerceService(catalog, llm=_RaisingLLM()).handle_pending_reply(
+        "那个便宜的", cart_items=[], session_products=_session(catalog, _a_product_id()), order_state=state
+    )
+    assert res is None
+    assert state.pending_action is not None
+
+
+def test_pending_reply_resolve_to_an_offpool_id_is_rejected():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    pid, offscreen = catalog.products[0]["product_id"], catalog.products[5]["product_id"]
+    state = OrderState(pending_action=CommerceActionCandidate(action="add", target_scope="shown_products"))
+    res = CommerceService(catalog, llm=_StubLLM({"outcome": "resolve", "product_id": offscreen})).handle_pending_reply(
+        "那个便宜的", cart_items=[], session_products=_session(catalog, pid), order_state=state
+    )
+    assert res is None
+    assert state.pending_action is not None  # not cleared, the model named an off-pool id
+
+
+def test_pending_reply_unknown_outcome_keeps_pending():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    state = OrderState(pending_action=CommerceActionCandidate(action="add", target_scope="shown_products"))
+    res = CommerceService(catalog, llm=_StubLLM({"outcome": "???"})).handle_pending_reply(
+        "那个便宜的", cart_items=[], session_products=_session(catalog, _a_product_id()), order_state=state
+    )
+    assert res is None
+    assert state.pending_action is not None  # only abandon/not_a_reply clear it
+
+
+def test_pending_reply_cart_scope_resolves_against_the_cart_pool():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    cart = [{"product_id": p0, "quantity": 1}, {"product_id": p1, "quantity": 1}]
+    state = OrderState(pending_action=CommerceActionCandidate(action="remove", target_scope="cart_items"))
+    res = CommerceService(catalog, llm=_StubLLM({"outcome": "resolve", "product_id": p0})).handle_pending_reply(
+        "那个便宜的", cart_items=cart, session_products=None, order_state=state
+    )
+    assert {i.product_id for i in res.cart.items} == {p1}  # p0 removed via the cart pool
+
+
+# deterministic parser fall-backs
+
+def test_deterministic_cancel_order_keeps_cart_and_clears_draft():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    cart = [{"product_id": p0, "quantity": 1}]
+    state = OrderState()
+    CommerceService(catalog, llm=None).maybe_handle("下单", cart_items=cart, session_products=None, order_state=state)
+    assert state.draft is not None
+
+    res = CommerceService(catalog, llm=None).maybe_handle("取消", cart_items=cart, session_products=None, order_state=state)
+    assert res.order.status == "cancelled"
+    assert {i.product_id for i in res.cart.items} == {p0}  # cart retained
+    assert state.draft is None
+
+
+def test_deterministic_decrement_reduces_quantity():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "减一件", cart_items=[{"product_id": p0, "quantity": 2}], session_products=None, order_state=OrderState()
+    )
+    assert res.cart.items[0].quantity == 1
+    assert res.intent["commerce_action"] == "decrement"
+
+
+def test_deterministic_show_cart_summarises_the_cart():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "查看购物车",
+        cart_items=[{"product_id": p0, "quantity": 1}, {"product_id": p1, "quantity": 1}],
+        session_products=None, order_state=OrderState(),
+    )
+    assert res.cart.action == "show_cart"
+    assert "购物车共" in res.answer
+
+
+def test_non_commerce_message_returns_none():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "今天天气不错", cart_items=[], session_products=None, order_state=OrderState()
+    )
+    assert res is None
+
+
+# LLM payload parsing edges
+
+def test_llm_failure_falls_back_to_deterministic_add():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    res = CommerceService(catalog, llm=_RaisingLLM()).maybe_handle(
+        "加入购物车", cart_items=[], session_products=_session(catalog, p0), order_state=OrderState()
+    )
+    assert {i.product_id for i in res.cart.items} == {p0}
+
+
+def test_llm_invalid_action_yields_no_commerce():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=_StubLLM({"action": "banana"})).maybe_handle(
+        "帮我看看", cart_items=[], session_products=None, order_state=OrderState()
+    )
+    assert res is None
+
+
+def test_llm_items_skips_non_dict_and_empty_pid_entries():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    svc = CommerceService(catalog, llm=_StubLLM(
+        {"action": "add", "product_ids": [p0],
+         "items": ["junk", {"product_id": "", "quantity": 2}, {"product_id": p0, "quantity": 4}]}
+    ))
+    res = svc.maybe_handle("加入购物车", cart_items=[], session_products=_session(catalog, p0), order_state=OrderState())
+    assert {i.product_id: i.quantity for i in res.cart.items} == {p0: 4}  # per-item qty applied, junk ignored
+
+
+def test_llm_item_with_null_quantity_does_not_override_base_quantity():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    svc = CommerceService(catalog, llm=_StubLLM(
+        {"action": "add", "product_ids": [p0], "quantity": 2, "items": [{"product_id": p0, "quantity": None}]}
+    ))
+    res = svc.maybe_handle("加入购物车", cart_items=[], session_products=_session(catalog, p0), order_state=OrderState())
+    assert res.cart.items[0].quantity == 2
+
+
+# checkout / confirm state machine
+
+def test_confirm_order_with_empty_cart_reports_and_clears_draft():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    state = OrderState()
+    CommerceService(catalog, llm=_StubLLM({"action": "checkout"})).maybe_handle(
+        "下单", cart_items=[{"product_id": p0, "quantity": 1}], session_products=None, order_state=state
+    )
+    assert state.draft is not None
+
+    res = CommerceService(catalog, llm=_StubLLM({"action": "confirm_order"})).maybe_handle(
+        "确认", cart_items=[], session_products=None, order_state=state
+    )
+    assert res.order is None
+    assert "购物车为空，无法提交订单" in res.answer
+    assert state.draft is None
+
+
+def test_confirm_order_requotes_when_the_cart_changed_since_the_draft():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    state = OrderState()
+    CommerceService(catalog, llm=_StubLLM({"action": "checkout"})).maybe_handle(
+        "下单", cart_items=[{"product_id": p0, "quantity": 2}], session_products=None, order_state=state
+    )
+    res = CommerceService(catalog, llm=_StubLLM({"action": "confirm_order"})).maybe_handle(
+        "确认", cart_items=[{"product_id": p0, "quantity": 3}], session_products=None, order_state=state
+    )
+    assert res.order.status == "awaiting_confirmation"  # re-quoted, not submitted
+
+
+# cart normalisation filtering
+
+def test_normalize_cart_drops_rows_without_id_unknown_product_or_nonpositive_quantity():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    cart = [
+        {"quantity": 1},                                  # no product id
+        {"product_id": "p_nope_999", "quantity": 1},      # not in catalog
+        {"product_id": p1, "quantity": -1},               # non-positive quantity
+        {"product_id": p0, "quantity": 1},                # the only valid row
+    ]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "查看购物车", cart_items=cart, session_products=None, order_state=OrderState()
+    )
+    assert {i.product_id for i in res.cart.items} == {p0}
+
+
+def test_normalize_cart_sums_duplicate_rows_of_the_same_product():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "查看购物车",
+        cart_items=[{"product_id": p0, "quantity": 1}, {"product_id": p0, "quantity": 1}],
+        session_products=None, order_state=OrderState(),
+    )
+    assert res.cart.items[0].quantity == 2
+
+
+# single-product / cart-item resolver fall-backs
+
+def test_add_deictic_with_a_single_shown_product_resolves_it():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "这个加入购物车", cart_items=[], session_products=_session(catalog, p0), order_state=OrderState()
+    )
+    assert {i.product_id for i in res.cart.items} == {p0}
+    assert _pool_product_id(res.cart.items[0]) == p0  # CartItem branch of _pool_product_id
+
+
+def test_add_deictic_with_multiple_shown_products_clarifies():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "这个加入购物车", cart_items=[], session_products=_session(catalog, p0, p1), order_state=OrderState()
+    )
+    assert res.cart.needs_clarification is True
+    assert "不够明确" in res.answer
+
+
+def test_add_without_a_ref_and_a_single_shown_product_auto_resolves():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "加入购物车", cart_items=[], session_products=_session(catalog, p0), order_state=OrderState()
+    )
+    assert {i.product_id for i in res.cart.items} == {p0}
+
+
+def test_cart_action_on_an_empty_cart_reports():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "删除第一个商品", cart_items=[], session_products=None, order_state=OrderState()
+    )
+    assert res.cart.needs_clarification is True
+    assert "购物车为空" in res.answer
+
+
+def test_remove_resolves_a_cart_item_by_llm_product_id():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    cart = [{"product_id": p0, "quantity": 1}, {"product_id": p1, "quantity": 1}]
+    res = CommerceService(catalog, llm=_StubLLM({"action": "remove", "product_ids": [p0]})).maybe_handle(
+        "删掉那个", cart_items=cart, session_products=None, order_state=OrderState()
+    )
+    assert {i.product_id for i in res.cart.items} == {p1}
+
+
+def test_cart_ordinal_out_of_range_clarifies():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    cart = [{"product_id": p0, "quantity": 1}, {"product_id": p1, "quantity": 1}]
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "删除第五个商品", cart_items=cart, session_products=None, order_state=OrderState()
+    )
+    assert res.cart.needs_clarification is True
+    assert "购物车里没有你说的第几个商品" in res.answer
+
+
+def test_maybe_handle_resolves_a_pending_action_via_an_ordinal_reply():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0 = catalog.products[0]["product_id"]
+    state = OrderState(pending_action=CommerceActionCandidate(action="add", target_scope="shown_products"))
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "第一个", cart_items=[], session_products=_session(catalog, p0), order_state=state
+    )
+    assert {i.product_id for i in res.cart.items} == {p0}
+
+
+# pure helpers
+
+def test_cart_summary_reports_an_empty_cart():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assert CommerceService(catalog)._cart_summary([]) == "购物车为空。"
+
+
+def test_coerce_int_handles_int_float_and_string_forms():
+    assert _coerce_int(3) == 3
+    assert _coerce_int(2.0) == 2
+    assert _coerce_int("3") == 3
+    assert _coerce_int("三") == 3
+    assert _coerce_int(None) is None
+    assert _coerce_int(True) is None
+    assert _coerce_int(["3"]) is None
+
+
+def test_looks_like_add_ref_for_bare_ordinal_when_no_cart_exists():
+    assert _looks_like_add_ref("第一件", has_cart=False) is True
+    assert _looks_like_add_ref("第一件", has_cart=True) is False
+    assert _looks_like_add_ref("加这个", has_cart=False) is True       # verb-then-ref
+    assert _looks_like_add_ref("第一个加入购物车", has_cart=True) is True  # ref-then-verb
+
+
+def test_looks_like_commerce_via_regex_fallbacks_without_a_keyword():
+    assert looks_like_commerce("第一个数量") is True   # ref + cart noun, no literal hint
+    assert looks_like_commerce("加第二个") is True      # verb + ordinal
+    assert looks_like_commerce("讲个笑话") is False
+
+
+def test_add_ordinal_out_of_range_asks_to_clarify():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    p0, p1 = _ids(catalog)
+    res = CommerceService(catalog, llm=None).maybe_handle(
+        "第五个加入购物车", cart_items=[], session_products=_session(catalog, p0, p1), order_state=OrderState()
+    )
+    assert res.cart.needs_clarification is True
+    assert "第几个商品" in res.answer
