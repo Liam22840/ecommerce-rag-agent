@@ -1106,9 +1106,15 @@ class ShoppingAssistant:
         """Record shown products in the single session-wide log. New products are appended in
         first-shown order (for recall). A re-shown product keeps its place but updates its
         last_seq/position (so the derived recency view stays correct)."""
-        if not session_id or not products:
+        if not session_id:
             return
         state = self._session(session_id)
+        # A fresh product list invalidates the previous comparison's winner, so a later "更好的那个"
+        # can't resolve to a stale winner from an unrelated earlier list. A comparison re-sets it right
+        # after this call; cart turns never get here, so it survives a compare -> "把更好的加入" follow-up.
+        state.last_winner_id = None
+        if not products:
+            return
         state.turn_seq += 1
         seq = state.turn_seq
         by_id = {item["id"]: item for item in state.shown_products}

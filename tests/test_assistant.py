@@ -373,6 +373,18 @@ def test_greeting_gate_only_catches_short_greetings():
     assert _looks_like_greeting("推荐面霜") is False
 
 
+def test_comparison_winner_cleared_on_new_search_but_survives_other_turns():
+    a = _assistant()
+    sid = "win"
+    a._session(sid).last_winner_id = "p_beauty_007"
+    # A turn that shows no new product list (e.g. a cart turn) must not drop the winner.
+    a._remember_turn(sid, "q", SearchFilters(), [])
+    assert a._session(sid).last_winner_id == "p_beauty_007"
+    # A fresh product list invalidates it, so a later "更好的那个" can't resolve to a stale winner.
+    a.prepare("推荐三款面霜", session_id=sid, top_k=3)
+    assert a._session(sid).last_winner_id is None
+
+
 # --- filter-keyed safe cache ---------------------------------------------------
 
 def _cached_assistant(cache: FilterCache, llm) -> ShoppingAssistant:
