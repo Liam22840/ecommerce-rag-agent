@@ -35,6 +35,10 @@ from server.comparison.resolver import _asks_for_current_two, _best_ref_match, _
 from server.comparison.text import _source_texts
 
 
+# Weight for a dimension the user explicitly named: high enough to outweigh another product winning
+# the other (auto-surfaced) evidence dimensions, so the answer to the asked question wins.
+_ASKED_DIMENSION_WEIGHT = 5.0
+
 ORDINALS = {
     "第一个": 0,
     "第一款": 0,
@@ -94,7 +98,8 @@ class ComparisonService:
         ]
         rows.extend(self._evidence_rows(products, focus_specs, query))
 
-        winner_product_id, recommendation = self._recommend(products, rows, filters)
+        asked = {spec.label for spec in focus_specs if spec.asked}
+        winner_product_id, recommendation = self._recommend(products, rows, filters, asked)
         summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
         return ProductComparison(
             products=cards,
@@ -379,9 +384,14 @@ class ComparisonService:
         products: list[dict[str, Any]],
         rows: list[ComparisonRow],
         filters: SearchFilters,
+        asked: set[str],
     ) -> tuple[str | None, str]:
         scores = {product["product_id"]: 0.0 for product in products}
         reason_dimensions: dict[str, list[str]] = {product["product_id"]: [] for product in products}
+        # A dimension the user explicitly named ("哪个更保湿") should decide the winner, even if the
+        # extractor also surfaced related dimensions; otherwise the holistic winner can contradict
+        # the actual question. The extractor (LLM) flags those dimensions; other (auto-surfaced) ones
+        # still rank, just with less weight.
         for row in rows:
             if not row.winner_product_id:
                 continue
@@ -390,6 +400,8 @@ class ComparisonService:
                 weight = 0.0
             elif row.dimension == "价格与SKU":
                 weight = 1.5 if _price_is_priority(filters) else 0.0
+            elif row.dimension in asked:
+                weight = _ASKED_DIMENSION_WEIGHT
             else:
                 weight = 2.0
             scores[row.winner_product_id] += weight
@@ -401,7 +413,7 @@ class ComparisonService:
         reasons = reason_dimensions[winner]
         reason_text = "、".join(reasons[:3]) if reasons else "综合证据"
         subject = self._price_subject(winner, products, filters) if "价格与SKU" in reasons else self._title(winner, products)
-        suffix = "；如果你要对比指定规格，请直接说明容量/规格，系统会按对应 SKU 比价。" if "价格与SKU" in reasons else "；如果你的优先级不同，可以继续指定预算、肤质或使用场景。"
+        suffix = "；如果你要对比指定规格，请直接说明容量/规格，系统会按对应 SKU 比价。" if "价格与SKU" in reasons else "；如果你的优先级不同，可以继续指定预算、偏好或使用场景。"
         return winner, f"更推荐{subject}：它在{reason_text}上更符合当前问题{suffix}"
 
     def _summary(

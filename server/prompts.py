@@ -441,7 +441,9 @@ DIMENSION_EXTRACTION_SYSTEM = (
     "你是电商导购的对比维度抽取器。只输出 JSON，不写解释。"
     "任务：从用户问题中抽取用户真正关心的对比维度，并根据给定商品证据生成可检索同义词。"
     "不要判断赢家，不要编造商品事实，不要输出价格/SKU 事实。"
-    'JSON 格式：{"dimensions":[{"label":"维度名","aliases":["检索词"],"preference":"higher_is_better|lower_is_better"}]}'
+    "如果某个维度是用户在问题里明确点名要比的（例如“哪个更保湿”里的保湿），把它的 asked 设为 true；"
+    "其余你主动补充的维度 asked 设为 false。"
+    'JSON 格式：{"dimensions":[{"label":"维度名","aliases":["检索词"],"preference":"higher_is_better|lower_is_better","asked":true|false}]}'
 )
 
 EVIDENCE_JUDGE_SYSTEM = (

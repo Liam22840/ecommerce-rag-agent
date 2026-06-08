@@ -27,6 +27,7 @@ class DimensionSpec:
     terms: tuple[str, ...]
     preference: str = "higher_is_better"
     evidence: bool = True
+    asked: bool = False
 
 
 def _dimension_extraction_messages(query: str, products: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -87,7 +88,7 @@ def _specs_from_llm_payload(
         if preference not in {"higher_is_better", "lower_is_better"}:
             preference = _infer_preference(query, label)
         seen.add(normalized_label)
-        specs.append(DimensionSpec(label=label, terms=matched_terms, preference=preference))
+        specs.append(DimensionSpec(label=label, terms=matched_terms, preference=preference, asked=bool(raw.get("asked"))))
     return _dedupe_specs(specs)[:4]
 
 
