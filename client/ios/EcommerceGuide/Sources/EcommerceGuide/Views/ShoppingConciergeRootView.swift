@@ -43,8 +43,8 @@ public struct ShoppingConciergeRootView: View {
                         screen = .chat
                     }
                 },
-                captureAction: { imageData in
-                    viewModel.sendPhoto(imageData: imageData, caption: "找同款")
+                captureAction: { imageData, caption in
+                    viewModel.sendPhoto(imageData: imageData, caption: caption)
                     withAnimation(.easeInOut(duration: 0.18)) {
                         screen = .chat
                     }
@@ -166,11 +166,16 @@ private struct OnboardingScreen: View {
 @available(iOS 17.0, macOS 13.0, *)
 private struct PhotoSearchScreen: View {
     let backAction: () -> Void
-    let captureAction: (Data) -> Void
+    let captureAction: (Data, String) -> Void
 
     @State private var pickerItem: PhotosPickerItem?
     @State private var isCameraPresented = false
     @State private var isSearching = false
+    // Once an image is picked it's staged here (not sent) so the shopper can add a caption first.
+    // The preview is decoded once at stage time, not in `body`, so typing the caption doesn't re-decode it.
+    @State private var stagedImage: Data?
+    @State private var stagedPreview: Image?
+    @State private var caption: String = ""
 
     // The Simulator has no camera, so the shutter is only live on a real device.
     private var cameraAvailable: Bool {
@@ -185,22 +190,86 @@ private struct PhotoSearchScreen: View {
         VStack(spacing: 0) {
             header
 
-            ZStack {
-                viewfinder
+            if let stagedImage {
+                reviewView(imageData: stagedImage)
+            } else {
+                ZStack {
+                    viewfinder
 
-                if isSearching {
-                    searchingOverlay
+                    if isSearching {
+                        searchingOverlay
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            controls
+                controls
+            }
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .cameraCover(isPresented: $isCameraPresented) { data in
-            captureAction(normalizedJPEG(data))
+            stage(data)
         }
+    }
+
+    // Stage a picked/captured photo: normalise to JPEG and decode the preview once (not on each render).
+    private func stage(_ data: Data) {
+        let jpeg = normalizedJPEG(data)
+        stagedImage = jpeg
+        stagedPreview = platformImage(data: jpeg)
+    }
+
+    // After a photo is chosen: preview it, let the shopper type an optional caption ("我想要同款外套"),
+    // and only send on tap so the image and the words go together.
+    private func reviewView(imageData: Data) -> some View {
+        VStack(spacing: 18) {
+            if let image = stagedPreview {
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            TextField("想找什么？例如：我想要同款外套", text: $caption)
+                .textFieldStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            HStack(spacing: 14) {
+                Button {
+                    stagedImage = nil
+                    stagedPreview = nil
+                    caption = ""
+                    pickerItem = nil
+                } label: {
+                    Text("重选")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    captureAction(imageData, caption)
+                } label: {
+                    Text("发送")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(GuideTheme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
     }
 
     private var header: some View {
@@ -306,7 +375,7 @@ private struct PhotoSearchScreen: View {
                 await MainActor.run {
                     isSearching = false
                     if let data {
-                        captureAction(normalizedJPEG(data))
+                        stage(data)
                     }
                 }
             }

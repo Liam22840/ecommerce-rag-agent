@@ -75,15 +75,15 @@ struct AssistantAvatarView: View {
 #if canImport(UIKit)
 import UIKit
 
-private func platformImage(data: Data) -> Image? {
+func platformImage(data: Data) -> Image? {
     UIImage(data: data).map { Image(uiImage: $0) }
 }
 #elseif canImport(AppKit)
 import AppKit
 
-private func platformImage(data: Data) -> Image? {
+func platformImage(data: Data) -> Image? {
     NSImage(data: data).map { Image(nsImage: $0) }
 }
 #else
-private func platformImage(data: Data) -> Image? { nil }
+func platformImage(data: Data) -> Image? { nil }
 #endif
