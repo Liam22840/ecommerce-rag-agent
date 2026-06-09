@@ -8,6 +8,9 @@ public final class ChatViewModel: ObservableObject {
     @Published public var cartItems: [CartItem]
     @Published public var isSending: Bool
     @Published public var errorMessage: String?
+    // The shipping address shown in the order card. Sent with every request so the order carries it,
+    // and re-synced from the server's order whenever one arrives (e.g. after a conversational change).
+    @Published public var shippingAddress: String = "北京市朝阳区望京SOHO T1 12层"
 
     public let conversationID: UUID
 
@@ -125,7 +128,8 @@ public final class ChatViewModel: ObservableObject {
             message: trimmedMessage,
             cartItems: cartItems,
             recentProductIDs: recentProductIDs,
-            imageData: imageData
+            imageData: imageData,
+            address: shippingAddress
         )
 
         streamTask?.cancel()
@@ -163,6 +167,10 @@ public final class ChatViewModel: ObservableObject {
         case .cartStatus(let summary):
             timeline.append(.cartStatus(id: UUID(), text: summary))
         case .orderStatus(let order):
+            // Keep the editable field in step with the order (e.g. after a conversational "改地址").
+            if !order.address.isEmpty {
+                shippingAddress = order.address
+            }
             timeline.append(.orderStatus(id: UUID(), order: order))
         case .done:
             finishCompletedStream()

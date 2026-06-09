@@ -44,6 +44,9 @@ class ClientContext(BaseModel):
     cart_items: list[dict[str, Any]] = Field(default_factory=list)
     recent_product_ids: list[str] = Field(default_factory=list, max_length=10)
     compare_product_ids: list[str] = Field(default_factory=list, max_length=3)
+    # The shipping address the client currently shows. Sent every turn so the order carries the
+    # real address; a conversational "把地址改成…" overrides it for that turn (see set_address).
+    address: str | None = Field(default=None, max_length=200)
 
 
 class SkuPrice(BaseModel):

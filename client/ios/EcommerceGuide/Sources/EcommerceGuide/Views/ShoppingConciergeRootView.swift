@@ -661,7 +661,7 @@ private struct OrderReviewScreen: View {
 }
 
 @available(iOS 17.0, macOS 13.0, *)
-private struct EditableOrderField: View {
+struct EditableOrderField: View {
     let title: String
     @Binding var text: String
     var axis: Axis = .horizontal

@@ -415,7 +415,8 @@ struct ChatRequestPayload: Encodable {
         self.clientContext = ClientContextPayload(
             cartItems: request.cartItems.map(CartItemPayload.init(cartItem:)),
             recentProductIDs: request.recentProductIDs,
-            compareProductIDs: request.compareProductIDs
+            compareProductIDs: request.compareProductIDs,
+            address: request.address
         )
     }
 
@@ -432,10 +433,12 @@ private struct ClientContextPayload: Encodable {
     let cartItems: [CartItemPayload]
     let recentProductIDs: [String]
     let compareProductIDs: [String]
+    let address: String
 
     enum CodingKeys: String, CodingKey {
         case cartItems = "cart_items"
         case recentProductIDs = "recent_product_ids"
         case compareProductIDs = "compare_product_ids"
+        case address
     }
 }

@@ -7,6 +7,7 @@ public struct ChatRequest: Equatable, Sendable {
     public let recentProductIDs: [String]
     public let compareProductIDs: [String]
     public let imageData: Data?
+    public let address: String
 
     public init(
         conversationID: UUID,
@@ -14,7 +15,8 @@ public struct ChatRequest: Equatable, Sendable {
         cartItems: [CartItem] = [],
         recentProductIDs: [String] = [],
         compareProductIDs: [String] = [],
-        imageData: Data? = nil
+        imageData: Data? = nil,
+        address: String = ""
     ) {
         self.conversationID = conversationID
         self.message = message
@@ -22,6 +24,7 @@ public struct ChatRequest: Equatable, Sendable {
         self.recentProductIDs = recentProductIDs
         self.compareProductIDs = compareProductIDs
         self.imageData = imageData
+        self.address = address
     }
 }
 

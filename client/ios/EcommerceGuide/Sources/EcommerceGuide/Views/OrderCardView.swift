@@ -6,6 +6,7 @@ import SwiftUI
 @available(iOS 17.0, macOS 13.0, *)
 struct OrderCardView: View {
     let order: Order
+    @Binding var shippingAddress: String
     let replyAction: (String) -> Void
 
     var body: some View {
@@ -20,6 +21,10 @@ struct OrderCardView: View {
             }
 
             if order.isAwaitingConfirmation {
+                // The shopper confirms or edits the address right here; 确认 sends it with the reply.
+                // Editing in chat ("把地址改成…") flows the same way and re-syncs this field.
+                EditableOrderField(title: "收货地址", text: $shippingAddress, axis: .vertical)
+
                 HStack(spacing: 10) {
                     Button {
                         replyAction("取消订单")

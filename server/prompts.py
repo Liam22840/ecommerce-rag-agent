@@ -121,18 +121,31 @@ ROUTER_SYSTEM = (
     "- search：想找、推荐、筛选商品，或对上一批结果追加/调整条件（如“便宜点的”“再要保湿的”）；"
     "也包括只针对某一个已展示商品问详情、评价、优缺点或品牌（如“第一个怎么样”“介绍下第二个”“它好用吗”“第一个的优点是什么”“第三个是什么牌子”）。\n"
     "- comparison：把两个或更多已展示或点名的商品放在一起比较、二选一（如“第一个和第二个哪个好”“对比这几款”）。只问单个商品好不好不算 comparison。\n"
-    "- cart：操作购物车——加入、删除、改数量、查看购物车里有什么、算总价；也包括用描述指代商品的购物车操作"
-    "（如“把最贵的删了”“买更适合的那个”“评价好的那个加入购物车”“加两件”）。\n"
-    "- checkout：下单、结算、确认订单、取消订单。\n"
+    "- cart：操作购物车——加入、删除、改数量、查看购物车里有什么、算总价；"
+    "也包括用描述指代商品的购物车操作（如“把最贵的删了”“买更适合的那个”“评价好的那个加入购物车”“加两件”）。\n"
+    "- checkout：下单、结算、确认订单、取消订单，以及设置或修改收货地址（如“把地址改成…”“寄到…”）。\n"
     "- plan：一句话里要连续完成多个动作（如“搜索后对比再加购”“推荐X并加入购物车然后下单”）。\n"
     "- chitchat：打招呼、闲聊、与购物无关。\n"
-    "context 告诉你：购物车里有没有商品、刚展示过商品没有、有没有待确认订单、是否刚做过对比。"
-    "据此判断有指代的话（“那个”“最贵的”“更适合的”）该归到哪类。"
-    "若有待确认订单，用户表示同意、认可或让你继续（即使很简短，如“嗯”“好”“可以”“没问题”“就这样”“麻烦了”）归到 checkout。\n"
+    "context 告诉你：上一轮属于哪一类、购物车里有没有商品、刚展示过商品没有、有没有待确认订单、是否刚做过对比。"
+    "据此判断有指代的话（“那个”“最贵的”“更适合的”）该归到哪类。\n"
+    "先判断这句话有没有真正的购物诉求：想找/浏览商品、操作购物车、或下单结算。结合 context 推理，不要只看字面：\n"
+    "  · 有待确认订单时，用户表示同意、认可或让你继续（即使很简短，如“嗯”“好”“可以”“没问题”“就这样”“麻烦了”）归到 checkout。\n"
+    "  · 没有待确认订单时，如果用户只是对上一轮结果附和、致谢、确认或随口回应，并没有新的购物诉求（这类话常出现在刚下完单、刚闲聊之后），归到 chitchat，不要当成 search 去硬推荐商品。\n"
+    "  · 想随意浏览商品的泛需求（哪怕很笼统，如“随便看看”“看看有什么”“有什么推荐”）仍归到 search。\n"
     "如果 route 是 chitchat，就直接在 reply 里写一句友好、简短的中文回应：打招呼/问你是谁就说你是导购助手并把话题引到购物"
     "（想买什么品类、预算或场景），与购物无关的问题就礼貌说你只负责帮挑选商品；其他 route 时 reply 填空字符串。\n"
     '只输出：{"route":"search|comparison|cart|checkout|plan|chitchat","reply":string}'
 )
+
+
+_LAST_ROUTE_LABEL = {
+    "product_search": "找/展示商品",
+    "comparison": "对比商品",
+    "cart_action": "操作购物车",
+    "checkout": "处理下单或订单",
+    "planned_task": "执行多步任务",
+    "chitchat": "闲聊",
+}
 
 
 def route_messages(
@@ -142,10 +155,12 @@ def route_messages(
     has_results: bool,
     has_draft: bool,
     just_compared: bool,
+    last_route: str | None = None,
 ) -> list[dict[str, str]]:
     payload = {
         "query": query,
         "context": {
+            "上一轮": _LAST_ROUTE_LABEL.get(last_route or "", "无（本轮是开场）"),
             "购物车有商品": has_cart,
             "刚展示过商品": has_results,
             "有待确认订单": has_draft,
@@ -350,7 +365,7 @@ def photo_answer_messages(query, filters, hits, catalog, low_confidence: bool, a
 COMMERCE_INTENT_SYSTEM = (
     "你是电商导购的购物车/下单意图解析器。只输出 JSON，不写解释。"
     "任务：判断用户是否想操作购物车或下单，并把动作解析成白名单 action。"
-    "白名单 action：add, remove, set_quantity, increment, decrement, clear, show_cart, checkout, confirm_order, cancel_order, none。"
+    "白名单 action：add, remove, set_quantity, increment, decrement, clear, show_cart, set_address, checkout, confirm_order, cancel_order, none。"
     "规则："
     "1. refs 放用户原话里的商品引用，如“第一个”“第二个”“这个”“刚才那个”。"
     "2. product_ids 只能从 session_products 或 cart_items 里复制，禁止自造。无法确定就留空并保留 refs。"
@@ -371,9 +386,11 @@ COMMERCE_INTENT_SYSTEM = (
     "8. 如果不是购物车或下单意图，action=none。"
     "9. 当 context 标明“待确认订单”为真时：用户表示同意、认可或让你继续（“可以了”“好”“行”“提交吧”“就这样”“用默认地址”等任何同意的说法）解析为 confirm_order，"
     "明确放弃或反对则为 cancel_order；没有待确认订单时，“下单/结算/去付款”才是 checkout。"
-    '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|checkout|confirm_order|cancel_order|none",'
+    "10. 用户要设置或修改收货地址（如“把地址改成上海徐汇区漕溪北路100号”“收货地址用…”“寄到…”“送到…”）时，action=set_address，"
+    "把地址原文照抄进 address（只照抄，不要编造或补全）；其余情况 address 填 null。"
+    '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|set_address|checkout|confirm_order|cancel_order|none",'
     '"refs":[string],"product_ids":[string],"items":[{"product_id":string,"quantity":number}],"quantity":number|null,'
-    '"sku":string|null,"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
+    '"sku":string|null,"address":string|null,"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
 )
 
 

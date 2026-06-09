@@ -520,6 +520,44 @@ def test_submitting_an_order_decrements_stock_and_blocks_resale():
     assert "库存不足" in again.answer
 
 
+def test_set_address_refreshes_a_live_draft_and_submits_with_it():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    svc = CommerceService(catalog, llm=None)
+    order_state = OrderState()
+    cart = _add(svc, "p_beauty_001", 1, order_state).cart
+    raw_cart = [i.model_dump() for i in cart.items]
+    draft = svc.apply_candidate(
+        CommerceActionCandidate(action="checkout", target_scope="cart_items", confidence="high"),
+        "下单", cart_items=raw_cart, session_products=[], order_state=order_state,
+    )
+    assert "默认地址" in draft.answer
+    res = svc.apply_candidate(
+        CommerceActionCandidate(action="set_address", address="上海市徐汇区漕溪北路100号", confidence="high"),
+        "把地址改成上海市徐汇区漕溪北路100号", cart_items=raw_cart, session_products=[], order_state=order_state,
+    )
+    assert order_state.address == "上海市徐汇区漕溪北路100号"
+    assert res.order is not None and res.order.status == "awaiting_confirmation"
+    assert "上海市徐汇区漕溪北路100号" in res.order.summary
+    confirmed = svc.apply_candidate(
+        CommerceActionCandidate(action="confirm_order", target_scope="cart_items", confidence="high"),
+        "确认", cart_items=raw_cart, session_products=[], order_state=order_state,
+    )
+    assert confirmed.order.status == "submitted"
+    assert confirmed.order.address == "上海市徐汇区漕溪北路100号"
+
+
+def test_set_address_without_a_draft_just_records_it():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    order_state = OrderState()
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="set_address", address="广州市天河区天河路1号", confidence="high"),
+        "寄到广州市天河区天河路1号", cart_items=[], session_products=[], order_state=order_state,
+    )
+    assert order_state.address == "广州市天河区天河路1号"
+    assert "广州市天河区天河路1号" in res.answer
+    assert res.order is None
+
+
 def test_add_honours_a_named_sku_price():
     # The user names a 规格; the cart line is priced for that SKU, not the lowest one.
     catalog = ProductCatalog.load(DATASET_ROOT)

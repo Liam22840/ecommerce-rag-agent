@@ -319,6 +319,7 @@ class IntentParser:
         has_results: bool,
         has_draft: bool,
         just_compared: bool,
+        last_route: str | None = None,
     ) -> tuple[str | None, str]:
         """Focused, route-only classifier — a short prompt that reliably decides the turn kind, which
         the overloaded intent parser does not. For chitchat it also answers inline, so that turn needs
@@ -329,7 +330,7 @@ class IntentParser:
         try:
             payload = json_object(self._llm.complete(route_messages(
                 query, has_cart=has_cart, has_results=has_results,
-                has_draft=has_draft, just_compared=just_compared,
+                has_draft=has_draft, just_compared=just_compared, last_route=last_route,
             )))
         except Exception:  # noqa: BLE001 (routing must degrade to the keyword fallback)
             return None, ""

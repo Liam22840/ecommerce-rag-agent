@@ -22,6 +22,7 @@ ActionType = Literal[
     "decrement",
     "clear",
     "show_cart",
+    "set_address",
     "checkout",
     "confirm_order",
     "cancel_order",
@@ -44,6 +45,8 @@ class CommerceActionCandidate:
     item_quantities: dict[str, int] = field(default_factory=dict)
     # The 规格/SKU phrase the user named ("50g标准装"), resolved to a real sku_id at add time.
     sku: str | None = None
+    # The shipping address the user named for a set_address action ("把地址改成上海…").
+    address: str | None = None
 
     @property
     def is_commerce(self) -> bool:
@@ -67,6 +70,9 @@ class OrderState:
     # stock is the catalogue's seeded base minus this. It decrements only when an order is submitted,
     # and persists for the session (it lives on the session's single OrderState).
     stock_sold: dict[str, int] = field(default_factory=dict)
+    # The shipping address for this session's order. Set each turn from the client's field and by a
+    # conversational set_address; _checkout / _confirm_order stamp it onto the order.
+    address: str = "默认地址"
 
 
 COMMERCE_ACTIONS = {
@@ -77,6 +83,7 @@ COMMERCE_ACTIONS = {
     "decrement",
     "clear",
     "show_cart",
+    "set_address",
     "checkout",
     "confirm_order",
     "cancel_order",
@@ -297,6 +304,8 @@ class CommerceService:
                     item_quantities[pid] = qty
         sku_raw = payload.get("sku")
         sku = sku_raw.strip() or None if isinstance(sku_raw, str) else None
+        address_raw = payload.get("address")
+        address = address_raw.strip() or None if isinstance(address_raw, str) else None
         return CommerceActionCandidate(
             action=action,
             refs=[str(ref).strip() for ref in payload.get("refs", []) if str(ref).strip()],
@@ -306,6 +315,7 @@ class CommerceService:
             confidence=payload.get("confidence") if payload.get("confidence") in {"high", "medium", "low"} else "low",
             item_quantities=item_quantities,
             sku=sku,
+            address=address,
         )
 
     def _apply(
@@ -335,6 +345,16 @@ class CommerceService:
         if candidate.action == "show_cart":
             summary = self._cart_summary(cart) if cart else "购物车为空。"
             return CommerceResult(summary, self._cart_update(cart, "show_cart", summary), None, intent)
+        if candidate.action == "set_address":
+            if candidate.address:
+                order_state.address = candidate.address
+            # A live draft is rebuilt so its card and summary show the new address (the cart is
+            # unchanged, so the signature still matches and 确认 still submits). With no draft we
+            # just record it for when the order is placed.
+            if order_state.draft is not None and cart:
+                order_state.pending_action = None
+                return self._checkout(cart, order_state, intent)
+            return CommerceResult(f"好的，收货地址已记为{order_state.address}，下单时会用它。", None, None, intent)
         if candidate.action == "checkout":
             order_state.pending_action = None
             return self._checkout(cart, order_state, intent)
@@ -455,8 +475,8 @@ class CommerceService:
             update = self._cart_update([], "checkout", "购物车为空，先添加商品后再下单。")
             return CommerceResult(update.summary, update, None, intent)
         subtotal = cart_subtotal(cart)
-        summary = f"订单待确认：共 {sum(item.quantity for item in cart)} 件商品，合计 {money(subtotal)}，收货地址为默认地址。确认后我会提交模拟订单。"
-        order = OrderDraft(status="awaiting_confirmation", items=cart, subtotal=subtotal, summary=summary)
+        summary = f"订单待确认：共 {sum(item.quantity for item in cart)} 件商品，合计 {money(subtotal)}，收货地址为{order_state.address}。确认后我会提交模拟订单。"
+        order = OrderDraft(status="awaiting_confirmation", items=cart, subtotal=subtotal, address=order_state.address, summary=summary)
         order_state.draft = order
         order_state.cart_signature = _cart_signature(cart)
         return CommerceResult(summary, self._cart_update(cart, "checkout", self._cart_summary(cart)), order, intent)
@@ -475,7 +495,7 @@ class CommerceService:
         for item in cart:
             order_state.stock_sold[item.product_id] = order_state.stock_sold.get(item.product_id, 0) + item.quantity
         summary = f"订单已提交，订单号 {order_id}，合计 {money(subtotal)}。"
-        order = OrderDraft(order_id=order_id, status="submitted", items=cart, subtotal=subtotal, summary=summary)
+        order = OrderDraft(order_id=order_id, status="submitted", items=cart, subtotal=subtotal, address=order_state.address, summary=summary)
         order_state.draft = None
         return CommerceResult(summary, self._cart_update([], "confirm_order", "订单已提交，购物车已清空。"), order, intent)
 

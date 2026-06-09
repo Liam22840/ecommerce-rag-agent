@@ -98,6 +98,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
             image_bytes=image_bytes,
+            client_address=request.client_context.address,
         )
         if key is not None:
             _maybe_store(cache, key, response)
@@ -189,6 +190,7 @@ def _sse_stream(
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
             image_bytes=image_bytes,
+            client_address=request.client_context.address,
         ):
             if isinstance(update, str):
                 yield _token_event(update)  # opener continuation

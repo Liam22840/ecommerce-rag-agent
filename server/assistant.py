@@ -125,6 +125,9 @@ class SessionState:
     shown_products: list[dict] = field(default_factory=list)
     turn_seq: int = 0
     order: OrderState = field(default_factory=OrderState)
+    # The route the previous turn took, given to the router as context so it can tell, e.g., a
+    # content-free "确认" after a finished order (-> chitchat) from a real command.
+    last_route: str | None = None
 
 
 class ShoppingAssistant:
@@ -180,13 +183,15 @@ class ShoppingAssistant:
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
         image_bytes: bytes | None = None,
+        client_address: str | None = None,
     ) -> PreparedChat:
         if image_bytes is not None:
             recent = self._recent_product_ids(session_id, client_recent_product_ids or [])
             return self._prepare_photo_search(query, session_id, top_k, image_bytes, recent)
         result = None
         for item in self._route(
-            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or []
+            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or [],
+            client_address,
         ):
             if isinstance(item, tuple):  # the opener-continuation strings are ignored off-stream
                 result = item
@@ -206,6 +211,7 @@ class ShoppingAssistant:
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
         image_bytes: bytes | None = None,
+        client_address: str | None = None,
     ) -> Iterator[str | ExecutionPlan | PreparedChat]:
         if image_bytes is not None:
             # The visual search is slow; flush an instant lead first so 首Token still lands under 1s.
@@ -216,7 +222,8 @@ class ShoppingAssistant:
             )
             return
         for item in self._route(
-            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or []
+            query, session_id, top_k, compare_product_ids or [], client_recent_product_ids or [], cart_items or [],
+            client_address,
         ):
             if isinstance(item, str):
                 yield item  # opener continuation — stream it the moment the route is known
@@ -238,13 +245,17 @@ class ShoppingAssistant:
         compare_product_ids: list[str],
         client_recent_product_ids: list[str],
         cart_items: list[dict],
+        client_address: str | None = None,
     ) -> Iterator[str | tuple[str, PreparedChat | PlannedTask]]:
         """Generator: yields the route-tailored opener continuation as soon as the router decides, then
         a final (kind, payload) tuple — ("prepared", PreparedChat) or ("planned", PlannedTask). A
         focused LLM router classifies the turn (a deterministic clarification-continuation sits in
         front, keyword router as the LLM-off fallback); the heavy intent parse runs only for
         search/comparison; commerce lets the LLM fill the action."""
-        order_state = self._session(session_id).order
+        state = self._session(session_id)
+        order_state = state.order
+        if client_address:
+            order_state.address = client_address
         session_products = self._commerce_products(session_id, client_recent_product_ids)
 
         # 1. Continue an open "which item?" clarification before anything routes.
@@ -279,13 +290,17 @@ class ShoppingAssistant:
             has_cart=bool(cart_items),
             has_results=bool(session_products),
             has_draft=order_state.draft is not None,
-            just_compared=self._session(session_id).last_winner_id is not None,
+            just_compared=state.last_winner_id is not None,
+            last_route=state.last_route,
         )
         if route is None:
             filters = self._parse_intent(query, session_id, cart_items)
             route = self._fallback_route(query, order_state, filters)
         if len(compare_product_ids) >= 2:
             route = "comparison"
+        # Remember this turn's route as context for the next turn's router (e.g. so a content-free
+        # "确认" after a finished order reads as an acknowledgement, not a fresh search).
+        state.last_route = route
 
         # Complete the opener now the route is known. Normally the lead is already out, so only the
         # route-specific tail remains (empty for chitchat, where the reply greets for itself). If the
@@ -311,7 +326,7 @@ class ShoppingAssistant:
         if route in {"cart_action", "checkout"}:
             commerce = self._commerce.maybe_handle(
                 query, cart_items=cart_items, session_products=session_products,
-                order_state=order_state, comparison_winner_id=self._session(session_id).last_winner_id,
+                order_state=order_state, comparison_winner_id=state.last_winner_id,
                 latest_batch_ids=self._latest_batch_ids(session_id),
             )
             if commerce is not None:
@@ -1086,10 +1101,12 @@ class ShoppingAssistant:
         client_recent_product_ids: list[str] | None = None,
         cart_items: list[dict] | None = None,
         image_bytes: bytes | None = None,
+        client_address: str | None = None,
     ) -> ChatResponse:
         prepared = self.prepare(
             query, session_id, top_k, compare_product_ids,
             client_recent_product_ids, cart_items, image_bytes=image_bytes,
+            client_address=client_address,
         )
         warnings = list(prepared.retrieval.warnings)
 
