@@ -63,6 +63,10 @@ class OrderState:
     draft: OrderDraft | None = None
     cart_signature: tuple[tuple[str, int], ...] = field(default_factory=tuple)
     pending_action: CommerceActionCandidate | None = None
+    # Per-session inventory ledger: product_id -> quantity already ordered this session. Available
+    # stock is the catalogue's seeded base minus this. It decrements only when an order is submitted,
+    # and persists for the session (it lives on the session's single OrderState).
+    stock_sold: dict[str, int] = field(default_factory=dict)
 
 
 COMMERCE_ACTIONS = {
@@ -116,6 +120,11 @@ class CommerceService:
     def __init__(self, catalog: ProductCatalog, llm: ChatClient | None = None):
         self._catalog = catalog
         self._llm = llm
+
+    def _available(self, product_id: str, order_state: OrderState) -> int:
+        """Stock a shopper can still buy: the catalogue's seeded base minus what this session has
+        already ordered. Pending cart lines don't count — only a submitted order decrements."""
+        return max(0, self._catalog.stock(product_id) - order_state.stock_sold.get(product_id, 0))
 
     def maybe_handle(
         self,
@@ -361,15 +370,38 @@ class CommerceService:
             sku_id = None
             if candidate.sku and len(resolved) == 1:
                 sku_id = self._catalog.sku_id_for_phrase(self._catalog.require(resolved[0].product_id), candidate.sku)
+            # Each line can't exceed available stock (seeded base minus what this session already
+            # ordered). The cap is on the resulting quantity, so an existing line + the new amount
+            # is bounded. A sold-out product is skipped; an over-order is added up to the limit.
+            added: list[tuple[Any, bool]] = []  # (resolved item, was it capped below the request?)
+            sold_out: list[Any] = []
             for item in resolved:
-                cart = self._upsert(cart, item.product_id, candidate.item_quantities.get(item.product_id, qty), sku_id)
+                want = candidate.item_quantities.get(item.product_id, qty)
+                room = self._available(item.product_id, order_state) - self._quantity_for(cart, item.product_id)
+                take = min(want, room)
+                if take <= 0:
+                    sold_out.append(item)
+                    continue
+                cart = self._upsert(cart, item.product_id, take, sku_id)
+                added.append((item, take < want))
             order_state.pending_action = None
             order_state.draft = None
+            if not added:
+                names = "、".join(f"「{item.product.title}」" for item in sold_out)
+                summary = f"{names}库存不足，暂时无法加入购物车。"
+                return CommerceResult(summary, self._cart_update(cart, "add", summary), None, intent)
             if len(resolved) == 1:
-                pid = resolved[0].product_id
-                summary = f"已将「{resolved[0].product.title}」加入购物车，数量 {self._quantity_for(cart, pid)}。"
+                item, capped = added[0]
+                pid = item.product_id
+                summary = f"已将「{item.product.title}」加入购物车，数量 {self._quantity_for(cart, pid)}。"
+                if capped:
+                    summary += f"（该商品库存仅剩 {self._available(pid, order_state)} 件，已按上限加入。）"
             else:
-                summary = "已将 " + "、".join(f"「{item.product.title}」" for item in resolved) + " 加入购物车。"
+                summary = "已将 " + "、".join(f"「{item.product.title}」" for item, _ in added) + " 加入购物车。"
+                if sold_out:
+                    summary += "（" + "、".join(f"「{item.product.title}」" for item in sold_out) + " 库存不足，未加入。）"
+                elif any(capped for _, capped in added):
+                    summary += "（部分商品已按库存上限加入。）"
             return CommerceResult(summary, self._cart_update(cart, "add", summary), None, intent)
 
         resolved_item = self._resolve_cart_item(candidate, cart)
@@ -380,9 +412,15 @@ class CommerceService:
             cart = [item for item in cart if item.product_id != resolved_item.product_id]
             summary = f"已从购物车删除「{resolved_item.product.title}」。"
         elif candidate.action == "increment":
-            delta = candidate.quantity or 1
-            cart = self._upsert(cart, resolved_item.product_id, delta)
-            summary = f"已将「{resolved_item.product.title}」数量增加到 {self._quantity_for(cart, resolved_item.product_id)}。"
+            avail = self._available(resolved_item.product_id, order_state)
+            take = min(candidate.quantity or 1, avail - resolved_item.quantity)
+            if take <= 0:
+                summary = f"「{resolved_item.product.title}」库存仅剩 {avail} 件，已无法再增加。"
+            else:
+                cart = self._upsert(cart, resolved_item.product_id, take)
+                summary = f"已将「{resolved_item.product.title}」数量增加到 {self._quantity_for(cart, resolved_item.product_id)}。"
+                if take < (candidate.quantity or 1):
+                    summary += f"（库存仅剩 {avail} 件，已按上限。）"
         elif candidate.action == "decrement":
             new_qty = resolved_item.quantity - (candidate.quantity or 1)
             cart = self._set_quantity(cart, resolved_item.product_id, new_qty)
@@ -396,10 +434,14 @@ class CommerceService:
                 cart = self._set_quantity(cart, resolved_item.product_id, resolved_item.quantity, sku_id)
                 summary = f"已将「{resolved_item.product.title}」换成{candidate.sku}。"
             else:
-                qty = max(0, candidate.quantity or 0)
+                avail = self._available(resolved_item.product_id, order_state)
+                requested = max(0, candidate.quantity or 0)
+                qty = min(requested, avail)
                 cart = self._set_quantity(cart, resolved_item.product_id, qty, sku_id)
                 summary = (f"已将「{resolved_item.product.title}」数量改成 {qty}。" if qty > 0
                            else f"已从购物车删除「{resolved_item.product.title}」。")
+                if qty > 0 and requested > avail:
+                    summary += f"（库存仅剩 {avail} 件，已按上限。）"
         else:
             order_state.pending_action = candidate
             return self._clarify(cart, "我还不能确定要怎么操作购物车，请换一种说法。", intent)
@@ -428,6 +470,10 @@ class CommerceService:
             return self._checkout(cart, order_state, intent)
         order_id = _order_id()
         subtotal = cart_subtotal(cart)
+        # The order is real now, so its quantities leave inventory for the rest of the session: a
+        # later add or search sees the reduced (or zero) availability. This is the "实时生效" part.
+        for item in cart:
+            order_state.stock_sold[item.product_id] = order_state.stock_sold.get(item.product_id, 0) + item.quantity
         summary = f"订单已提交，订单号 {order_id}，合计 {money(subtotal)}。"
         order = OrderDraft(order_id=order_id, status="submitted", items=cart, subtotal=subtotal, summary=summary)
         order_state.draft = None

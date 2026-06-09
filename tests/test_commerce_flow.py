@@ -441,7 +441,7 @@ def test_measure_word_quantity_is_understood_via_the_llm():
 
 def test_multi_ordinal_add_adds_all_referenced_products_deterministically():
     catalog = ProductCatalog.load(DATASET_ROOT)
-    p0, p1 = catalog.products[0]["product_id"], catalog.products[1]["product_id"]
+    p0, p1 = [p["product_id"] for p in catalog.products if catalog.stock(p["product_id"]) >= 5][:2]
     session = [{"id": p0, "title": catalog.get(p0)["title"]}, {"id": p1, "title": catalog.get(p1)["title"]}]
 
     res = CommerceService(catalog, llm=None).maybe_handle(
@@ -454,7 +454,7 @@ def test_multi_ordinal_add_adds_all_referenced_products_deterministically():
 def test_per_item_quantities_on_a_multi_add():
     # "第一个买两瓶，第二个买三瓶" — different counts per product via the LLM's items list.
     catalog = ProductCatalog.load(DATASET_ROOT)
-    p0, p1 = catalog.products[0]["product_id"], catalog.products[1]["product_id"]
+    p0, p1 = [p["product_id"] for p in catalog.products if catalog.stock(p["product_id"]) >= 5][:2]
     session = [{"id": p0, "title": catalog.get(p0)["title"]}, {"id": p1, "title": catalog.get(p1)["title"]}]
     svc = CommerceService(catalog, llm=_StubLLM(
         {"action": "add", "items": [{"product_id": p0, "quantity": 2}, {"product_id": p1, "quantity": 3}]}
@@ -472,6 +472,52 @@ def test_cart_line_quantity_is_capped_to_a_sane_maximum():
     item = build_cart_item(catalog, product, 1_000_000)
     assert item.quantity == MAX_CART_QUANTITY
     assert item.line_total == round(item.unit_price * MAX_CART_QUANTITY, 2)
+
+
+def _add(svc, pid, qty, order_state, cart_items=None):
+    candidate = CommerceActionCandidate(
+        action="add", product_ids=[pid], quantity=qty, target_scope="shown_products", confidence="high"
+    )
+    session = [{"id": pid, "title": svc._catalog.get(pid)["title"]}]
+    return svc.apply_candidate(candidate, "加入购物车", cart_items=cart_items or [], session_products=session, order_state=order_state)
+
+
+def test_add_is_capped_at_available_stock():
+    # p_digital_003 is pinned to 2; asking for 5 adds only what's in stock.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = _add(CommerceService(catalog, llm=None), "p_digital_003", 5, OrderState())
+    assert {i.product_id: i.quantity for i in res.cart.items} == {"p_digital_003": 2}
+    assert "库存" in res.answer
+
+
+def test_sold_out_product_is_not_added():
+    # p_beauty_002 is pinned to 0.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = _add(CommerceService(catalog, llm=None), "p_beauty_002", 1, OrderState())
+    assert res.cart.items == []
+    assert "库存不足" in res.answer
+
+
+def test_submitting_an_order_decrements_stock_and_blocks_resale():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    svc = CommerceService(catalog, llm=None)
+    order_state = OrderState()
+    cart = _add(svc, "p_digital_003", 2, order_state).cart
+    raw_cart = [i.model_dump() for i in cart.items]
+    svc.apply_candidate(
+        CommerceActionCandidate(action="checkout", target_scope="cart_items", confidence="high"),
+        "下单", cart_items=raw_cart, session_products=[], order_state=order_state,
+    )
+    confirmed = svc.apply_candidate(
+        CommerceActionCandidate(action="confirm_order", target_scope="cart_items", confidence="high"),
+        "确认", cart_items=raw_cart, session_products=[], order_state=order_state,
+    )
+    assert confirmed.order.status == "submitted"
+    assert order_state.stock_sold["p_digital_003"] == 2
+    # The session has now bought it out: a later add is refused.
+    again = _add(svc, "p_digital_003", 1, order_state)
+    assert again.cart.items == []
+    assert "库存不足" in again.answer
 
 
 def test_add_honours_a_named_sku_price():
@@ -510,7 +556,7 @@ def test_add_rejects_an_llm_id_that_was_not_shown():
 
 def test_fuzzy_multi_add_uses_the_llm_resolved_ids():
     catalog = ProductCatalog.load(DATASET_ROOT)
-    p0, p1 = catalog.products[0]["product_id"], catalog.products[1]["product_id"]
+    p0, p1 = [p["product_id"] for p in catalog.products if catalog.stock(p["product_id"]) >= 5][:2]
     session = [{"id": p0, "title": catalog.get(p0)["title"]}, {"id": p1, "title": catalog.get(p1)["title"]}]
     # "便宜的两个" has no ordinals; only the LLM can turn it into two ids.
     svc = CommerceService(catalog, llm=_StubLLM({"action": "add", "product_ids": [p0, p1]}))

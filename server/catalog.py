@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -24,6 +25,28 @@ BRAND_ALIASES: dict[str, str] = {
     "苹果": "Apple 苹果",
     "北面": "The North Face",
 }
+
+# The dataset carries no inventory, so stock is seeded deterministically at load time (the raw data
+# on disk is never modified). The number is stable per product_id, so every product — including any
+# added later — gets one automatically and it never drifts between runs. A few recognisable products
+# are pinned to low / sold-out so the cart blocking and the order-time decrement are reliably
+# demonstrable. These are seed values, not business logic: the source of truth, grounded reporting,
+# enforcement and real-time decrement built on top are the real parts.
+_STOCK_PINS: dict[str, int] = {
+    "p_digital_003": 2,   # iPhone 17 Pro Max — low, so "buy it out then it's gone" demos cleanly
+    "p_beauty_002": 0,    # 兰蔻小黑瓶 — sold out, so an add is refused outright
+}
+
+
+def _seed_stock(product_id: str) -> int:
+    # The formula gives every product a comfortably healthy, varied number (12-59); the few low /
+    # sold-out items used to demo blocking and decrement are the explicit pins above. Keeping the
+    # formula above any realistic cart quantity means normal adds always succeed, so only the
+    # deliberately pinned products are ever constrained.
+    if product_id in _STOCK_PINS:
+        return _STOCK_PINS[product_id]
+    return 12 + int(hashlib.sha1(product_id.encode("utf-8")).hexdigest(), 16) % 48
+
 
 # Chinese negation prefixes (a small closed grammatical class, not a meaning library). Used so an
 # excluded term ("不要油腻") doesn't drop a product whose own copy NEGATES it ("清爽不油腻").
@@ -76,6 +99,7 @@ class ProductCatalog:
             canonical = BRAND_ALIASES.get(product.get("brand", ""))
             if canonical:
                 product["brand"] = canonical
+            product["stock"] = _seed_stock(product["product_id"])
 
     @classmethod
     def load(cls, dataset_root: Path) -> "ProductCatalog":
@@ -91,6 +115,12 @@ class ProductCatalog:
                 raise ValueError(f"product JSON {path} missing product_id")
             products[product_id] = product
         return cls(products)
+
+    def stock(self, product_id: str) -> int:
+        """Seeded base stock for a product (0 when unknown). Available stock subtracts what the
+        session has already ordered; that lives in the commerce layer's per-session ledger."""
+        product = self._products.get(product_id)
+        return int(product.get("stock", 0)) if product else 0
 
     @property
     def categories(self) -> set[str]:
