@@ -210,14 +210,15 @@ class IntentParser:
             merged.brand = None
         if not merged.vision_confidence:
             merged.vision_confidence = "low"
-        # The visual category is a soft hint like the brand above, never a hard gate, at any
-        # confidence. A photo means "find similar", and the VLM's category can disagree with the
-        # catalogue's taxonomy (a 神仙水 the VLM reads as 精华 but the catalogue files under 化妆水);
-        # gating on it would drop the exact product from its own photo search. The image vector and
-        # vision_description still rank the right items up. A category the user typed in text always
-        # survives. vision_confidence still drives the honest "approximate" narration.
-        merged.category = rule.category
+        # The fine sub_category is always a soft hint: the VLM's read can disagree with the catalogue's
+        # taxonomy (a 神仙水 read as 精华 but filed under 化妆水), and gating on it would drop the product
+        # from its own photo. The broad category stays a gate when the VLM is confident, so cross-
+        # category junk (a milk carton surfacing for a phone photo) is kept out while a same-category
+        # taxonomy mismatch still survives. At low confidence the category relaxes too, letting visual
+        # similarity surface the nearest items. A category the user typed in text always wins.
         merged.sub_category = rule.sub_category
+        if merged.vision_confidence != "high":
+            merged.category = rule.category
         return merged
 
     def _vision_parse(
