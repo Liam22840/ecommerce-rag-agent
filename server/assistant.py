@@ -537,7 +537,7 @@ class ShoppingAssistant:
             comparison=comparison,
             cart=cart,
             order=order,
-            grounded_answer=self._planned_answer(plan, cart, comparison),
+            grounded_answer=self._planned_answer(plan),
             messages=[],
             plan=plan,
             result_status="ok" if products or cart or comparison else "no_results",
@@ -675,21 +675,14 @@ class ShoppingAssistant:
                 cards.append(self._catalog.product_card(product, matched_reason="已展示商品", filters=filters))
         return cards
 
-    def _planned_answer(
-        self,
-        plan: ExecutionPlan,
-        cart: CartUpdate | None,
-        comparison: ProductComparison | None,
-    ) -> str:
+    def _planned_answer(self, plan: ExecutionPlan) -> str:
         lines = ["我已按计划完成："]
         for step in plan.steps:
             marker = "✓" if step.status == "done" else "!"
             detail = f"：{step.summary}" if step.summary else ""
             lines.append(f"{marker} {step.title}{detail}")
-        if comparison is not None and comparison.recommendation:
-            lines.append(comparison.recommendation)
-        if cart is not None:
-            lines.append(cart.summary)
+        # Each step's bullet already carries its own summary (the cart line, the comparison verdict),
+        # so the outcome isn't repeated again at the tail.
         return "\n".join(lines)
 
     def _prepare_comparison(
@@ -868,6 +861,12 @@ class ShoppingAssistant:
         if filters.excluded_terms:
             excluded = self._excluded_ids(hits, filters.excluded_terms)
             hits = [hit for hit in hits if hit.product["product_id"] not in excluded]
+        # The user named a product type the catalogue can only gate as a sub-category group (运动鞋 ->
+        # 跑步鞋/篮球鞋/徒步鞋). Keep only cards in that group so an out-of-type "closest" match (a hoodie
+        # for a shoe query) is dropped and the answer is an honest no-match rather than off-type padding.
+        type_subs = self._type_subcategories(filters)
+        if type_subs:
+            hits = [hit for hit in hits if hit.product["sub_category"] in type_subs]
         hits = hits[:top_k]
         products = [
             self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters, self._catalog), filters=filters)
@@ -958,6 +957,16 @@ class ShoppingAssistant:
             filter_cache_key=key,
             from_filter_cache=True,
         )
+
+    def _type_subcategories(self, filters: SearchFilters) -> set[str]:
+        # Acceptable sub-categories when the user named a product type that didn't resolve to a single
+        # sub_category (运动鞋). Empty when a sub_category already gates, or no required term is a type.
+        if filters.sub_category:
+            return set()
+        subs: set[str] = set()
+        for term in filters.required_terms:
+            subs |= self._catalog.type_group_for_term(term)
+        return subs
 
     def _result_status(
         self,

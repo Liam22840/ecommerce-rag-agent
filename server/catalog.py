@@ -96,9 +96,21 @@ class ProductCatalog:
     def categories(self) -> set[str]:
         return {p["category"] for p in self._products.values()}
 
-    @property
+    @cached_property
     def sub_categories(self) -> set[str]:
+        # Immutable after load; cached so the per-turn type-group lookups don't rescan all products.
         return {p["sub_category"] for p in self._products.values()}
+
+    def type_group_for_term(self, term: str) -> set[str]:
+        """If `term` is a product-type word that several sub-categories share a trailing noun with
+        (运动鞋 -> 跑步鞋/篮球鞋/徒步鞋, all ending in 鞋), return that sub-category group. Empty when the
+        term isn't such a type — an attribute like 防水/保湿 shares no trailing noun with >=2 sub-
+        categories. Lets the search drop off-type "closest" padding for a type it can't otherwise gate."""
+        subs = self.sub_categories
+        if not term or term in subs:
+            return set()
+        group = {s for s in subs if s[-1] == term[-1]}
+        return group if len(group) >= 2 else set()
 
     def scope_summary(self) -> str:
         """Human-readable "what we actually stock", grouped sub-categories under each category.
