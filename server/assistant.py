@@ -22,6 +22,7 @@ from server.llm import ChatClient, ModelUnavailable
 from server.planner import PlannedTask, PlannerService, looks_like_planned_task
 from server.prompts import (
     CHITCHAT_REPLY,
+    CLARIFY_FALLBACK,
     build_messages,
     chitchat_messages,
     comparison_narration_messages,
@@ -298,6 +299,14 @@ class ShoppingAssistant:
             route = self._fallback_route(query, order_state, filters)
         if len(compare_product_ids) >= 2:
             route = "comparison"
+        # clarify backstop: the router proposed a clarifying question, but veto it down to a plain search
+        # when asking would be wrong — the turn already carries a distinguishing constraint, we asked
+        # last turn (state.last_route is still the previous route here, so no double-ask), or the item is
+        # out-of-catalogue. Done before recording last_route and the opener so both reflect the final route.
+        if route == "clarify":
+            filters = filters or self._parse_intent(query, session_id, cart_items)
+            if state.last_route == "clarify" or self._has_constraint(filters) or filters.intent_type == "chitchat":
+                route = "product_search"
         # Remember this turn's route as context for the next turn's router (e.g. so a content-free
         # "确认" after a finished order reads as an acknowledgement, not a fresh search).
         state.last_route = route
@@ -339,6 +348,17 @@ class ShoppingAssistant:
                 query, session_id, filters, compare_product_ids, recent_product_ids
             ))
             return
+        if route == "clarify":
+            # The query named a product type but gave nothing to narrow on. The router wrote the
+            # clarifying question into reply (no extra model call). Record the topic so the next answer
+            # inherits the category.
+            assert filters is not None  # the clarify backstop above always parses it first
+            filters.intent_type = "clarify"
+            self._remember_turn(session_id, query, filters, [])
+            yield ("prepared", self._prepare_chitchat(
+                query, session_id, filters, reply=chitchat_reply or CLARIFY_FALLBACK,
+            ))
+            return
         if route == "chitchat":
             # The router already wrote the reply inline, so chitchat needs no further model call.
             yield ("prepared", self._prepare_chitchat(
@@ -353,6 +373,23 @@ class ShoppingAssistant:
             return
         filters.intent_type = "product_search"
         yield ("prepared", self._prepare_search(query, session_id, filters, top_k, recent_product_ids))
+
+    @staticmethod
+    def _has_constraint(filters: SearchFilters) -> bool:
+        """True if the parse carries a distinguishing constraint — anything that narrows the search
+        beyond the bare product type. category / sub_category are deliberately excluded: a clarify query
+        always names a type (that's the topic), so they are not 'enough to search on'."""
+        return bool(
+            filters.max_price is not None
+            or filters.min_price is not None
+            or filters.brand
+            or filters.prefer_low_price
+            or filters.sort_by != "relevance"
+            or filters.required_terms
+            or filters.requested_specs
+            or filters.excluded_brands
+            or filters.excluded_terms
+        )
 
     def _parse_intent(self, query: str, session_id: str | None, cart_items: list[dict]) -> SearchFilters:
         return self._parser.parse(
