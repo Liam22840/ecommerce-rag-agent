@@ -447,6 +447,14 @@ def test_classify_route_maps_the_short_label_to_an_intent_type():
     assert route == "comparison"
 
 
+def test_classify_route_maps_clarify_and_carries_the_inline_question():
+    route, reply = _parser(
+        '{"route":"clarify","reply":"您更看重拍照、续航还是性价比？预算大概多少？"}'
+    ).classify_route("推荐一款手机", **_route_kwargs())
+    assert route == "clarify"
+    assert "预算" in reply
+
+
 def test_classify_route_degrades_to_keyword_fallback_when_llm_raises():
     route, reply = _parser(RuntimeError("router down")).classify_route("推荐面霜", **_route_kwargs())
     assert route is None and reply == ""
