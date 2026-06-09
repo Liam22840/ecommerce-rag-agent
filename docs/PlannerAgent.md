@@ -6,7 +6,7 @@ Planner Agent 用来支持复合购物任务，例如：
 
 > 帮我推荐跑鞋，对比最便宜的两双哪个更便宜，把更便宜的加入购物车。
 
-在没有 planner 之前，系统主要按单个 `intent_type` 路由：搜索、对比、购物车、结算只能选择一个主路径。这会导致复合句被某个模块提前抢走，例如购物车规则看到“加入购物车”后直接执行，跳过前面的推荐和对比。Planner 的目标是把一句复合需求拆成一串可验证、可执行的步骤，再调用现有模块完成每一步。
+单路由按单个 `intent_type` 分派，搜索、对比、购物车、结算各走一条主路径，遇到复合句容易被某个模块提前抢走，例如购物车一看到“加入购物车”就直接执行，跳过前面的推荐和对比。Planner 把一句复合需求拆成一串可验证、可执行的步骤，再调用现有模块完成每一步。
 
 ## 设计原则
 
@@ -38,15 +38,15 @@ Planner Agent 用来支持复合购物任务，例如：
   -> PlanStatusView 灰色步骤卡片
 ```
 
-新增/修改的主要文件：
+主要文件：
 
 - `server/planner.py`：PlannerService、PlannedTask、PlannedStep、deterministic fallback。
 - `server/prompts.py`：`planner_messages()` 和 planner system prompt。
 - `server/assistant.py`：在普通 commerce/search/comparison 路由前执行复合 planner，并调度每一步。
-- `server/schemas.py`：新增 `PlanStep`、`ExecutionPlan`，`ChatResponse.plan`。
-- `server/app.py`：同步响应返回 `plan`，流式接口新增 `event: plan`。
+- `server/schemas.py`：`PlanStep`、`ExecutionPlan`、`ChatResponse.plan`。
+- `server/app.py`：同步响应返回 `plan`，流式接口的 `event: plan`。
 - `server/commerce.py`：暴露 `apply_candidate()`，让 planner 能复用购物车执行逻辑。
-- `client/ios/.../ChatModels.swift`：新增 `PlanStep`、`.plan` timeline/event。
+- `client/ios/.../ChatModels.swift`：`PlanStep`、`.plan` timeline/event。
 - `client/ios/.../SSEChatService.swift`：解析 `event: plan`。
 - `client/ios/.../ChatViewModel.swift`：收到 `.plan` 后插入 timeline。
 - `client/ios/.../PlanStatusView.swift`：前端灰色 plan 步骤展示。
@@ -112,12 +112,12 @@ LLM planner 只能输出 JSON 或 `null`。单步需求输出 `null`，复合需
 
 ### 1. 判断是否为复合任务
 
-`looks_like_planned_task(message)` 会要求：
+由专注的 LLM 路由分类器（`classify_route`）判定这一轮是不是 `plan`。判定为 `plan` 时，assistant 用 `force=True` 调 planner，**绕过** `looks_like_planned_task`。`looks_like_planned_task(message)` 只在 LLM 不可用、走关键词兜底路由时作为前置判断，它要求：
 
-- 句子里有连接关系，例如“并且 / 然后 / 同时 / 顺便 / 逗号”。
+- 句子里有连接关系或分句符，例如“并且 / 然后 / 再 / 同时 / 顺便 / 逗号 / 句号”。
 - 至少包含两个可执行动作，例如搜索 + 加购、搜索 + 对比、对比 + 加购。
 
-这样可以避免单步需求被 planner 抢走。
+不论哪条路径，单步需求都不会被 planner 抢走（`_valid_plan` 要求至少两个动作，单步指代加购仍走购物车模块）。
 
 ### 2. 生成计划
 
@@ -132,6 +132,8 @@ message + categories + sub_categories + brands + session_products + cart_items
 
 如果 LLM 不可用、返回非法 JSON、或输出不可执行 action，则 fallback 到 deterministic planner。
 
+schema validation 就是「LLM 提议、确定性核验」在 planner 上的落点。`_coerce_step` 先把越界字段拉回白名单：`select_products` 的非法 criteria 收敛成 `relevance`，`cart_action` 的非法 target 收敛成 `previous_step`，不在白名单里的 action 整步丢掉。`_valid_plan` 再做结构校验，少于两个动作、出现多个 `product_search`、或者 `cart_action` 前面没有可取货的来源步骤（搜索、选择或对比），都算不可执行，退回兜底。兜底 planner 也照同一套白名单拼步骤：认价格 criteria、对比时选 2 款否则 1 款、有对比就把 target 设成 `comparison_winner`，否则 `selected_products`。
+
 ### 3. 执行搜索
 
 `product_search` 不直接做检索，而是复用：
@@ -142,7 +144,7 @@ ProductRetriever.retrieve()
 ShoppingAssistant._prepare_search()
 ```
 
-因此类目、品牌、预算、属性、价格排序等仍沿用现有搜索能力。
+因此类目、品牌、预算、属性、价格排序等仍沿用现有搜索能力。如果这一步的搜索被解析成 chitchat（想要的商品不在售，如“手表”），整个计划会中止：该步标记 failed、回一句“本店暂不提供这件商品。”，而不是继续把最近邻商品硬塞进购物车。
 
 ### 4. 执行选择
 
@@ -150,7 +152,7 @@ ShoppingAssistant._prepare_search()
 
 - `price_asc` 按 `ProductCard.price` 升序。
 - `price_desc` 按 `ProductCard.price` 降序。
-- `relevance` 保留搜索排序。
+- `rating_desc` / `relevance` 保留搜索排序——评分/相关度的排序是在 search 步骤里通过 `filters.sort_by` 完成的，select 步骤只再做价格排序。
 
 这里不会让 LLM 写商品 id，也不会让 LLM 自己判断价格。
 
@@ -181,6 +183,8 @@ CommerceService.apply_candidate()
 
 这样购物车 item、SKU、unit price、line total、subtotal 全部来自统一 commerce/pricing 逻辑。
 
+cart 步骤还会把 search 步骤解析出的 `requested_specs`（用户点名的规格，如“512GB高配版”）透传进 `_apply_cart_targets`，拼成 `candidate.sku`，让 planner 加购的那一行按该 SKU 定价，而不是默认回退到最便宜 SKU——和直接加购路径一致。
+
 ### 7. 返回和展示计划
 
 同步 API：
@@ -202,6 +206,8 @@ CommerceService.apply_candidate()
 event: plan
 data: {"type":"plan","steps":[...]}
 ```
+
+计划执行时每步实时推进：循环前先发一帧，每步开始置 running 再发一帧，done/failed 时再发一帧（`_prepare_planned_task_updates`），所以前端看到的是步骤逐个完成，而不是只收到最终状态。
 
 iOS 前端展示为灰色步骤卡片：
 
@@ -309,43 +315,16 @@ iOS 前端展示为灰色步骤卡片：
 - 走原搜索推荐链路。
 - 商品事实和价格说明仍来自商品库。
 
-## 测试策略
+## 测试
 
-先写黑箱测试，再实现：
+- `tests/test_planner_flow.py`（黑箱，只过 `/api/chat`）：复合推荐 + 最低价加购；推荐 + 选两款 + 对比 + 加购 winner；单步购物车 follow-up 不被 planner 接管；SSE 先发 `event: plan` 再发 cart；fake LLM 输出通用 planner schema，后端仍按真实 catalog 和 cart 执行。
+- 前端：`SSEEventParserTests.testParsesPlannerEvent`、`ChatViewModelFlowTests.testPlanEventAppendsPlanTimelineItem`。
 
-- `tests/test_planner_flow.py`
-  - 复合推荐 + 最低价加购。
-  - 推荐 + 选择两款 + 对比 + 加购 winner。
-  - 单步购物车 follow-up 不被 planner 接管。
-  - SSE 先发 `event: plan` 再发 cart。
-  - Fake LLM 输出通用 planner schema，后端仍必须按真实 catalog 和 cart 执行。
-
-前端测试：
-
-- `SSEEventParserTests.testParsesPlannerEvent`
-- `ChatViewModelFlowTests.testPlanEventAppendsPlanTimelineItem`
-
-已验证命令：
-
-```bash
-.venv/bin/python -m pytest tests/test_planner_flow.py -q
-.venv/bin/python -m pytest -q --ignore=tests/test_milvus_store.py
-TMPDIR=/private/tmp CLANG_MODULE_CACHE_PATH=.build/module-cache swift test --disable-sandbox
-git diff --check
-.venv/bin/python -m py_compile server/planner.py server/assistant.py server/app.py server/commerce.py
-```
-
-验证结果：
-
-- Planner 黑箱测试：5 passed。
-- 后端应用层测试：357 passed。
-- Swift package tests：33 executed, 1 skipped, 0 failures。
-- 全量 pytest 中 `tests/test_milvus_store.py` 的 3 个测试在当前沙箱下无法绑定本地 Unix socket，属于环境限制，不是 planner 逻辑失败。
+注意：`tests/test_milvus_store.py` 在受限 sandbox 下无法绑定本地 Unix socket，属环境限制，不是 planner 逻辑问题。
 
 ## 后续可扩展点
 
-1. 支持每一步实时 running/done 的多次 `event: plan` 更新，而不是 prepare 完成后一次性返回最终状态。
-2. 支持更多 action，例如 `remove_from_cart`、`set_quantity`、`apply_coupon`。
-3. 支持更细的 clarification，例如“你是想对比最便宜的两款，还是把最便宜的一款直接加入购物车？”
-4. 将 planner execution trace 存入 session，方便用户问“刚才为什么选这个？”。
-5. 给 planner 增加 offline evaluation set，按真实用户复合句统计路由准确率。
+1. 支持更多 action，例如 `remove_from_cart`、`set_quantity`、`apply_coupon`。
+2. 支持更细的 clarification，例如“你是想对比最便宜的两款，还是把最便宜的一款直接加入购物车？”
+3. 将 planner execution trace 存入 session，方便用户问“刚才为什么选这个？”。
+4. 给 planner 增加 offline evaluation set，按真实用户复合句统计路由准确率。
