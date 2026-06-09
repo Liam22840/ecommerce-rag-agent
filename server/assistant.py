@@ -892,8 +892,11 @@ class ShoppingAssistant:
             self._catalog.product_card(hit.product, matched_reason="你之前看过的商品", filters=filters)
             for hit in hits
         ]
+        # A single recalled product is a detail/focus view ("第一个怎么样"); it must not reshuffle the
+        # ordinal order. A multi-item recall ("回到那批") is a real list and becomes the current batch.
         return self._search_prepared(
-            query, session_id, filters, hits, products, RetrievalResult(hits=hits, source="lexical")
+            query, session_id, filters, hits, products, RetrievalResult(hits=hits, source="lexical"),
+            advances_order=len(product_ids) > 1,
         )
 
     def _search_prepared(
@@ -907,12 +910,16 @@ class ShoppingAssistant:
         result_status: ResultStatus = "ok",
         context: dict | None = None,
         filter_cache_key: str | None = None,
+        advances_order: bool = True,
     ) -> PreparedChat:
         # Shared tail for the search and recall paths: record the turn, narrate, package.
-        self._remember_shown_products(session_id, products)
+        self._remember_shown_products(session_id, products, advances_order)
         self._remember_turn(session_id, query, filters, products)
         grounded_answer = self._grounded_answer(query, filters, hits, result_status, context)
-        messages = build_messages(query, filters, hits, self._catalog, result_status, context)
+        # No retrieved products means no facts to narrate: skip the answer LLM (it would invent
+        # plausible-but-fake products) and let the deterministic grounded "no match" answer stand.
+        # Mirrors the photo path, which already guards this the same way.
+        messages = build_messages(query, filters, hits, self._catalog, result_status, context) if hits else []
         return PreparedChat(
             query=query,
             session_id=session_id,
@@ -1155,7 +1162,9 @@ class ShoppingAssistant:
         turns.append(TurnRecord(query=query, filters=filters, shown=shown))
         del turns[: -self._settings.history_turns]  # keep the most recent N turns
 
-    def _remember_shown_products(self, session_id: str | None, products: list[ProductCard]) -> None:
+    def _remember_shown_products(
+        self, session_id: str | None, products: list[ProductCard], advances_order: bool = True
+    ) -> None:
         """Record shown products in the single session-wide log. New products are appended in
         first-shown order (for recall). A re-shown product keeps its place but updates its
         last_seq/position (so the derived recency view stays correct)."""
@@ -1167,6 +1176,12 @@ class ShoppingAssistant:
         # after this call; cart turns never get here, so it survives a compare -> "把更好的加入" follow-up.
         state.last_winner_id = None
         if not products:
+            return
+        # A single-product detail/focus re-display ("第一个怎么样") must not advance the batch order:
+        # the product is already in memory, and bumping its recency floats it to the front of the
+        # ordinal view, so a later "第N个" would resolve against a reshuffled pool and target the
+        # wrong card. Only a genuine list (search / 换一批 / multi-item recall) advances the order.
+        if not advances_order:
             return
         state.turn_seq += 1
         seq = state.turn_seq
@@ -1211,17 +1226,21 @@ class ShoppingAssistant:
         """
         items: list[dict] = []
         seen: set[str] = set()
+        # Server batch memory is authoritative for ordinal order ("第N个" = the display order of the
+        # latest list). The client's recent buffer is only a fallback for when server memory is empty
+        # (a cached stream replay or a restart); used first it would resolve ordinals against the
+        # client's recency order, which a single-item detail view silently moves to the front.
+        for entry in self._session_products(session_id) or []:
+            pid = entry["id"]
+            if pid not in seen:
+                items.append(entry)
+                seen.add(pid)
         for pid in client_recent_product_ids:
             product = self._catalog.get(pid)
             if product is None or pid in seen:
                 continue
             items.append(self._commerce_entry(pid, product))
             seen.add(pid)
-        for entry in self._session_products(session_id) or []:
-            pid = entry["id"]
-            if pid not in seen:
-                items.append(entry)
-                seen.add(pid)
         return items or None
 
     def _cart_for_intent(self, cart_items: list[dict] | None) -> list[dict] | None:

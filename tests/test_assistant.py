@@ -851,6 +851,22 @@ def test_reshowing_a_product_saves_it_from_eviction():
     assert phone not in ids          # phone is now the least-recently-shown
 
 
+def test_single_item_detail_view_does_not_reshuffle_ordinal_order():
+    # Show a 3-item list, then a single-item detail re-display ("第一个怎么样" / "最后一个是什么牌子").
+    # The detail view must not float its product to the front, or a later "第N个" targets the wrong
+    # card. Ordinal resolution also follows the server's display order, not the client's recency.
+    assistant = _assistant(llm=None)
+    pids = ["p_beauty_007", "p_beauty_012", "p_beauty_008"]
+    cards = [assistant.catalog.product_card(assistant.catalog.require(pid)) for pid in pids]
+    assistant._remember_shown_products("s", cards, advances_order=True)         # a real 3-item list
+    assistant._remember_shown_products("s", [cards[2]], advances_order=False)   # detail view of #3
+
+    assert [e["id"] for e in assistant._session_products("s")] == pids          # #3 did NOT move to front
+    # Even when the client's recent buffer reshuffled #3 to the front, "第N个" follows server order.
+    pool = assistant._commerce_products("s", ["p_beauty_008", "p_beauty_007", "p_beauty_012"])
+    assert [e["id"] for e in pool] == pids
+
+
 # --- backtracking depth + recall interactions ----------------------------------
 
 def test_backtracking_recalls_a_product_beyond_the_turn_window():
