@@ -2,7 +2,7 @@
 
 ## 目标
 
-Cart Checkout Agent 对应 spec 里的 4.1「购物车与下单能力」。它负责把自然语言购物车指令转换成确定的业务操作，并维护购物车和模拟订单状态。
+Cart Checkout Agent 负责把自然语言购物车指令转换成确定的业务操作，并维护购物车和模拟订单状态。
 
 典型需求：
 
@@ -350,9 +350,28 @@ cart non-empty -> 创建 OrderDraft(status="awaiting_confirmation")
 
 ## 意图识别策略
 
-### 1. deterministic first
+遵循全局统一原则：**LLM 理解 → 确定性校验 / 执行 → 规则兜底**（见 `IntentAndRouting.md`）。
 
-`CommerceService` 先用规则解析高置信度指令：
+### 1. LLM 主解析
+
+`maybe_handle` 先调 LLM commerce parser（`_llm_parse`）：它读用户原话 + 购物车 + 本轮展示过的商品 + 有没有待确认订单，填出一个白名单动作结构（哪件、什么动作、数量、作用范围、SKU、地址）：
+
+```json
+{
+  "action": "add",
+  "refs": ["第一个"],
+  "product_ids": [],
+  "quantity": 1,
+  "target_scope": "shown_products",
+  "confidence": "high"
+}
+```
+
+LLM 只能输出这个结构，**不能输出价格、SKU 价格、订单金额**。
+
+### 2. 规则兜底
+
+LLM 不可用（或返回 `None`）时才退回确定性规则解析（`_deterministic_parse`），按关键词映射高置信度短句：
 
 ```text
 加入购物车 / 加购 / 买这个 -> add
@@ -366,39 +385,11 @@ cart non-empty -> 创建 OrderDraft(status="awaiting_confirmation")
 取消 / 先不买 -> cancel_order
 ```
 
-优点：
+优点：快、稳、对常见短句准、不依赖 LLM。注意：像收货地址这种没法靠关键词抽取的动作，兜底解析不会凭空合成（这一轮退回卡片编辑），与统一原则一致。
 
-- 快。
-- 稳定。
-- 对常见短句准确。
-- 不依赖 LLM 可用性。
+### 3. 校验与执行都在确定性代码里
 
-### 2. LLM fills incomplete candidate
-
-只有 deterministic candidate 不完整时才调用 LLM commerce parser。
-
-LLM prompt 要求只输出：
-
-```json
-{
-  "action": "add",
-  "refs": ["第一个"],
-  "product_ids": [],
-  "quantity": 1,
-  "target_scope": "shown_products",
-  "confidence": "high"
-}
-```
-
-LLM 不能输出价格、SKU、订单金额。
-
-### 3. candidate merge
-
-合并规则：
-
-- deterministic 是 high confidence 时优先。
-- 如果 LLM 给出冲突 high confidence action，后端保守返回 `none`，避免误操作。
-- 如果 deterministic 缺 refs 或 quantity，可采用 LLM 补全。
+不论候选来自 LLM 还是规则，`_apply` 都做校验和执行：被引用的 id 必须是真展示过的商品、数量 coerce 成整数、加购数量按库存钳制、价格 / SKU / 购物车金额全部来自 `pricing.py`。LLM 提议、后端核账，是这条链路的落点。
 
 ## 商品引用解析
 
@@ -435,6 +426,14 @@ client_context.cart_items
 如果购物车只有一个商品，`再加一件`、`减一件`、`数量改成 2` 可省略商品引用。
 
 如果购物车有多个商品但用户没说是哪一个，返回 clarification。
+
+### 解析护栏
+
+几个确定性护栏，避免把模糊指代落到错的商品上：
+
+- **冠军指代但没有冠军**：句子像在指对比赢家（“把更便宜那个加购”）但本会话还没有对比 winner 时，不去拿一个购物车里或最近的商品顶替，而是返回 clarification。
+- **“都 / 全部加入”限定在最近一批**：批量加购作用在最近一次展示的那批商品（`latest_batch_ids`），不是本会话见过的所有商品。
+- **纯换规格**：`set_quantity` 收到只换 SKU、不带数量的指令（“换成家庭装”）时，保持原数量、按点名的 SKU 重新定价。
 
 ## Clarification 机制
 
@@ -766,8 +765,6 @@ TMPDIR=/private/tmp CLANG_MODULE_CACHE_PATH=.build/module-cache swift test --dis
 客户端：`ChatViewModel.shippingAddress` 随每个请求发送、收到订单事件时从 `order.address` 回同步；`OrderCardView` 在待确认态展示可编辑地址行（复用 `EditableOrderField`），“确认”沿用既有发送路径把地址带上。
 
 ## 库存
-
-对应 spec 3.1「数据一致性保障：价格、库存等关键参数准确且实时生效」。
 
 **重要前提：库存是合成的。** 原始数据集没有库存字段。库存在加载时按 `product_id` 确定性生成（`_seed_stock`：`12 + sha1(pid) % 48`，得 12–59 的稳定值），并把两个好认的商品钉为低/售罄供演示（iPhone=2、兰蔻小黑瓶=0）。诚实地讲，库存数字是为这套固定数据集播种的演示值；可被评分的是建在其上的工程——单一真相源 → 如实播报 → 购物车强制 → 下单实时扣减——这几层是真的。
 

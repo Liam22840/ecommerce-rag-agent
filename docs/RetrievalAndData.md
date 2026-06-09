@@ -1,6 +1,6 @@
 # 数据与检索 (Data & Retrieval)
 
-对应 spec 3.1「数据工程与特征治理」。本文档说明商品数据如何被切分、向量化、并检索成可用于回答的事实。意图理解与路由见 `IntentAndRouting.md`，API / 流式 / 缓存 / 降级等服务层见 `BackendService.md`。
+本文档说明商品数据如何被切分、向量化、并检索成可用于回答的事实。意图理解与路由见 `IntentAndRouting.md`，API / 流式 / 缓存 / 降级等服务层见 `BackendService.md`。
 
 ## 商品库 (Product Catalog)
 
@@ -40,6 +40,8 @@ Milvus collection 是 `products`，主键 `chunk_id`，核心字段：`product_i
 
 项目默认不重建 `data/milvus.db`，把它当作团队已生成的 populated vector store；正常开发只读取它，只有明确需要重新 ingestion 时才运行 `ingest.py`。
 
+embedding 结果落在一个 append-only 的 JSONL 磁盘缓存（`ingestion/cache.py` 的 `EmbeddingCache`，key 是文本 / 图片字节的 SHA-256），ingestion 和 serve 共用：构造时整盘读进内存做 O(1) 查，重复文本 / 图片不再打 API。append-only 写保证中途失败不会损坏已有条目；因为服务端请求线程、预热线程、FastAPI 线程池会并发读写同一份缓存，`_index` 和写入都用一把锁串行化。
+
 ## 检索 (Hybrid Retrieval)
 
 检索在 `server/retrieval.py`，是 hybrid retrieval（向量 + lexical，RRF 融合）。
@@ -48,7 +50,7 @@ Milvus collection 是 `products`，主键 `chunk_id`，核心字段：`product_i
 
 满足以下条件才启用：`ENABLE_VECTOR_SEARCH=true`、`ARK_EMBEDDING_API_KEY` 已设置、`data/milvus.db` 可打开、Milvus collection 可用。流程：
 
-1. `DoubaoEmbedder.embed_text(query)` 把 query（或 LLM 改写后的 `rewritten_query`）转成 2048 维向量。注意：这个向量通常在意图解析时就已在后台并行算好（见 `BackendService.md` 的预热），这里直接复用 future，不重复 embedding。
+1. `DoubaoEmbedder.embed_text(query)` 把 query（或 LLM 改写后的 `rewritten_query`）转成 2048 维向量。注意：这个向量通常在意图解析时就已在后台并行算好（见 `BackendService.md` 的预热），这里直接复用 future，不重复 embedding。用户传图的「拍照找同款」轮则走 `embedder.embed_image`，得到的图片向量直接当 query 向量用，跳过文本 embedding，其余检索流程相同。
 2. `MilvusStore.search()` 查 top K chunk，按 product 去重到每个商品的最佳 chunk。
 3. 按命中的 `product_id` 回 `ProductCatalog` 取完整商品。
 4. 再应用 `SearchFilters` 的**硬结构化约束**（价格、类目、子类目、品牌、排除品牌）。卖点 `required_terms`、规格 `requested_specs` 不在这里硬过滤（只影响排序）。
@@ -56,7 +58,7 @@ Milvus collection 是 `products`，主键 `chunk_id`，核心字段：`product_i
 
 ### lexical 检索
 
-无论 vector 是否成功，都跑本地 lexical retrieval：按 query / 类目 / 子类目 alias / 品牌 / 关键词构造 query terms，对 title、brand、category、sub_category、marketing description、FAQ、review 做匹配。类目/子类目/品牌/title 命中权重更高；`required_terms`/`requested_specs` 在这里是**排序加权**而非过滤。硬结构化约束先过滤；`excluded_terms` 不在检索阶段过滤，而是检索后由 LLM judge 在候选集上判定剔除。
+无论 vector 是否成功，都跑本地 lexical retrieval：按 query / 类目 / 子类目 alias / 品牌 / 关键词构造 query terms，对 title、brand、category、sub_category、marketing description、FAQ、review 做匹配。类目/子类目/品牌/title 命中权重更高；`required_terms`/`requested_specs` 在这里是**排序加权**而非过滤。硬结构化约束先过滤；`excluded_terms` 不在检索阶段过滤，而是检索后由 LLM judge 在候选集上判定剔除。LLM 不可用时退回确定性的 `catalog.violates_excluded`：按分句、识别否定前缀（“不油腻”不算命中“油腻”），且只在商品自家文案（标题 + 描述，不含用户评价）正面声称该词时才剔除——同样是「LLM 理解，确定性兜底」。
 
 ### RRF 融合
 
@@ -64,10 +66,16 @@ vector 和 lexical 两路各自按本路得分排序后，用 **Reciprocal Rank 
 
 - 每个商品在某一路的贡献是 `1 / (RRF_K + rank)`（`RRF_K=60`），按名次而非原始分大小计分，避免余弦和词频两套量纲互相压制。
 - 同一商品被两路命中时贡献相加，`source` 记为 `hybrid`，snippets 取并集。
-- 按融合分排序，同分倾向更低价格；若用户表达了价格/评分偏好（`prefer_low_price`/`sort_by`），在融合排序之后再按价格或评分重排。
+- 按融合分排序，同分倾向更低价格。用户若明确要价格/评分排序（`sort_by=price_asc/price_desc/rating_desc`），最终重排不在检索里做，而在检索之后由上层 `ShoppingAssistant._order_hits` 完成，且仅当没有卖点 / 规格这类软信号时才触发：此时上层会把整个过滤后的类目都取出来再排序，避免在截断 top_k 时把真正最便宜 / 评分最高的商品先丢掉；带软信号（“便宜的敏感肌面霜”）时相关度排序才代表真实意图，不做这种重排。
 
 `retrieval_source` 取值：`vector`（只有向量出结果）/ `lexical`（只有关键词出结果）/ `hybrid`（两路共同参与）/ `none`（没找到匹配）。
 
 ## 数据一致性
 
-价格、SKU 等关键参数全部来自结构化字段（catalog → `ProductCard`/SKU → `pricing.py`），从不从 LLM 文案里取，所选 SKU 的价格也会随购物车回传保持一致。库存这一项数据集没有，是合成的，但它的台账、加购强制和下单扣减是真的（详见 `CartCheckoutAgent.md` 的「库存」节）。
+价格、SKU 等关键参数全部来自结构化字段（catalog → `ProductCard`/SKU → `pricing.py`），从不从 LLM 文案里取，所选 SKU 的价格也会随购物车回传保持一致。
+
+**品牌归一化（特征治理）**：同一家公司在数据集里有两种写法（Nike / 耐克、苹果 / Apple 苹果、北面 / The North Face）。加载时按 `BRAND_ALIASES` 把别名统一并到一个规范名（`catalog.load`），于是品牌集合、品牌过滤、商品卡三处对得上，不会因为写法不同把同一品牌拆成两个。
+
+**SKU 解析（价格 grounding）**：用户点名的规格短语（“512GB高配版”“50g标准装”）由 `catalog.sku_id_for_phrase` 双向子串匹配解析到真实 `sku_id`，匹配不上才回退默认 / 最低价 SKU；定价始终落在真实 SKU 上，不让模型编价。
+
+库存这一项数据集没有，是合成的，但它的台账、加购强制和下单扣减是真的（详见 `CartCheckoutAgent.md` 的「库存」节）。
