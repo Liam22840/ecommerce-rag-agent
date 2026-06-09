@@ -790,7 +790,8 @@ class ShoppingAssistant:
         self._remember_shown_products(session_id, products)
         self._remember_turn(session_id, query, filters, products)
         grounded = self._photo_grounded_answer(filters, hits, low_conf)
-        messages = photo_answer_messages(query, filters, hits, self._catalog, low_conf) if hits else []
+        available_by_id = self._available_by_id(session_id, hits)
+        messages = photo_answer_messages(query, filters, hits, self._catalog, low_conf, available_by_id) if hits else []
         return PreparedChat(
             query=query,
             session_id=session_id,
@@ -914,6 +915,16 @@ class ShoppingAssistant:
             advances_order=len(product_ids) > 1,
         )
 
+    def _available_by_id(self, session_id: str | None, hits: list[CatalogHit]) -> dict[str, int]:
+        """Session-aware availability for narration: each product's seeded base stock (already on the
+        product dict) minus what this session has ordered, so a re-narration after a buy-out shows it
+        sold out. Shared by the text and photo answer paths so they never disagree."""
+        sold = self._session(session_id).order.stock_sold if session_id else {}
+        return {
+            hit.product["product_id"]: max(0, int(hit.product.get("stock", 0)) - sold.get(hit.product["product_id"], 0))
+            for hit in hits
+        }
+
     def _search_prepared(
         self,
         query: str,
@@ -934,7 +945,12 @@ class ShoppingAssistant:
         # No retrieved products means no facts to narrate: skip the answer LLM (it would invent
         # plausible-but-fake products) and let the deterministic grounded "no match" answer stand.
         # Mirrors the photo path, which already guards this the same way.
-        messages = build_messages(query, filters, hits, self._catalog, result_status, context) if hits else []
+        # Availability the answer states is session-aware (see _available_by_id), so a re-search
+        # after buying a product out shows it as sold out.
+        available_by_id = self._available_by_id(session_id, hits)
+        messages = (
+            build_messages(query, filters, hits, self._catalog, result_status, context, available_by_id) if hits else []
+        )
         return PreparedChat(
             query=query,
             session_id=session_id,

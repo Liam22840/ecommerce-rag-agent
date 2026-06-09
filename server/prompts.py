@@ -72,6 +72,7 @@ SYSTEM_PROMPT = """你是一个电商智能导购助手。
 商品名、品牌、类目、规格、SKU 和价格都必须使用商品事实中的结构化字段。
 价格必须优先照抄 price_label；需要解释多规格时照抄 price_summary。
 禁止把 title 里的规格和 lowest_price 混在一起表达；如果 title 中的规格不同于 lowest_price_sku，只能说“xx元起（最低价SKU）”，并列出 SKU 价格明细。
+库存按商品事实里的 available 字段如实说明：available 为 0 表示已售罄，不要把售罄的商品作为首选推荐；库存偏低时可点明“仅剩 N 件”。不得编造或推测库存数字。
 当 result_status 不是 ok 时，按字段含义如实说明，不要把上一轮已展示的商品当作新推荐再列一遍；no_cheaper 时点出 context.cheapest_shown 作为当前最低价。这些情况都顺势建议换品类或调整条件。
 当 context.unmet_terms 非空时，商品库里没有明确标注这些属性或规格的商品：要如实说明（以下只是最接近的几款），并且不能声称某个候选具备它的商品事实里没有体现的属性或规格。
 用纯文本回答，不要使用任何 Markdown 标记（不要出现 **、*、#、`、列表符号等）；需要分条时直接用“1. 2. 3.”和换行。
@@ -86,15 +87,21 @@ def build_messages(
     catalog: ProductCatalog,
     result_status: str = "ok",
     context: dict | None = None,
+    available_by_id: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
-    facts = [catalog.product_facts(hit.product, filters) for hit in hits]
+    available_by_id = available_by_id or {}
+    facts = [
+        catalog.product_facts(hit.product, filters, available=available_by_id.get(hit.product["product_id"]))
+        for hit in hits
+    ]
     user_payload = {
         "user_query": query,
         "parsed_filters": filters.to_dict(),
         "candidate_products": facts,
         "result_status": result_status,
         "instruction": (
-            "请基于候选商品回答。最多推荐3款。不要提到不存在的优惠、库存或平台活动。"
+            "请基于候选商品回答。最多推荐3款。不要提到不存在的优惠或平台活动。"
+            "库存只按每个商品的 available 字段如实说明（available 为 0 即已售罄），不要编造库存数字。"
             "所有商品事实和价格必须来自 candidate_products，不允许自行推断或改写 SKU 价格。"
         ),
     }
@@ -319,8 +326,12 @@ PHOTO_ANSWER_SYSTEM = (
 )
 
 
-def photo_answer_messages(query, filters, hits, catalog, low_confidence: bool) -> list[dict]:
-    facts = [catalog.product_facts(hit.product, filters) for hit in hits]
+def photo_answer_messages(query, filters, hits, catalog, low_confidence: bool, available_by_id=None) -> list[dict]:
+    available_by_id = available_by_id or {}
+    facts = [
+        catalog.product_facts(hit.product, filters, available=available_by_id.get(hit.product["product_id"]))
+        for hit in hits
+    ]
     payload = {
         "user_text": query,
         "image_description": filters.vision_description,

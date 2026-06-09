@@ -55,6 +55,22 @@ def test_catalog_loads_all_products_and_builds_cards():
     assert card.detail_path == "/api/products/p_beauty_011"
 
 
+def test_seeded_stock_is_deterministic_pinned_and_surfaced():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    reloaded = ProductCatalog.load(DATASET_ROOT)
+
+    # Stable across loads, and the formula keeps every non-pinned product comfortably in stock.
+    assert catalog.stock("p_beauty_001") == reloaded.stock("p_beauty_001")
+    assert catalog.stock("p_beauty_001") >= 12
+    # Demo pins: one sold out, one low.
+    assert catalog.stock("p_beauty_002") == 0
+    assert catalog.stock("p_digital_003") == 2
+    # The answer model is given availability; the base value is used when no session value is passed.
+    facts = catalog.product_facts(catalog.require("p_digital_003"))
+    assert facts["available"] == 2
+    assert catalog.product_facts(catalog.require("p_digital_003"), available=0)["available"] == 0
+
+
 def test_catalog_exposes_sku_safe_price_labels():
     catalog = ProductCatalog.load(DATASET_ROOT)
 

@@ -194,7 +194,9 @@ class ProductCatalog:
             matched_reason=matched_reason,
         )
 
-    def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
+    def product_facts(
+        self, product: dict[str, Any], filters: SearchFilters | None = None, available: int | None = None
+    ) -> dict[str, Any]:
         # Kept lean to cut answer-prompt size (faster first token). Price/SKU fields are
         # load-bearing for grounding and stay whole. The price rule lives once in SYSTEM_PROMPT
         # rather than per product, and the free-text fields are trimmed to a couple of short
@@ -215,6 +217,9 @@ class ProductCatalog:
             "selected_price_sku": selected_sku,
             "sku_prices": self.sku_prices(product),
             "sku_count": len(product.get("skus", [])),
+            # Available stock (session-aware when the caller passes it, else the seeded base). The
+            # answer model reports it verbatim and never invents a number.
+            "available": available if available is not None else int(product.get("stock", 0)),
             "description": trim(product.get("rag_knowledge", {}).get("marketing_description", ""), 160),
             "faq": [
                 {"question": trim(str(faq.get("question", "")), 60), "answer": trim(str(faq.get("answer", "")), 120)}

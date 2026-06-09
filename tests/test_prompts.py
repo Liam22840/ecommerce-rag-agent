@@ -33,7 +33,7 @@ def test_vision_intent_messages_include_session_context_only_when_present():
 
 def test_photo_answer_messages_carry_confidence_and_facts():
     class _Cat:
-        def product_facts(self, product, filters=None):
+        def product_facts(self, product, filters=None, available=None):
             return {"product_id": product["product_id"], "price_label": "99元"}
 
     from server.intent import SearchFilters
