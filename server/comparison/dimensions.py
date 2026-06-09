@@ -88,6 +88,12 @@ def _specs_from_llm_payload(
             continue
         matched_terms = tuple(term for term in terms if normalize(term) in corpus)
         if not matched_terms:
+            # The user explicitly asked about this, but no product evidences it. Keep a marker (no
+            # terms, non-evidence) so the comparison discloses the gap instead of silently deciding
+            # on other dimensions. Dimensions the user didn't ask about are still dropped.
+            if raw.get("asked"):
+                seen.add(normalized_label)
+                specs.append(DimensionSpec(label=label, terms=(), evidence=False, asked=True))
             continue
         preference = str(raw.get("preference", "")).strip()
         if preference not in {"higher_is_better", "lower_is_better"}:

@@ -407,18 +407,25 @@ class ComparisonService:
             elif row.dimension in asked:
                 weight = _ASKED_DIMENSION_WEIGHT
             else:
-                weight = 2.0
+                # A price-led comparison is settled by the price row; auto-surfaced quality
+                # dimensions must not outvote it (the user asked about price, not these).
+                weight = 0.0 if price_led else 2.0
             scores[row.winner_product_id] += weight
             if weight > 0:
                 reason_dimensions[row.winner_product_id].append(row.dimension)
         winner = max(scores, key=scores.get)
+        # The user may have asked about something no product evidences ("哪个更防水" on two T-shirts):
+        # disclose that gap instead of quietly deciding on other dimensions.
+        evidenced = {row.dimension for row in rows if row.winner_product_id}
+        unevidenced = [dim for dim in asked if dim not in evidenced]
+        gap = f"商品库里没有关于{'、'.join(unevidenced)}的明确信息。" if unevidenced else ""
         if scores[winner] <= 0:
-            return None, "这几款商品各有侧重，商品库证据不足以给出单一绝对赢家。建议根据你更看重的维度继续筛选。"
+            return None, gap + "这几款商品各有侧重，商品库证据不足以给出单一绝对赢家。建议根据你更看重的维度继续筛选。"
         reasons = reason_dimensions[winner]
         reason_text = "、".join(reasons[:3]) if reasons else "综合证据"
         subject = self._price_subject(winner, products, filters) if "价格与SKU" in reasons else self._title(winner, products)
         suffix = "；如果你要对比指定规格，请直接说明容量/规格，系统会按对应 SKU 比价。" if "价格与SKU" in reasons else "；如果你的优先级不同，可以继续指定预算、偏好或使用场景。"
-        return winner, f"更推荐{subject}：它在{reason_text}上更符合当前问题{suffix}"
+        return winner, gap + f"更推荐{subject}：它在{reason_text}上更符合当前问题{suffix}"
 
     def _summary(
         self,
