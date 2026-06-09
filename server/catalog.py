@@ -299,7 +299,13 @@ class ProductCatalog:
         if not spec:
             return None
         for item in self.sku_prices(product):
-            if item["sku_id"] is not None and spec in normalize_spec(item["label"]):
+            if item["sku_id"] is None:
+                continue
+            label = normalize_spec(item["label"])
+            # Match either direction: the user may name a superset of the label ("…版本" vs the
+            # label's "…版") or a subset. One-directional substring missed the superset case and
+            # silently fell back to the cheapest SKU.
+            if spec in label or label in spec:
                 return item["sku_id"]
         return None
 

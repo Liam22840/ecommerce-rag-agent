@@ -558,12 +558,14 @@ def _pool_product_id(item: dict[str, Any] | CartItem) -> str:
 
 def _dedupe_cart(items: list[CartItem], catalog: ProductCatalog) -> list[CartItem]:
     by_id: dict[str, int] = {}
+    sku_by_id: dict[str, str | None] = {}
     order: list[str] = []
     for item in items:
         if item.product_id not in by_id:
             order.append(item.product_id)
+            sku_by_id[item.product_id] = item.sku_id  # keep the chosen SKU; rebuilding without it reverts to the cheapest
         by_id[item.product_id] = by_id.get(item.product_id, 0) + item.quantity
-    return [build_cart_item(catalog, catalog.require(pid), qty) for pid, qty in ((pid, by_id[pid]) for pid in order)]
+    return [build_cart_item(catalog, catalog.require(pid), by_id[pid], sku_by_id[pid]) for pid in order]
 
 
 def _looks_like_add_ref(text: str, has_cart: bool) -> bool:
