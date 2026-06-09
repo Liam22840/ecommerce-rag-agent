@@ -41,9 +41,9 @@ def opener_lead() -> str:
 
 
 def opener_continuation(route: str, label: str | None = None) -> str:
-    """The route-specific tail, streamed once the router decides. Empty for chitchat (its reply greets
-    for itself)."""
-    if route == "chitchat":
+    """The route-specific tail, streamed once the router decides. Empty for chitchat and clarify (their
+    replies are self-contained — a clarify must not promise "我来帮您找…" right before asking a question)."""
+    if route in ("chitchat", "clarify"):
         return ""
     tail = _OPENER_TAILS.get(route) or (f"我来帮您找{label}" if label else "我帮您找找")
     return f"{tail}～\n"
@@ -52,7 +52,7 @@ def opener_continuation(route: str, label: str | None = None) -> str:
 def opener_text(route: str, label: str | None = None) -> str:
     """The whole opener as one string (lead + tail). Used by the cached replay path, which has no router
     to wait on, so it can be flushed in one go."""
-    if route == "chitchat":
+    if route in ("chitchat", "clarify"):
         return ""
     return opener_lead() + opener_continuation(route, label)
 
@@ -125,6 +125,9 @@ ROUTER_SYSTEM = (
     "也包括用描述指代商品的购物车操作（如“把最贵的删了”“买更适合的那个”“评价好的那个加入购物车”“加两件”）。\n"
     "- checkout：下单、结算、确认订单、取消订单，以及设置或修改收货地址（如“把地址改成…”“寄到…”）。\n"
     "- plan：一句话里要连续完成多个动作（如“搜索后对比再加购”“推荐X并加入购物车然后下单”）。\n"
+    "- clarify：用户点名了某一类商品，但完全没给任何能缩小范围的条件——没有预算/价位、没有使用场景/用途、没有看重的功能/卖点、也没有品牌（如“推荐一款手机”“想买个面霜”）。"
+    "这种太宽泛、直接推会很碰运气的，先反问一句再推。注意：只要带了任何一个条件（“适合油皮的洗面奶”“两千以内的耳机”“最便宜的手机”）就归 search，不要 clarify；"
+    "“随便看看”“有什么推荐”这类没点名品类的泛逛也归 search。\n"
     "- chitchat：打招呼、闲聊、与购物无关。\n"
     "context 告诉你：上一轮属于哪一类、购物车里有没有商品、刚展示过商品没有、有没有待确认订单、是否刚做过对比。"
     "据此判断有指代的话（“那个”“最贵的”“更适合的”）该归到哪类。\n"
@@ -132,9 +135,12 @@ ROUTER_SYSTEM = (
     "  · 有待确认订单时，用户表示同意、认可或让你继续（即使很简短，如“嗯”“好”“可以”“没问题”“就这样”“麻烦了”）归到 checkout。\n"
     "  · 没有待确认订单时，如果用户只是对上一轮结果附和、致谢、确认或随口回应，并没有新的购物诉求（这类话常出现在刚下完单、刚闲聊之后），归到 chitchat，不要当成 search 去硬推荐商品。\n"
     "  · 想随意浏览商品的泛需求（哪怕很笼统，如“随便看看”“看看有什么”“有什么推荐”）仍归到 search。\n"
+    "  · 如果上一轮就是“反问澄清”，说明用户正在回答你刚才的反问，这一轮要按他补充的条件去 search（或对应动作），不要再 clarify。\n"
     "如果 route 是 chitchat，就直接在 reply 里写一句友好、简短的中文回应：打招呼/问你是谁就说你是导购助手并把话题引到购物"
-    "（想买什么品类、预算或场景），与购物无关的问题就礼貌说你只负责帮挑选商品；其他 route 时 reply 填空字符串。\n"
-    '只输出：{"route":"search|comparison|cart|checkout|plan|chitchat","reply":string}'
+    "（想买什么品类、预算或场景），与购物无关的问题就礼貌说你只负责帮挑选商品。\n"
+    "如果 route 是 clarify，就在 reply 里写一句简短的中文反问，给出 2-3 个和该品类相关的方向让用户选（如手机可问预算、拍照还是续航；面霜可问肤质、保湿还是抗老）。\n"
+    "其他 route 时 reply 填空字符串。\n"
+    '只输出：{"route":"search|comparison|cart|checkout|plan|clarify|chitchat","reply":string}'
 )
 
 
@@ -144,6 +150,7 @@ _LAST_ROUTE_LABEL = {
     "cart_action": "操作购物车",
     "checkout": "处理下单或订单",
     "planned_task": "执行多步任务",
+    "clarify": "反问澄清",
     "chitchat": "闲聊",
 }
 
@@ -512,6 +519,9 @@ CHITCHAT_REPLY = (
     "你好呀～我是你的购物助手。告诉我你想买什么就行，比如品类、预算或使用场景"
     "（例如“两三百的敏感肌面霜”“适合通勤的降噪耳机”），我来帮你挑选和对比。"
 )
+
+# Fallback question for a clarify turn when the router didn't supply its own (e.g. empty reply).
+CLARIFY_FALLBACK = "好的～为了帮您挑得更准，您主要看重哪方面呢？比如预算大概多少、主要在什么场景用，或者最在意哪个功能？"
 
 CHITCHAT_SYSTEM = (
     "你是电商导购助手。用户这句话要么与具体购物需求无关（打招呼、道谢、闲聊、问你是谁或你能做什么等），"

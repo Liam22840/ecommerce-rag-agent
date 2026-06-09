@@ -71,7 +71,7 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
 }
 
 SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
-INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout", "planned_task"}
+INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout", "planned_task", "clarify"}
 
 # Rule-fallback comparison detection. Kept local (not imported from comparison.py,
 # which imports SearchFilters from here) so the rule path can set intent_type when the
@@ -308,7 +308,7 @@ class IntentParser:
 
     _ROUTE_MAP = {
         "search": "product_search", "comparison": "comparison", "cart": "cart_action",
-        "checkout": "checkout", "plan": "planned_task", "chitchat": "chitchat",
+        "checkout": "checkout", "plan": "planned_task", "clarify": "clarify", "chitchat": "chitchat",
     }
 
     def classify_route(

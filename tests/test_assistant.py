@@ -12,6 +12,7 @@ from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import SearchFilters
 from server.llm import ModelUnavailable
+from server.prompts import opener_continuation
 from server.retrieval import ProductRetriever, RetrievalResult
 from server.textutil import dedupe_ids
 
@@ -1107,3 +1108,82 @@ def test_unrecognised_pending_reply_falls_through_to_normal_routing():
     prepared = assistant.prepare("推荐面霜", session_id="s", top_k=3)
     assert prepared.filters.intent_type == "product_search"
     assert prepared.products
+
+
+# --- proactive clarification (主动反问) -----------------------------------------
+
+class _RouteParseLLM:
+    """Intent LLM with separately queued router and parse responses, for clarify-route tests.
+    The router call is the one whose system prompt is the 意图路由器; everything else is a parse."""
+
+    available = True
+
+    def __init__(self, router, parses):
+        self._router = list(router)
+        self._parses = list(parses)
+
+    def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return self._router.pop(0) if self._router else json.dumps({"route": "search"})
+        return self._parses.pop(0) if self._parses else "{}"
+
+
+_CLARIFY_Q = "您更看重拍照、续航还是性价比？预算大概多少？"
+_PHONE_TOPIC = json.dumps({"intent_type": "product_search", "category": "数码电子", "sub_category": "智能手机"})
+
+
+def test_clarify_asks_and_remembers_topic():
+    intent_llm = _RouteParseLLM(
+        router=[json.dumps({"route": "clarify", "reply": _CLARIFY_Q})],
+        parses=[_PHONE_TOPIC],
+    )
+    prepared = _assistant_with_intent(intent_llm).prepare("推荐一款手机", session_id="s", top_k=3)
+    assert prepared.products == []
+    assert prepared.grounded_answer == _CLARIFY_Q
+    assert prepared.filters.intent_type == "clarify"
+    assert prepared.filters.sub_category == "智能手机"  # topic recorded for next-turn carry-over
+
+
+def test_clarify_carries_topic_into_the_next_turn():
+    intent_llm = _RouteParseLLM(
+        router=[json.dumps({"route": "clarify", "reply": _CLARIFY_Q}), json.dumps({"route": "search"})],
+        parses=[_PHONE_TOPIC, json.dumps({"intent_type": "product_search", "max_price": 4000,
+                                          "required_terms": ["拍照"]})],
+    )
+    assistant = _assistant_with_intent(intent_llm)
+    assistant.prepare("推荐一款手机", session_id="s", top_k=3)              # clarify
+    prepared = assistant.prepare("拍照优先，预算4000", session_id="s", top_k=5)  # answer
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.filters.sub_category == "智能手机"     # inherited topic
+    assert prepared.filters.max_price == 4000
+    assert prepared.products and all(p.price <= 4000 for p in prepared.products)
+
+
+def test_clarify_downgrades_when_a_constraint_is_already_present():
+    # The router proposes clarify, but the parse already carries a distinguishing constraint (max_price).
+    intent_llm = _RouteParseLLM(
+        router=[json.dumps({"route": "clarify", "reply": _CLARIFY_Q})],
+        parses=[json.dumps({"intent_type": "product_search", "category": "数码电子",
+                            "sub_category": "智能手机", "max_price": 4000})],
+    )
+    prepared = _assistant_with_intent(intent_llm).prepare("4000以内的手机", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.products
+
+
+def test_clarify_does_not_ask_twice_in_a_row():
+    # last_route is clarify from turn 1; even if the router asks again, turn 2 downgrades to search.
+    intent_llm = _RouteParseLLM(
+        router=[json.dumps({"route": "clarify", "reply": _CLARIFY_Q}),
+                json.dumps({"route": "clarify", "reply": _CLARIFY_Q})],
+        parses=[_PHONE_TOPIC, _PHONE_TOPIC],
+    )
+    assistant = _assistant_with_intent(intent_llm)
+    assistant.prepare("推荐一款手机", session_id="s", top_k=3)        # clarify
+    prepared = assistant.prepare("都看", session_id="s", top_k=3)     # still vague, but no double-ask
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.grounded_answer != _CLARIFY_Q
+
+
+def test_clarify_opener_is_empty():
+    assert opener_continuation("clarify", "手机") == ""
