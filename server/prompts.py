@@ -448,7 +448,8 @@ DIMENSION_EXTRACTION_SYSTEM = (
     "不要判断赢家，不要编造商品事实，不要输出价格/SKU 事实。"
     "如果某个维度是用户在问题里明确点名要比的（例如“哪个更保湿”里的保湿），把它的 asked 设为 true；"
     "其余你主动补充的维度 asked 设为 false。"
-    'JSON 格式：{"dimensions":[{"label":"维度名","aliases":["检索词"],"preference":"higher_is_better|lower_is_better","asked":true|false}]}'
+    "当用户主要就是在比价格、问哪个更便宜或更划算时，把 price_led 设为 true（价格由后端结构化字段判定，更低者胜，不要列进 dimensions）；否则设为 false。"
+    'JSON 格式：{"price_led":true|false,"dimensions":[{"label":"维度名","aliases":["检索词"],"preference":"higher_is_better|lower_is_better","asked":true|false}]}'
 )
 
 EVIDENCE_JUDGE_SYSTEM = (

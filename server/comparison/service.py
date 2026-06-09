@@ -15,7 +15,7 @@ from server.intent import SearchFilters
 from server.schemas import ComparisonRow, ComparisonValue, ProductComparison
 from server.textutil import dedupe, dedupe_int, json_object, normalize
 from server.comparison.dimensions import (
-    PRICE_FOCUS_TERMS,
+    PRICE_LED_SPEC,
     DimensionSpec,
     _dedupe_specs,
     _dimension_extraction_messages,
@@ -99,7 +99,8 @@ class ComparisonService:
         rows.extend(self._evidence_rows(products, focus_specs, query))
 
         asked = {spec.label for spec in focus_specs if spec.asked}
-        winner_product_id, recommendation = self._recommend(products, rows, filters, asked)
+        price_led = any(spec.label == "价格" for spec in focus_specs)
+        winner_product_id, recommendation = self._recommend(products, rows, filters, asked, price_led)
         summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
         return ProductComparison(
             products=cards,
@@ -232,8 +233,10 @@ class ComparisonService:
     ) -> list[DimensionSpec]:
         llm_specs = self._llm_specs(query, products)
         specs = llm_specs if llm_specs else _dynamic_specs(query, products)
+        # prefer_low_price (intent LLM) also makes price lead; the dimension-extraction LLM signals
+        # the same via PRICE_LED_SPEC when the user is comparing by price. Both dedupe to one row.
         if _price_is_priority(filters):
-            specs.append(DimensionSpec(label="价格", terms=PRICE_FOCUS_TERMS, preference="lower_is_better", evidence=False))
+            specs.append(PRICE_LED_SPEC)
         return _dedupe_specs(specs)[:4]
 
     def _llm_specs(self, query: str, products: list[dict[str, Any]]) -> list[DimensionSpec]:
@@ -385,6 +388,7 @@ class ComparisonService:
         rows: list[ComparisonRow],
         filters: SearchFilters,
         asked: set[str],
+        price_led: bool = False,
     ) -> tuple[str | None, str]:
         scores = {product["product_id"]: 0.0 for product in products}
         reason_dimensions: dict[str, list[str]] = {product["product_id"]: [] for product in products}
@@ -399,7 +403,7 @@ class ComparisonService:
             if row.dimension in {"基础定位", "规格明细"}:
                 weight = 0.0
             elif row.dimension == "价格与SKU":
-                weight = 1.5 if _price_is_priority(filters) else 0.0
+                weight = 1.5 if price_led else 0.0
             elif row.dimension in asked:
                 weight = _ASKED_DIMENSION_WEIGHT
             else:
