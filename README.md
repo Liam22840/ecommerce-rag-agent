@@ -15,9 +15,9 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 
 | 评分维度 | 文档 |
 | --- | --- |
-| 3.1 数据工程与特征治理 | [`RetrievalAndData.md`](RetrievalAndData.md) |
-| 3.2 模型 / Agent 编排 | [`IntentAndRouting.md`](IntentAndRouting.md)、[`CartCheckoutAgent.md`](CartCheckoutAgent.md)、[`ComparisonDecisionAgent.md`](ComparisonDecisionAgent.md)、[`PlannerAgent.md`](PlannerAgent.md) |
-| 3.3 后端服务化 | [`BackendService.md`](BackendService.md) |
+| 3.1 数据工程与特征治理 | [`RetrievalAndData.md`](docs/RetrievalAndData.md) |
+| 3.2 模型 / Agent 编排 | [`IntentAndRouting.md`](docs/IntentAndRouting.md)、[`CartCheckoutAgent.md`](docs/CartCheckoutAgent.md)、[`ComparisonDecisionAgent.md`](docs/ComparisonDecisionAgent.md)、[`PlannerAgent.md`](docs/PlannerAgent.md) |
+| 3.3 后端服务化 | [`BackendService.md`](docs/BackendService.md) |
 
 ## Setup
 
