@@ -735,6 +735,12 @@ class ShoppingAssistant:
         # When the router already wrote the reply inline (greeting chitchat), use it and make no
         # further model call (messages=[]). Otherwise (out-of-catalogue downgrade) let the chitchat
         # LLM narrate the polite decline, with the fixed reply as the model-unavailable fallback.
+        if reply is None and session_id:
+            # An out-of-catalogue product query is a topic change: it shows no products, so the
+            # usual clear in _remember_shown_products never runs. Drop any stale comparison winner
+            # here too, or a later "买胜出的那款" would resolve to an unrelated earlier list. A bare
+            # greeting (reply set) keeps the winner.
+            self._session(session_id).last_winner_id = None
         return PreparedChat(
             query=query,
             session_id=session_id,
