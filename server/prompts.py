@@ -349,6 +349,8 @@ COMMERCE_INTENT_SYSTEM = (
     "6. 当用户点名某个规格/型号/版本（如“50g标准装”“512GB版本”“滋润型”）时，把该原话照抄进 sku（只抄写，不算价格）；没点名就填 null。"
     "7. 价格、库存和订单号不由你判断。"
     "8. 如果不是购物车或下单意图，action=none。"
+    "9. 当 context 标明“待确认订单”为真时：用户表示同意、认可或让你继续（“可以了”“好”“行”“提交吧”“就这样”“用默认地址”等任何同意的说法）解析为 confirm_order，"
+    "明确放弃或反对则为 cancel_order；没有待确认订单时，“下单/结算/去付款”才是 checkout。"
     '只输出 JSON：{"action":"add|remove|set_quantity|increment|decrement|clear|show_cart|checkout|confirm_order|cancel_order|none",'
     '"refs":[string],"product_ids":[string],"items":[{"product_id":string,"quantity":number}],"quantity":number|null,'
     '"sku":string|null,"target_scope":"shown_products|cart_items|unknown","confidence":"high|medium|low"}'
@@ -360,11 +362,13 @@ def commerce_intent_messages(
     cart_items: list[dict],
     session_products: list[dict] | None = None,
     comparison_winner_id: str | None = None,
+    has_order_draft: bool = False,
 ) -> list[dict[str, str]]:
     payload = {
         "query": query,
         "cart_items": cart_items,
         "session_products": session_products or [],
+        "待确认订单": has_order_draft,
     }
     if comparison_winner_id:
         payload["comparison_winner_id"] = comparison_winner_id

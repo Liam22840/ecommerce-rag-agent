@@ -133,7 +133,9 @@ class CommerceService:
         # The LLM fills the action structure (which item, action, quantity). Deterministic parsing is
         # only the fallback when the LLM is unavailable. Verification (the id was actually shown,
         # coercing quantity to an int) and execution (cart maths) stay deterministic in _apply.
-        candidate = self._llm_parse(message, cart_items, session_products, comparison_winner_id)
+        candidate = self._llm_parse(
+            message, cart_items, session_products, comparison_winner_id, has_order_draft=bool(order_state.draft)
+        )
         if candidate is None:
             candidate = self._deterministic_parse(message, bool(cart_items), bool(order_state.draft))
         if not candidate.is_commerce:
@@ -254,12 +256,13 @@ class CommerceService:
         cart_items: list[dict[str, Any]],
         session_products: list[dict[str, Any]] | None,
         comparison_winner_id: str | None = None,
+        has_order_draft: bool = False,
     ) -> CommerceActionCandidate | None:
         if self._llm is None or not self._llm.available:
             return None
         try:
             payload = json_object(self._llm.complete(
-                commerce_intent_messages(message, cart_items, session_products, comparison_winner_id)
+                commerce_intent_messages(message, cart_items, session_products, comparison_winner_id, has_order_draft)
             ))
         except Exception:  # noqa: BLE001 (commerce must fall back to deterministic handling)
             return None
