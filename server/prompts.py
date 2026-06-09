@@ -456,7 +456,9 @@ DIMENSION_EXTRACTION_SYSTEM = (
     "不要判断赢家，不要编造商品事实，不要输出价格/SKU 事实。"
     "如果某个维度是用户在问题里明确点名要比的（例如“哪个更保湿”里的保湿），把它的 asked 设为 true；"
     "其余你主动补充的维度 asked 设为 false。"
-    "当用户主要就是在比价格、问哪个更便宜或更划算时，把 price_led 设为 true（价格由后端结构化字段判定，更低者胜，不要列进 dimensions）；否则设为 false。"
+    "判断这次对比是不是主要在比价格：只要用户问哪个更便宜、哪个价格低、单纯让你比价格、或问哪个更划算，price_led 就必须设为 true，"
+    "而且这种情况下不要为了凑数补上用户没点名的质量维度。价格本身由后端结构化字段判定（更低者胜），永远不要把价格写进 dimensions。"
+    "只有当用户明确说不看价格、或问的是质量/功效等非价格维度时，price_led 才设为 false。"
     'JSON 格式：{"price_led":true|false,"dimensions":[{"label":"维度名","aliases":["检索词"],"preference":"higher_is_better|lower_is_better","asked":true|false}]}'
 )
 

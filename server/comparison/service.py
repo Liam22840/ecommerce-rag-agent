@@ -233,10 +233,13 @@ class ComparisonService:
     ) -> list[DimensionSpec]:
         llm_specs = self._llm_specs(query, products)
         specs = llm_specs if llm_specs else _dynamic_specs(query, products)
-        # prefer_low_price (intent LLM) also makes price lead; the dimension-extraction LLM signals
-        # the same via PRICE_LED_SPEC when the user is comparing by price. Both dedupe to one row.
-        if _price_is_priority(filters):
-            specs.append(PRICE_LED_SPEC)
+        # Whether price leads is the LLM's call: the intent parser sets prefer_low_price, or the
+        # dimension extractor emits a 价格 spec. We never read the raw query to decide it. When price
+        # does lead it has to survive the 4-spec cap, so it goes first rather than being appended
+        # behind four quality dims and truncated out (which silently dropped the price row).
+        price_led = _price_is_priority(filters) or any(spec.label == "价格" for spec in specs)
+        if price_led:
+            specs = [PRICE_LED_SPEC] + [spec for spec in specs if spec.label != "价格"]
         return _dedupe_specs(specs)[:4]
 
     def _llm_specs(self, query: str, products: list[dict[str, Any]]) -> list[DimensionSpec]:
