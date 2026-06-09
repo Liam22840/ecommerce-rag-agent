@@ -4,12 +4,14 @@ import SwiftUI
 struct ChatComposerView: View {
     @Binding var text: String
     let isSending: Bool
+    let isListening: Bool
     let cameraAction: () -> Void
+    let voiceAction: () -> Void
     let sendAction: () -> Void
     let cancelAction: () -> Void
 
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending && !isListening
     }
 
     var body: some View {
@@ -36,22 +38,23 @@ struct ChatComposerView: View {
                 .background(GuideTheme.pageBackground)
                 .clipShape(RoundedRectangle(cornerRadius: GuideTheme.controlRadius, style: .continuous))
                 .submitLabel(.send)
+                .disabled(isListening)
                 .onSubmit {
                     if canSend {
                         sendAction()
                     }
                 }
 
-            Button(action: isSending ? cancelAction : sendAction) {
+            Button(action: buttonAction) {
                 Image(systemName: buttonIcon)
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 36, height: 36)
-                    .foregroundStyle(canSend || isSending ? .white : GuideTheme.tertiaryInk)
-                    .background(canSend || isSending ? GuideTheme.accent : GuideTheme.pageBackground)
+                    .foregroundStyle(isPrimaryButton ? .white : GuideTheme.tertiaryInk)
+                    .background(isPrimaryButton ? GuideTheme.accent : GuideTheme.pageBackground)
                     .clipShape(Circle())
             }
-            .disabled(!isSending && !canSend)
-            .accessibilityLabel(isSending ? "停止回复" : "发送消息")
+            .disabled(isButtonDisabled)
+            .accessibilityLabel(buttonAccessibilityLabel)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -63,6 +66,42 @@ struct ChatComposerView: View {
             return "stop.fill"
         }
 
+        if isListening {
+            return "stop.circle.fill"
+        }
+
         return canSend ? "arrow.up" : "mic.fill"
+    }
+
+    private var buttonAction: () -> Void {
+        if isSending {
+            return cancelAction
+        }
+
+        if canSend {
+            return sendAction
+        }
+
+        return voiceAction
+    }
+
+    private var isPrimaryButton: Bool {
+        isSending || isListening || canSend
+    }
+
+    private var isButtonDisabled: Bool {
+        false
+    }
+
+    private var buttonAccessibilityLabel: String {
+        if isSending {
+            return "停止回复"
+        }
+
+        if isListening {
+            return "结束语音输入"
+        }
+
+        return canSend ? "发送消息" : "语音输入"
     }
 }

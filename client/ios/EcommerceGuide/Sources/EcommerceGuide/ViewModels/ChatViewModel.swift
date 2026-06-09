@@ -7,31 +7,39 @@ public final class ChatViewModel: ObservableObject {
     @Published public var draftMessage: String
     @Published public var cartItems: [CartItem]
     @Published public var isSending: Bool
+    @Published public var isListening: Bool
     @Published public var errorMessage: String?
 
     public let conversationID: UUID
 
     private let service: any ChatService
+    private let speechRecognitionService: any SpeechRecognitionService
     private var streamTask: Task<Void, Never>?
+    private var speechTask: Task<Void, Never>?
     private var lastSubmittedMessage: String?
     private var streamingMessageID: UUID?
     private var currentPlanTimelineID: UUID?
 
     public init(
         service: any ChatService = MockChatService(),
+        speechRecognitionService: any SpeechRecognitionService = DefaultSpeechRecognitionService(),
         conversationID: UUID = UUID(),
         timeline: [ChatTimelineItem] = ChatViewModel.initialTimeline
     ) {
         self.service = service
+        self.speechRecognitionService = speechRecognitionService
         self.conversationID = conversationID
         self.timeline = timeline
         self.draftMessage = ""
         self.cartItems = []
         self.isSending = false
+        self.isListening = false
     }
 
     deinit {
         streamTask?.cancel()
+        speechTask?.cancel()
+        speechRecognitionService.stopRecognition()
     }
 
     public func sendDraftMessage() {
@@ -83,7 +91,38 @@ public final class ChatViewModel: ObservableObject {
         finishStreamingMessage()
     }
 
+    public func toggleVoiceInput() {
+        guard !isSending else {
+            return
+        }
+
+        if isListening {
+            stopVoiceInput(shouldSendTranscript: true)
+        } else {
+            startVoiceInput()
+        }
+    }
+
+    public func stopVoiceInput(shouldSendTranscript: Bool = false) {
+        guard isListening else {
+            return
+        }
+
+        isListening = false
+        speechTask?.cancel()
+        speechTask = nil
+        speechRecognitionService.stopRecognition()
+
+        if shouldSendTranscript {
+            sendDraftMessage()
+        }
+    }
+
     private func send(message: String) {
+        if isListening {
+            stopVoiceInput()
+        }
+
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedMessage.isEmpty, !isSending else {
@@ -130,6 +169,58 @@ public final class ChatViewModel: ObservableObject {
                 self?.handle(error)
             }
         }
+    }
+
+    private func startVoiceInput() {
+        guard !isListening, !isSending else {
+            return
+        }
+
+        errorMessage = nil
+        draftMessage = ""
+        isListening = true
+        speechTask?.cancel()
+
+        speechTask = Task { @MainActor [weak self, speechRecognitionService] in
+            do {
+                for try await update in speechRecognitionService.startMandarinRecognition() {
+                    try Task.checkCancellation()
+                    self?.applySpeechRecognition(update)
+                }
+                self?.finishVoiceInput()
+            } catch is CancellationError {
+                self?.finishVoiceInput()
+            } catch {
+                self?.handleSpeechRecognition(error)
+            }
+        }
+    }
+
+    private func applySpeechRecognition(_ update: SpeechRecognitionUpdate) {
+        draftMessage = update.transcript
+
+        if update.isFinal {
+            stopVoiceInput(shouldSendTranscript: true)
+        }
+    }
+
+    private func finishVoiceInput() {
+        guard isListening else {
+            return
+        }
+
+        isListening = false
+        speechTask = nil
+    }
+
+    private func handleSpeechRecognition(_ error: Error) {
+        isListening = false
+        speechTask = nil
+        speechRecognitionService.stopRecognition()
+
+        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        errorMessage = message
+        timeline.append(.error(id: UUID(), message: message))
     }
 
     private func reduce(_ event: ChatStreamEvent) {

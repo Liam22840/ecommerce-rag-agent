@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -12,6 +12,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1A0000000000000000000022 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A0000000000000000000002 /* EcommerceGuideHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EcommerceGuideHostApp.swift; sourceTree = "<group>"; };
 		1A0000000000000000000005 /* EcommerceGuideApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EcommerceGuideApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -39,6 +40,7 @@
 		1A0000000000000000000008 /* EcommerceGuideApp */ = {
 			isa = PBXGroup;
 			children = (
+				1A0000000000000000000022 /* Info.plist */,
 				1A0000000000000000000002 /* EcommerceGuideHostApp.swift */,
 			);
 			path = EcommerceGuideApp;
@@ -100,7 +102,7 @@
 			);
 			mainGroup = 1A0000000000000000000007;
 			packageReferences = (
-				1A0000000000000000000011 /* XCRemoteSwiftPackageReference "../EcommerceGuide" */,
+				1A0000000000000000000011 /* XCLocalSwiftPackageReference "../EcommerceGuide" */,
 			);
 			productRefGroup = 1A0000000000000000000009 /* Products */;
 			projectDirPath = "";
@@ -257,12 +259,9 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				DEVELOPMENT_TEAM = HB27G5TD9C;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EcommerceGuideApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -284,12 +283,9 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				DEVELOPMENT_TEAM = HB27G5TD9C;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EcommerceGuideApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -307,15 +303,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		1A0000000000000000000017 /* Build configuration list for PBXProject "EcommerceGuideApp" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				1A0000000000000000000018 /* Debug */,
-				1A0000000000000000000019 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		1A0000000000000000000013 /* Build configuration list for PBXNativeTarget "EcommerceGuideApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -325,10 +312,19 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		1A0000000000000000000017 /* Build configuration list for PBXProject "EcommerceGuideApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A0000000000000000000018 /* Debug */,
+				1A0000000000000000000019 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		1A0000000000000000000011 /* XCRemoteSwiftPackageReference "../EcommerceGuide" */ = {
+		1A0000000000000000000011 /* XCLocalSwiftPackageReference "../EcommerceGuide" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../EcommerceGuide;
 		};
@@ -337,7 +333,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		1A0000000000000000000004 /* EcommerceGuide */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 1A0000000000000000000011 /* XCRemoteSwiftPackageReference "../EcommerceGuide" */;
+			package = 1A0000000000000000000011 /* XCLocalSwiftPackageReference "../EcommerceGuide" */;
 			productName = EcommerceGuide;
 		};
 /* End XCSwiftPackageProductDependency section */
