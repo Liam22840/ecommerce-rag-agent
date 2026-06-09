@@ -372,11 +372,14 @@ def test_parse_image_merges_vlm_filters_with_text_rules():
     })
     parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(resp))
     f = parser.parse_image(b"\xff\xd8\xff\xd9", text="300以内的")
-    assert f.sub_category == "短袖T恤"
+    # The visual category is a soft hint (carried in vision_description and ranked), never a hard
+    # gate, so a VLM/catalogue taxonomy mismatch can't drop the exact product from its own photo
+    # search. A brand/category the user typed in text would still gate; none was typed here.
+    assert f.sub_category is None
+    assert f.vision_description == "黑色短袖T恤"   # the visual category survives for ranking
     assert "黑色" in f.required_terms
     assert f.max_price == 300.0          # picked up from the text by the rule parser
     assert f.vision_confidence == "high"
-    assert f.vision_description == "黑色短袖T恤"
 
 
 def test_parse_image_degrades_to_low_confidence_without_llm():
@@ -417,7 +420,7 @@ def test_parse_image_drops_vision_only_brand_so_it_does_not_hard_gate():
     parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
     f = parser.parse_image(b"\xff\xd8\xff\xd9", text="")
     assert f.brand is None              # vision-only brand dropped from the gate
-    assert f.sub_category == "篮球鞋"     # category gate kept (high confidence)
+    assert f.sub_category is None       # the visual category is a soft hint too, same as the brand
 
 
 def test_parse_image_keeps_a_text_typed_brand_as_a_hard_gate():
