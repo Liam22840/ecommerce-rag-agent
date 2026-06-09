@@ -1,82 +1,77 @@
 # 数据与检索 (Data & Retrieval)
 
-本文档说明商品数据如何被切分、向量化、并检索成可用于回答的事实。意图理解与路由见 `IntentAndRouting.md`，API / 流式 / 缓存 / 降级等服务层见 `BackendService.md`。
+这份讲商品数据是怎么存的，以及用户问一句话之后，系统怎么从一百个商品里找出最相关的几个。听懂意图、决定怎么回答在 [`IntentAndRouting.md`](IntentAndRouting.md)，接口和缓存在 [`BackendService.md`](BackendService.md)。
 
-## 商品库 (Product Catalog)
+## 商品库里有什么
 
-商品数据由 `ProductCatalog.load()` 从 `ecommerce_agent_dataset/*/data/*.json` 读取。`ProductCatalog` 负责：
+商品就是一堆 JSON 文件，四个大类（美妆护肤、数码电子、服饰运动、食品饮料）一共一百来个。每个商品有标题、品牌、类目、若干规格（SKU，各自带价格），还有一段营销描述、官方问答和用户评价。
 
-- 加载和校验商品 JSON，维护 product id 到商品对象的索引。
-- 提供 category、sub_category、brand 集合给 intent parser。
-- 根据筛选条件判断商品是否匹配，计算最低 SKU 价格。
-- 生成前端使用的 `ProductCard`，以及交给 LLM 的 grounded product facts。
-- 提供本地 lexical search。
-- 加载时按 `product_id` 确定性生成合成库存（库存是为固定数据集播种的，不是真实仓储；详见 `CartCheckoutAgent.md` 的「库存」节）。
+系统启动时把这些 JSON 读进来，整理成几样东西：所有类目、子类目、品牌的清单（给「听懂意图」那一步用），一个能按条件筛商品、算最低价的索引，前端要显示的商品卡，以及交给模型当作答依据的「商品事实」。
 
-LLM 不直接拿完整原始 JSON，而是拿经过 `product_facts()` 裁剪后的事实字段，减少 prompt 噪音、降低编造空间。为缩短首 token，`product_facts()` 进一步压缩：重复的价格说明只在 system prompt 写一次，描述/FAQ/评价裁到几条短摘要，但价格和 SKU 字段全部保留（回答靠它们 grounding）。top_k=5 时回答 prompt 从约 15.5k 字符降到约 7.2k。
+这里有个细节：**模型不会拿到完整的原始 JSON**，只拿裁剪过的事实字段。一是减少干扰，二是少给它编造的空间。为了让回答的第一个字更快出来，这份事实还会进一步压缩——重复的价格说明只在系统提示里写一次，描述、问答、评价各留几条短摘要，但价格和 SKU 一个不删（回答全靠它们才不跑偏）。压下来，一次回答的提示词大概能减一半。
 
-## Chunking（切分）
+> **技术细节**
+> - 入口 `ProductCatalog.load()`，读 `ecommerce_agent_dataset/*/data/*.json`。
+> - 交给模型的事实由 `product_facts()` 生成（裁剪 + 压缩）。
+> - 库存是启动时按 `product_id` 合成播种的，不是真实仓储，详见 [`CartCheckoutAgent.md`](CartCheckoutAgent.md) 的「库存」节。
 
-入库前，每个商品由 `ingestion/chunk.py` 切成若干**带类型的 chunk**，而不是按固定字数滑窗：
+## 入库前先把商品切成小块
 
-- `summary`：标题 + 类目 + 卖点 + marketing_description 合成的一条概要。
-- `faq`：每条官方问答各一个 chunk。
-- `review`：每条用户评价各一个 chunk（带评分）。
-- `image`：商品主图一个 chunk。
+要让商品能被「按意思」搜到，得先把它切成一块块可检索的小单元，再分别转成向量。我们不是按固定字数硬切，而是**按内容的自然边界切**，每块都是一个能独立看懂的单元：
 
-每个 chunk 是一个自洽的可检索单元，按语义边界切分，平衡召回与精确度。`chunk_id` 形如 `{product_id}::{suffix}`，入 Milvus 时回到 `product_id` 去重到每个商品的最佳 chunk。
+- 一块概要（标题 + 类目 + 卖点 + 营销描述拼起来）
+- 每条官方问答各一块
+- 每条用户评价各一块（带评分）
+- 商品主图一块
 
-## Embedding 与 Milvus
+这样切，召回和精确度都更好：用户问保湿，能命中评价里聊保湿的那块；问某个功能，能命中问答里那块。检索完再按商品去重，同一个商品只留最匹配的那一块，不会让一个商品刷屏。
 
-embedding client 在 `ingestion/embed.py`，Milvus wrapper 在 `ingestion/milvus_store.py`。默认 embedding model：
+> **技术细节**：切块在 `ingestion/chunk.py`；每块 id 形如 `{product_id}::{suffix}`，入库后回到 `product_id` 去重。
 
-```text
-doubao-embedding-vision-251215
-```
+## 怎么变成向量、存在哪
 
-该（多模态）模型同时用于 ingestion 阶段给 text / image chunk 建向量，和 query 阶段给用户问题（或上传图片）建向量。**商品库向量和 query 向量必须用同一个 embedding space**，否则语义检索失效。
+「变成一串数字」这步叫 embedding，用的是豆包的多模态模型。它一个模型同时管两件事：入库时给文字和图片块算向量，用户提问时给问题（或上传的图片）算向量。**关键是这两边必须用同一个模型**，否则两边的数字对不上，按意思搜就失灵了。
 
-Milvus collection 是 `products`，主键 `chunk_id`，核心字段：`product_id / chunk_type / text / category / sub_category / brand / base_price / embedding`。向量维度 `2048`，metric `COSINE`，索引 `AUTOINDEX`。
+向量存在 Milvus 里（一个向量数据库）。这个库是团队事先生成好的，平时只读不重建，除非确实要重新入库才会跑一遍。
 
-项目默认不重建 `data/milvus.db`，把它当作团队已生成的 populated vector store；正常开发只读取它，只有明确需要重新 ingestion 时才运行 `ingest.py`。
+另外有一层缓存：算过的向量会按内容存到磁盘上，下次遇到一模一样的文字或图片直接取，不再花钱调接口。入库和线上服务共用这一份缓存。
 
-embedding 结果还会落到磁盘缓存里（`ingestion/cache.py` 的 `EmbeddingCache`），ingestion 和 serve 共用。key 是文本或图片字节的 SHA-256，启动时整盘读进内存，命中的直接返回，不再重复调 API。写入是 append-only 的，所以中途崩了也不会破坏已有条目。请求线程、预热线程和 FastAPI 线程池会同时读写这份缓存，所以 `_index` 和写入都用一把锁串起来。
+> **技术细节**
+> - embedding 在 `ingestion/embed.py`，Milvus 封装在 `ingestion/milvus_store.py`，模型 `doubao-embedding-vision-251215`，向量 2048 维。
+> - collection 叫 `products`，主键 `chunk_id`，相似度用 `COSINE`，索引 `AUTOINDEX`。
+> - 缓存 `ingestion/cache.py`，按内容的 SHA-256 当 key，启动时整盘读进内存，多线程读写加了锁。
+> - 默认不重建 `data/milvus.db`，要重建才跑 `ingest.py`。
 
-## 检索 (Hybrid Retrieval)
+## 怎么把商品找出来（检索）
 
-检索在 `server/retrieval.py`，是 hybrid retrieval（向量 + lexical，RRF 融合）。
+用户问一句话，系统会用两种方式同时去找，再把两边的结果汇到一起。
 
-### 向量检索
+一种是**看意思**：把用户的话和每个商品都转成向量，意思越接近，数字就越接近。这样哪怕用户说的是「冬天穿的厚外套」，也能找到「羽绒服」，字面上一个字对不上也没关系。（用户传了图片就走「拍照找同款」，用图片的向量当查询，其余流程一样。）
 
-满足以下条件才启用：`ENABLE_VECTOR_SEARCH=true`、`ARK_EMBEDDING_API_KEY` 已设置、`data/milvus.db` 可打开、Milvus collection 可用。流程：
+另一种是**看字面**：按词去对，看商品的标题、品牌、类目、描述、问答、评价里有没有用户提到的词。命中标题或品牌的，比评价里偶然蹦出一个字重要得多。
 
-1. `DoubaoEmbedder.embed_text(query)` 把 query（或 LLM 改写后的 `rewritten_query`）转成 2048 维向量。注意：这个向量通常在意图解析时就已在后台并行算好（见 `BackendService.md` 的预热），这里直接复用 future，不重复 embedding。用户传图的「拍照找同款」轮则走 `embedder.embed_image`，得到的图片向量直接当 query 向量用，跳过文本 embedding，其余检索流程相同。
-2. `MilvusStore.search()` 查 top K chunk，按 product 去重到每个商品的最佳 chunk。
-3. 按命中的 `product_id` 回 `ProductCatalog` 取完整商品。
-4. 再应用 `SearchFilters` 的**硬结构化约束**（价格、类目、子类目、品牌、排除品牌）。卖点 `required_terms`、规格 `requested_specs` 不在这里硬过滤（只影响排序）。
-5. 保留 snippet；该路相似度只用于候选排序，最终分数由 RRF 决定。
+两种各有各的毛病：看意思的有时会想多，找回来的东西沾点边但不对路；看字面的又太死，用户换个说法它就找不着了。两种搭着用，正好互相补位。
 
-### lexical 检索
+真正麻烦的是怎么把两边合起来。它们给的分根本不是一回事：一个是「像不像」的小数，一个是「中了几个词」的个数，硬凑在一起只会乱。所以我们干脆不看分，只看排名：在任意一种方式里排得越靠前，给的分越多，越往后给得越少。这样一来，两边都靠前的商品加起来分自然最高，就排到了最前面。一个商品两种方式都找到，就标成「两种都命中」。
 
-无论 vector 是否成功，都跑本地 lexical retrieval：按 query / 类目 / 子类目 alias / 品牌 / 关键词构造 query terms，对 title、brand、category、sub_category、marketing description、FAQ、review 做匹配。类目/子类目/品牌/title 命中权重更高；`required_terms`/`requested_specs` 在这里是**排序加权**而非过滤。硬结构化约束先过滤；`excluded_terms` 不在检索阶段过滤，而是检索后由 LLM judge 在候选集上判定剔除。LLM 不可用时退回确定性的 `catalog.violates_excluded`：它会分句，识别否定前缀（“不油腻”不算命中“油腻”），而且只在商品自己的文案里（标题加描述，不看用户评价）正面提到这个词时才剔除。还是那套「LLM 理解，确定性兜底」。
+价格、类目、品牌这类**硬条件**是真过滤（不在预算内的直接拿掉），而卖点、规格这类**软偏好**只影响排序、不一棍子打死。最后如果用户明确说了「要最便宜的」或「评分最高的」，再整体重排一次。
 
-### RRF 融合
+还有「排除」——比如「不要含酒精的」。这个不在检索阶段过滤，而是检索完之后让模型在候选里判断哪个该剔掉；模型不可用时，退回一套确定性规则（只在商品自己的文案里正面提到这个词、且不是「不含酒精」这种否定说法，才剔）。
 
-vector 和 lexical 两路各自按本路得分排序后，用 **Reciprocal Rank Fusion** 融合，而不是把两路原始分相加：
+> **技术细节**
+> - 检索在 `server/retrieval.py`。向量路：`embed_text(query)`（或改写后的查询）→ Milvus 取 top-K → 按 product 去重 → 套 `SearchFilters` 硬过滤；图片路走 `embed_image`。
+> - 关键词路：在 title / brand / category / 描述 / 问答 / 评价上匹配，类目、品牌、标题权重更高。
+> - 融合：RRF，每路贡献 `1/(RRF_K+rank)`（`RRF_K=60`），按名次非原始分；两路命中相加，`source=hybrid`，同分偏低价。
+> - 价格 / 评分重排在 `ShoppingAssistant._order_hits`，只在没有 `required_terms` / `requested_specs` 时触发。
+> - 排除词的确定性兜底是 `catalog.violates_excluded`。
+> - `retrieval_source` 四种取值：`vector` / `lexical` / `hybrid` / `none`。
 
-- 每个商品在某一路的贡献是 `1 / (RRF_K + rank)`（`RRF_K=60`），按名次而非原始分大小计分，避免余弦和词频两套量纲互相压制。
-- 同一商品被两路命中时贡献相加，`source` 记为 `hybrid`，snippets 取并集。
-- 按融合分排序，同分时更便宜的排前面。
-- 如果用户明确要按价格或评分排（`sort_by=price_asc/price_desc/rating_desc`），这一步重排不在检索里做，而是检索完之后交给上层的 `ShoppingAssistant._order_hits`，并且只在没有卖点、规格这类软信号时才触发。这时上层会把整个过滤后的类目全取出来再排，免得 top_k 截断先把真正最便宜、评分最高的商品丢掉。带了软信号（比如“便宜的敏感肌面霜”）时，相关度排序才是用户真正想要的，就不再这样重排。
+## 不能出错的数据
 
-`retrieval_source` 取值：`vector`（只有向量出结果）/ `lexical`（只有关键词出结果）/ `hybrid`（两路共同参与）/ `none`（没找到匹配）。
+有些东西错了就是事故，所以一律从结构化字段取，不让模型碰：
 
-## 数据一致性
+- **价格和 SKU**：商品卡和购物车里的价格，永远来自商品的 SKU 字段，不从模型写的文案里抠。用户点名了某个规格（「512GB 高配版」），就解析到对应的真实 SKU 再定价，对不上才回退到默认 / 最低价那档。
+- **品牌写法统一**：数据集里同一家公司有两种写法（Nike / 耐克、苹果 / Apple 苹果），加载时统一并成一个名字，免得品牌清单、筛选、商品卡三处对不上，把一个牌子拆成两个。
+- **库存**：数据集本身没有库存，这块是合成出来的——但它的台账、加购时的拦截、下单后的扣减都是真的，详见 [`CartCheckoutAgent.md`](CartCheckoutAgent.md) 的「库存」节。
 
-价格、SKU 等关键参数全部来自结构化字段（catalog → `ProductCard`/SKU → `pricing.py`），从不从 LLM 文案里取，所选 SKU 的价格也会随购物车回传保持一致。
-
-**品牌归一化（特征治理）**：同一家公司在数据集里有两种写法（Nike / 耐克、苹果 / Apple 苹果、北面 / The North Face）。加载时按 `BRAND_ALIASES` 把别名统一并到一个规范名（`catalog.load`），于是品牌集合、品牌过滤、商品卡三处对得上，不会因为写法不同把同一品牌拆成两个。
-
-**SKU 解析（价格 grounding）**：用户点名的规格短语（“512GB高配版”“50g标准装”）由 `catalog.sku_id_for_phrase` 双向子串匹配解析到真实 `sku_id`，匹配不上才回退到默认或最低价 SKU。定价始终落在真实 SKU 上，不让模型编价。
-
-库存这一项数据集没有，是合成的，但它的台账、加购强制和下单扣减是真的（详见 `CartCheckoutAgent.md` 的「库存」节）。
+> **技术细节**：SKU 解析 `catalog.sku_id_for_phrase`；品牌统一 `BRAND_ALIASES`（在 `catalog.load` 应用）；价格链路 catalog → `ProductCard`/SKU → `pricing.py`。

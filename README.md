@@ -11,7 +11,7 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 
 ## 设计文档 (Design docs)
 
-设计文档按系统组件划分。下表给出评分维度到文档的索引，方便按维度查阅：
+先读 [`docs/Overview.md`](docs/Overview.md)：一页讲清整个系统怎么运转，带一张流程图。想深入某一块再看下表。下表也给出评分维度到文档的索引，方便按维度查阅：
 
 | 评分维度 | 文档 |
 | --- | --- |
