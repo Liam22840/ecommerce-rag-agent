@@ -132,7 +132,7 @@ message + categories + sub_categories + brands + session_products + cart_items
 
 如果 LLM 不可用、返回非法 JSON、或输出不可执行 action，则 fallback 到 deterministic planner。
 
-schema validation 就是「LLM 提议、确定性核验」在 planner 上的落点：`_coerce_step` 把越界字段拉回白名单（`select_products` 的非法 criteria 收敛成 `relevance`，`cart_action` 的非法 target 收敛成 `previous_step`，不在白名单的 action 整步丢掉）；`_valid_plan` 再做结构校验——少于两个动作、出现多个 `product_search`、或 `cart_action` 前面没有可取货的来源步骤（搜索 / 选择 / 对比），都判为不可执行而退回兜底。兜底 planner 也按同样的白名单拼步骤（识别价格 criteria、对比时选 2 款否则 1 款、有对比则 target 用 `comparison_winner` 否则 `selected_products`）。
+schema validation 就是「LLM 提议、确定性核验」在 planner 上的落点。`_coerce_step` 先把越界字段拉回白名单：`select_products` 的非法 criteria 收敛成 `relevance`，`cart_action` 的非法 target 收敛成 `previous_step`，不在白名单里的 action 整步丢掉。`_valid_plan` 再做结构校验，少于两个动作、出现多个 `product_search`、或者 `cart_action` 前面没有可取货的来源步骤（搜索、选择或对比），都算不可执行，退回兜底。兜底 planner 也照同一套白名单拼步骤：认价格 criteria、对比时选 2 款否则 1 款、有对比就把 target 设成 `comparison_winner`，否则 `selected_products`。
 
 ### 3. 执行搜索
 

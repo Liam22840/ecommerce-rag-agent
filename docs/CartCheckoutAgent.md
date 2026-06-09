@@ -353,7 +353,7 @@ cart non-empty -> 创建 OrderDraft(status="awaiting_confirmation")
 
 ### 1. LLM 主解析
 
-`maybe_handle` 先调 LLM commerce parser（`_llm_parse`）：它读用户原话 + 购物车 + 本轮展示过的商品 + 有没有待确认订单，填出一个白名单动作结构（哪件、什么动作、数量、作用范围、SKU、地址）：
+`maybe_handle` 先调 LLM commerce parser（`_llm_parse`）：它结合用户原话、购物车、本轮展示过的商品，以及有没有待确认订单，填出一个白名单动作结构（哪件、什么动作、数量、作用范围、SKU、地址）：
 
 ```json
 {
@@ -754,20 +754,20 @@ TMPDIR=/private/tmp CLANG_MODULE_CACHE_PATH=.build/module-cache swift test --dis
 
 ## 收货地址确认
 
-对应 4.1 ⭐⭐⭐「引导用户确认收货地址」。地址作为会话状态放在 `OrderState.address`（本来就被穿进每个 commerce 入口、随会话持久化，和购物车状态同源），由两个输入喂同一个值：
+地址作为会话状态放在 `OrderState.address`，它本来就穿进了每个 commerce 入口、随会话持久化，和购物车状态同源。两个输入喂这同一个值：
 
 - **客户端字段**：客户端把当前地址放进 `client_context.address` 每轮发送，所以订单从一开始就带真实地址（默认一个北京地址，而非“默认地址”）。
-- **对话改地址**：`set_address` 动作为这一轮覆盖它。因为 commerce 在每轮赋值之后才跑，口头改地址在本轮胜出；服务端把新地址回写到订单，客户端再从 `order.address` 同步自己的字段，两者不分叉。
+- **对话改地址**：`set_address` 动作为这一轮覆盖它。commerce 在每轮赋值之后才跑，所以口头改地址在本轮胜出。服务端把新地址回写到订单，客户端再从 `order.address` 同步自己的字段，两边就不会分叉。
 
-`set_address` 和「把数量改成 2」同一套路——LLM 理解语言、确定性执行：`COMMERCE_INTENT_SYSTEM` 解析出 `action=set_address` 并把地址原文照抄进 `address`，`_apply` 写入 `order_state.address`，有待确认草稿时重跑 `_checkout` 刷新卡片和摘要（购物车没变、签名仍匹配，“确认”照样提交）。LLM 不可用时不合成 `set_address`，降级到客户端字段。
+`set_address` 和「把数量改成 2」是同一套路：LLM 理解语言、确定性执行。`COMMERCE_INTENT_SYSTEM` 解析出 `action=set_address`，把地址原文照抄进 `address`，`_apply` 写进 `order_state.address`；如果有待确认草稿，就重跑一遍 `_checkout` 刷新卡片和摘要（购物车没变、签名仍匹配，“确认”照样能提交）。LLM 不可用时不会凭空合成 `set_address`，降级回客户端字段。
 
 客户端：`ChatViewModel.shippingAddress` 随每个请求发送、收到订单事件时从 `order.address` 回同步；`OrderCardView` 在待确认态展示可编辑地址行（复用 `EditableOrderField`），“确认”沿用既有发送路径把地址带上。
 
 ## 库存
 
-**重要前提：库存是合成的。** 原始数据集没有库存字段。库存在加载时按 `product_id` 确定性生成（`_seed_stock`：`12 + sha1(pid) % 48`，得 12–59 的稳定值），并把两个好认的商品钉为低/售罄供演示（iPhone=2、兰蔻小黑瓶=0）。诚实地讲，库存数字是为这套固定数据集播种的演示值；可被评分的是建在其上的工程——单一真相源 → 如实播报 → 购物车强制 → 下单实时扣减——这几层是真的。
+**重要前提：库存是合成的。** 原始数据集没有库存字段。库存在加载时按 `product_id` 确定性生成（`_seed_stock`：`12 + sha1(pid) % 48`，得 12–59 的稳定值），并把两个好认的商品钉为低/售罄供演示（iPhone=2、兰蔻小黑瓶=0）。说句实在的，库存数字只是为这套固定数据集播种的演示值，但建在它上面的工程是真的：单一真相源 → 如实播报 → 购物车强制 → 下单实时扣减，这几层都成立。
 
 - **会话台账**：`OrderState.stock_sold`（`product_id -> 已下单量`）只在订单提交时增加。`available = max(0, catalog.stock(pid) - stock_sold)`；待结算的购物车行不算扣减。
-- **如实播报**：`product_facts` 多一个 `available` 字段交给回答模型，搜索路径用会话感知的 `_available_by_id` 算出可用量，文本与图搜共用同一解析器；`SYSTEM_PROMPT` 要求库存只照抄 `available`，为 0 即售罄、不作首选，禁止编造。
+- **如实播报**：`product_facts` 给回答模型多带一个 `available` 字段，搜索路径用会话感知的 `_available_by_id` 算可用量，文本和图搜共用同一个解析器。`SYSTEM_PROMPT` 要求库存只照抄 `available`，为 0 就是售罄、不作首选，禁止编造。
 - **购物车强制**：`_apply` 的 add/increment/set_quantity 把结果数量钳到 `_available`，售罄跳过、超买加到上限并点明，`_upsert`/`_set_quantity` 保持纯粹。单行数量另有上限 `MAX_CART_QUANTITY`（`pricing.py`，默认 999，可用 env 覆盖），避免“要1000000件”这类病态值。
 - **实时扣减**：`_confirm_order` 提交时对每行执行 `stock_sold[pid] += qty`，之后同一会话再加该商品或重新搜索看到的就是减少（或为 0）的可用量。扣减是会话内的，一次演示不会掏空全局。

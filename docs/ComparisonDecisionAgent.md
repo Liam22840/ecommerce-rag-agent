@@ -155,7 +155,7 @@ compare_product_ids + client_context.compare_product_ids
 
 ## 评分逻辑
 
-一次对比最多比 3 个商品。每次先出三行固定的结构化行——`基础定位`、`价格与SKU`、`规格明细`——再加若干 evidence row（聚焦维度最多 4 个）。
+一次对比最多比 3 个商品。每次先固定出三行：`基础定位`、`价格与SKU`、`规格明细`，再加若干 evidence row（聚焦维度最多 4 个）。
 
 evidence row 的判定对每个商品读取：
 
@@ -167,7 +167,7 @@ SKU 文本
 用户评价 user_reviews
 ```
 
-每个维度由 LLM evidence judge（`_llm_judge`）给出本行赢家、理由和置信度，但**带 grounding 闸门**：判词引用的片段必须确实出现在该商品上面那几段文本里（`normalize(quote) in grounding[pid]`），否则把高 / 中置信度降到 low，不让它凭空给商品安属性。LLM 不可用时退回基于 aliases 命中 + 通用正负语气的确定性评分。每行还要赢得够明显才算数：本行最高分必须 `> 0` 且比第二名高 `>= 2`，否则这一行不出 winner。
+每个维度的本行赢家、理由和置信度由 LLM evidence judge（`_llm_judge`）给出，但要过一道 grounding 闸门：判词引用的片段必须真的出现在该商品上面那几段文本里（`normalize(quote) in grounding[pid]`），否则把高、中置信度压到 low，不让它凭空给商品安属性。LLM 不可用时，退回按 aliases 命中加通用正负语气打分的确定性评分。另外，每一行还得赢得够明显才算数：本行最高分要 `> 0`，而且比第二名高出 `>= 2`，否则这行不判 winner。
 
 价格 row 是特殊规则：
 
