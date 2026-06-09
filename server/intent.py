@@ -433,6 +433,10 @@ class IntentParser:
             return filters
         if filters.category or filters.sub_category:
             return filters
+        # Naming a different brand is a pivot to that brand's products ("跑步鞋" -> "巴黎欧莱雅有什么"),
+        # not a refinement of the previous category, so the old category must not carry over.
+        if filters.brand and filters.brand != previous_filters.brand:
+            return filters
         if not (previous_filters.category or previous_filters.sub_category):
             return filters
         filters.category = previous_filters.category
