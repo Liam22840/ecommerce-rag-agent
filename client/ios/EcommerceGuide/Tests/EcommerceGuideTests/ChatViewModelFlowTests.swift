@@ -3,6 +3,37 @@ import XCTest
 
 @MainActor
 final class ChatViewModelFlowTests: XCTestCase {
+    func testMandarinVoiceInputSendsFinalTranscriptThroughChatService() async throws {
+        let chatService = ScriptedChatService(events: [
+            .token("可以，我来推荐。"),
+            .done(messageID: "voice-1")
+        ])
+        let speechService = ScriptedSpeechRecognitionService(updates: [
+            SpeechRecognitionUpdate(transcript: "推荐一款适合油皮的洗面奶", isFinal: true)
+        ])
+        let viewModel = ChatViewModel(
+            service: chatService,
+            speechRecognitionService: speechService,
+            conversationID: UUID(uuidString: "00000000-0000-0000-0000-000000000020")!,
+            timeline: []
+        )
+
+        viewModel.toggleVoiceInput()
+        try await waitUntil { chatService.requests.count == 1 }
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(speechService.startCount, 1)
+        XCTAssertGreaterThanOrEqual(speechService.stopCount, 1)
+        XCTAssertFalse(viewModel.isListening)
+        XCTAssertEqual(chatService.requests.map(\.message), ["推荐一款适合油皮的洗面奶"])
+        XCTAssertEqual(viewModel.draftMessage, "")
+
+        guard case .message(let assistantMessage)? = viewModel.timeline.last else {
+            return XCTFail("Expected final assistant message")
+        }
+        XCTAssertEqual(assistantMessage.text, "可以，我来推荐。")
+    }
+
     func testSendDraftMessageReducesStreamIntoTimelineAndCart() async throws {
         let product = Product.fixture(id: "JACKET-1", title: "Rain Shell")
         let service = ScriptedChatService(events: [
@@ -415,6 +446,23 @@ final class ChatViewModelFlowTests: XCTestCase {
             XCTFail("Timed out waiting for ChatViewModel to finish sending", file: file, line: line)
         }
     }
+
+    private func waitUntil(
+        timeout: TimeInterval = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        if !condition() {
+            XCTFail("Timed out waiting for condition", file: file, line: line)
+        }
+    }
 }
 
 private final class ScriptedChatService: ChatService, @unchecked Sendable {
@@ -461,6 +509,31 @@ private final class FailingThenSucceedingChatService: ChatService, @unchecked Se
             }
             continuation.finish()
         }
+    }
+}
+
+private final class ScriptedSpeechRecognitionService: SpeechRecognitionService, @unchecked Sendable {
+    private let updates: [SpeechRecognitionUpdate]
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    init(updates: [SpeechRecognitionUpdate]) {
+        self.updates = updates
+    }
+
+    func startMandarinRecognition() -> AsyncThrowingStream<SpeechRecognitionUpdate, Error> {
+        startCount += 1
+
+        return AsyncThrowingStream { continuation in
+            for update in updates {
+                continuation.yield(update)
+            }
+            continuation.finish()
+        }
+    }
+
+    func stopRecognition() {
+        stopCount += 1
     }
 }
 

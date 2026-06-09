@@ -82,7 +82,9 @@ public struct ChatScreen: View {
                 ChatComposerView(
                     text: $viewModel.draftMessage,
                     isSending: viewModel.isSending,
+                    isListening: viewModel.isListening,
                     cameraAction: cameraAction,
+                    voiceAction: { viewModel.toggleVoiceInput() },
                     sendAction: { viewModel.sendDraftMessage() },
                     cancelAction: { viewModel.cancelStreaming() }
                 )
