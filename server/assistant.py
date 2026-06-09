@@ -438,6 +438,7 @@ class ShoppingAssistant:
         cart: CartUpdate | None = None
         order: OrderDraft | None = None
         summaries: list[str] = []
+        requested_specs: list[str] = []
         raw_cart = list(cart_items)
 
         for idx, step in enumerate(planned.steps):
@@ -465,6 +466,7 @@ class ShoppingAssistant:
                     retrieval = prepared.retrieval
                     products = prepared.products
                     selected_ids = [product.product_id for product in products]
+                    requested_specs = list(prepared.filters.requested_specs)
                     summary = f"找到 {len(products)} 款候选商品。"
                 elif step.action == "select_products":
                     products = self._select_products(products, step.criteria, step.count or 1)
@@ -497,7 +499,9 @@ class ShoppingAssistant:
                     target_ids = self._cart_target_ids(step.target, selected_ids, comparison, products)
                     if not target_ids:
                         raise ValueError("no product selected for cart action")
-                    cart_result = self._apply_cart_targets(target_ids, step.quantity or 1, query, raw_cart, session_id)
+                    cart_result = self._apply_cart_targets(
+                        target_ids, step.quantity or 1, query, raw_cart, session_id, requested_specs
+                    )
                     cart = cart_result.cart
                     order = cart_result.order
                     raw_cart = [item.model_dump() for item in cart.items] if cart is not None else raw_cart
@@ -613,12 +617,16 @@ class ShoppingAssistant:
         query: str,
         raw_cart: list[dict],
         session_id: str | None,
+        requested_specs: list[str] | None = None,
     ) -> CommerceResult:
         # The planner already resolved these ids this turn. Commerce only accepts product ids it can
         # see in session_products ∪ cart, so include the targets in the pool directly — otherwise a
         # plan whose search hasn't been written to session memory yet (e.g. a session-less turn)
         # would fail the cart step and ask for clarification instead of adding.
         pool = self._pool_with_ids(product_ids, self._session_products(session_id))
+        # The user may have named a 规格 ("512GB高配版"); carry it so each line is priced for that SKU
+        # instead of the default cheapest one. The direct cart path does this via candidate.sku.
+        sku = " ".join(requested_specs) if requested_specs else None
         result: CommerceResult | None = None
         for product_id in product_ids:
             candidate = CommerceActionCandidate(
@@ -627,6 +635,7 @@ class ShoppingAssistant:
                 quantity=quantity,
                 target_scope="shown_products",
                 confidence="high",
+                sku=sku,
             )
             result = self._commerce.apply_candidate(
                 candidate,
