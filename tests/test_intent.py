@@ -161,3 +161,8 @@ def test_category_matched_via_alias_without_official_word():
     # "数码" is an alias for the 数码电子 category, which isn't spelled out.
     filters = _parser().parse("推荐点数码好物")
     assert filters.category == "数码电子"
+
+
+def test_lead_in_hint_reports_compare_for_a_comparison_phrasing():
+    # The instant opener guess: a comparison phrasing yields ("compare", None), no LLM call.
+    assert _parser().lead_in_hint("第一个和第二个哪个好") == ("compare", None)

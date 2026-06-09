@@ -1,108 +1,60 @@
 # 后端服务 (Backend Service)
 
-本文档涵盖后端服务化：API、流式接口、配置、首屏延迟与缓存、降级容错、返回结构。意图与路由见 `IntentAndRouting.md`，数据与检索见 `RetrievalAndData.md`，各 Agent 见对应文档。入口在 `server/app.py`。
+这份讲后端这层：有哪些接口、流式输出怎么发、配置在哪、怎么让它感觉快、以及出了岔子怎么兜住不崩。听懂意图和路由在 [`IntentAndRouting.md`](IntentAndRouting.md)，数据和检索在 [`RetrievalAndData.md`](RetrievalAndData.md)。入口在 `server/app.py`。
 
-## 请求流程 (Main Request Flow)
+## 一次请求会发生什么
 
-### `POST /api/chat`（非流式）
+前端发来用户的一句话，外加一些上下文（购物车里有什么、最近展示过哪些商品、收货地址等）。后端先确认这句话不为空，然后交给导购的大脑去处理：路由器判断这句想干嘛，按结果分派给找商品 / 对比 / 购物车 / 多步任务各自的模块，最后把回答和商品卡拼成一个响应返回。带图片的请求在路由之前就先走图搜。
 
-请求体由 `ChatRequest` 校验，除 `message / session_id / top_k` 外，`client_context` 还带 `cart_items`、`recent_product_ids`、`compare_product_ids`、`address`，以及可选 `attachments`（图片）。处理流程：
+有两种返回方式：一种是**一次性**把完整结果返回（`/api/chat`），适合简单调用；另一种是**流式**（`/api/chat/stream`），一边生成一边往外发，用户不用干等。Demo 用的是流式。
 
-1. FastAPI 校验 message 非空。
-2. `ShoppingAssistant.answer()` 接管。
-3. LLM 路由分类器判类别（带 `last_route` 等上下文，见 `IntentAndRouting.md`）；带图片的请求在路由前就走图搜。
-4. 按路由分派：chitchat 直接回短句；comparison / cart / checkout / plan 各走对应 Agent；search 走检索。只有 search / comparison 跑较重的意图解析。
-5. 检索 → 软约束排序 / `excluded_terms` 由 LLM 在候选集上剔除 → 转 `ProductCard`。
-6. `build_messages()` 组 prompt（用户问题 + 解析结果 + 候选事实 + 诚实信号），`ChatClient.complete()` 生成回答，不可用时退确定性兜底。
-7. 返回 `ChatResponse`。
+> **技术细节**：核心接口 `POST /api/chat`（整包 JSON）、`POST /api/chat/stream`（SSE，另有别名 `/api/v1/chat/stream`）、`GET /api/products/{id}`（商品详情）、`GET /health`（存活探测）；商品图片由 `/assets/products` 静态目录提供。
 
-### `POST /api/chat/stream`（流式，另有别名 `/api/v1/chat/stream`）
+## 流式是怎么一帧帧发出来的
 
-流式接口在生成器内部跑 prepare，并为“首屏极速响应”调整了事件顺序。SSE，事件顺序：
+流式的顺序是特意排过的，为的是让用户尽快看到东西在动：
 
-1. `token`（开场白）：请求一进来先发一句中性短开场白（`opener_lead`，如“好的，”），此时路由都还没跑，首 token 在毫秒级；路由判定后再补一句和类别相关的尾巴（`opener_continuation`，如“我来帮您找面霜～”“对比一下”，chitchat 没有尾巴、由内联回复自报）。开场白只是流式装饰，不写入存储或非流式 JSON；它是延迟手段而非路由，猜错只是多/少一句开场白，不改变实际路由。
-2. `plan`：多步规划轮在 `prepare_stream` 阶段就逐步发 `plan` 帧（循环前一帧、每步置 running 一帧、done/failed 再一帧），所以 plan 帧先于下面的卡片。
-3. `cart` / `order`：购物车 / 下单轮发对应帧，且在卡片**之前**发——`cart` 购物车状态，`order` 订单状态（含金额与收货地址）。`order` 帧的 `type` 为 `order_submitted`（已提交）或 `order_draft`（待确认与已取消都归这个）。
-4. `products` / `comparison`（卡片）：检索一完成就把卡片发出去，不等正文。payload 同时含 `products`/`items`，商品字段同时含 `price/base_price` 和 `matched_reason/reason`。
-5. `token`（正文）：随后流式输出正文，payload 同时含 `token`/`delta`/`text` 兼容不同前端。
-6. `done`：结束标记，附 `session_id`、`retrieval_source`、`warnings`。
+1. **开场白**：请求一进来，先发一句中性的「好的，」，这时路由都还没判完，但用户已经看到字在动了。等路由判完，再补一句和类别相关的（「我来帮您找面霜～」）。
+2. **多步任务的进度**：如果是「推荐再加购」这种多步的，每一步开始和结束都发一帧，用户能看着步骤一个个走完。
+3. **购物车 / 订单状态**：涉及购物车或下单的，先把购物车、订单这些状态帧发出去。
+4. **商品卡**：检索一完成就先把卡片发出去，不等正文写完。
+5. **正文**：然后才一个字一个字地把回答流式输出。
+6. **结束帧**：最后一帧标记结束，带上会话 id、检索来源、警告等。
 
-content type 是 `text/event-stream; charset=utf-8`，UTF-8 解码避免中文乱码。当前发送 `token / products / comparison / cart / order / plan / done`。若 prepare 在生成器内抛错（开场白已发出，无法再返 500），会优雅补一句兜底再 `done`，不让前端挂住。
+万一中途出错（开场白已经发出去了，没法再返回一个错误码），就补一句兜底的话再结束，不让前端那边一直挂着转圈。
 
-### `GET /api/products/{product_id}`
+> **技术细节**：内容类型 `text/event-stream; charset=utf-8`；事件名 `token / products / comparison / cart / order / plan / done`；订单帧的 `type` 是 `order_submitted`（已提交）或 `order_draft`（待确认和已取消都归这个）。
 
-按 product id 返回原始商品详情，前端卡片的 `detail_path` 指向它。
+## 怎么让它感觉快
 
-### 其余端点
+一条全新的查询，本来要排队等三件慢事：模型读懂问题（约 1.2 秒）、把问题转成向量（约 1.75 秒）、模型写出回答的第一个字（约 1.1 秒），加起来用户要干等四秒多。我们用几招把这段等待藏起来：
 
-`GET /health` 返回 `{"status": "ok"}` 做存活探测；`/assets/products` 用 `StaticFiles` 挂在数据集目录上，给商品卡的 `image_path` 提供图片。
+- **先搭话**：上面说的开场白，首字毫秒级就出来了，用户不会觉得卡。图搜更慢，所以单独先发一句图搜的开场白。
+- **抢跑算向量**：趁模型还在读问题，后台就同时把向量先算上，等真要检索时往往已经算好了，冷查询能省约 1 秒。（只有找商品用得上；对比那种不预热。万一模型把问题改写了，预热结果用不上就退回正常速度，但绝不会更慢。）
+- **压缩提示词**：交给模型的商品事实经过压缩，回答的提示词大概减半。
+- **两级缓存**：一模一样的查询直接返回上次的结果（毫秒级）；说法不同但意思一样的查询，靠解析后的条件也能命中同一条缓存，省掉检索和模型那几步。
+- **缓存也不忘记上下文**：就算这一轮是缓存命中的，也会把「这轮展示了哪些商品」记进会话，这样用户接着说「第一个加购」还能对得上。
 
-## 配置 (Configuration)
+有几种轮次故意不走缓存：带购物车 / 对比 / 最近商品上下文的、涉及加购或多步或图片的，以及只要这个会话已经有历史了（因为这一轮很可能是「便宜点的」这种依赖上文的话，缓存反而会答错）。
 
-配置在 `server/config.py`，从 `.env` 加载（`.env` 已被 gitignore，真实 key 不进 git）。chat model 与 embedding model 各自独立配置：
+> **技术细节**：开场白 `opener_*`；预热 `ProductRetriever.prewarm_query()`；缓存 `QueryCache`（按归一化 query + top_k）和 `FilterCache`（按解析后的 `SearchFilters`），都只缓存无上下文的 `product_search`；不走缓存的判断含 `has_session_history`；缓存命中重建上下文用 `record_cached_turn`。
 
-```env
-# Chat model — OpenAI 兼容 endpoint。
-CHAT_API_KEY=
-CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-CHAT_MODEL=gemini-3.1-flash-lite
+## 出岔子了怎么办（降级容错）
 
-# Embedding model — Doubao（保持不变：milvus.db 是在该 embedding space 建的）。
-ARK_EMBEDDING_API_KEY=
-ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215
-```
+核心原则：某个外部能力挂了，尽量还能给个能解释的结果，而不是直接报错。
 
-client 是 OpenAI 兼容的，换 chat 模型只改配置不改业务代码。降级/调试开关：`ENABLE_VECTOR_SEARCH` / `ENABLE_LLM` / `ENABLE_LLM_INTENT` / `ENABLE_QUERY_CACHE` / `ENABLE_FILTER_CACHE`。另有若干 env-overridable 运营旋钮（如单行数量上限 `RAG_MAX_CART_QUANTITY`、各类 cap）。
+- **向量检索挂了**（缺 key、库打不开、接口失败）：写一条警告、标记为「降级」，但关键词检索照常工作，照样能找出商品。
+- **模型挂了**：一次性返回用确定性的方式拼一个有依据的回答，流式则按固定块输出兜底文案，并说明模型暂时不可用。兜底回答仍然只基于真实命中的商品，不编。
+- **路由器挂了**：退回关键词路由。
 
-## 首屏延迟与缓存 (Latency & Caching)
+## 返回里有什么
 
-冷启动一条全新查询的关键路径是三次串行往返：意图 LLM（约 1.2s）→ 向量 embedding（冷约 1.75s）→ 回答 LLM 首 token（约 1.1s）。优化：
+一次回答返回的东西，前端可以直接拿去渲染：回答文字、商品卡列表、对比结果、购物车状态、订单状态、多步计划，外加会话 id、检索来源、是否降级、警告列表。商品卡里有商品 id、标题、品牌、类目、价格、价格说明、图片、详情入口、以及「为什么推荐它」的一句话。
 
-- **首句开场白**：见上，首 token 毫秒级。
-- **图搜开场白**：图搜轮的 VLM embedding 更慢，先单独发一句 `photo_opener` 占住首屏，思路同上。
-- **向量预热（流水线并行）**：`ProductRetriever.prewarm_query()` 趁意图 LLM 还在读 query，就用线程池在后台先把 query 向量算好、存成 future，检索阶段直接 `await`，冷查询能省约 1s。它只对搜索路径有用，带 `compare_product_ids` 的对比轮不预热。万一意图 LLM 把 query 改写成了另一段文本，预热结果用不上，就退回串行速度，但绝不会更慢。embedding 缓存的多线程读写已加锁。
-- **Prompt 压缩**：回答 prompt 约减半（见 `RetrievalAndData.md` 的 product facts 压缩）。
-- **两级回答缓存**：精确缓存 `QueryCache`（按归一化 query + top_k，命中 <0.1s，只缓存无上下文的 `product_search`）；意图缓存 `FilterCache`（按解析后的 `SearchFilters` 语义字段，同义不同写法命中同一条，命中跳过 embedding/检索/回答 LLM，约 1.3s）。catalog 静态，只设 LRU 上限不设 TTL。
-- **不走缓存的轮次**：带购物车、对比、最近商品上下文的轮，以及 commerce / planner / attachments 的轮。另外，只要这个 session 已经有历史（`has_session_history`），这一轮就可能是依赖上文的改写（“便宜点的”），文本缓存既不命中也不写入，一切以服务端会话记忆为准。`FilterCache` 在 `exclude_seen`（“换一批”）和 `recall_product_ids`（“回到最开始”）时也不缓存，免得把翻新、回看的请求错误复用。
-- **缓存命中也登记会话记忆**：命中之后用 `record_cached_turn` 从缓存响应里把“这轮展示过的商品和 filters”重建出来、写回会话记忆，后面的指代追问才接得上。流式命中走 `_sse_replay`，再补一句和新轮一样的开场白，让缓存回复读起来和现算的没差别。
+> **技术细节**：响应是 `ChatResponse`，商品卡是 `ProductCard`；`retrieval_source` 取值 `vector / lexical / hybrid / none`，`degraded` 跟着警告走。
 
-## 降级与容错 (Degradation)
+## 测试与现状
 
-关键原则：单个外部能力失败时，API 尽量返回可解释结果，而不是直接 500。
+测试覆盖意图（模型 + 规则兜底）、检索（含融合）、对比、多步规划、购物车与下单、库存、收货地址、多轮记忆、排除判定、诚实回复、路由分类等。跑 `.venv/bin/python -m pytest -q` 即可。注意：Milvus 在受限沙箱里可能因为绑不上本地 socket 而失败，正常本机权限下能过。
 
-- **向量检索失败**（embedding key 缺失 / Milvus 打不开 / API 失败 / search 抛错）：写 warning，`degraded=true`，lexical retrieval 继续工作。图片 embedding 失败也降级到 lexical。
-- **LLM 失败**（`ENABLE_LLM=false` / chat key 缺失 / API 错误 / stream 中断）：非流式用确定性兜底回答，流式按固定 chunk 输出兜底，warning 说明 LLM 不可用。兜底回答仍只基于命中结果，不编造。
-- **路由 LLM 失败**：退回关键词路由（见 `IntentAndRouting.md`）。
-
-## 返回结构 (Response Shape)
-
-`ChatResponse`：
-
-```python
-answer: str
-products: list[ProductCard]
-comparison: ProductComparison | None   # 对比结果（维度行 + winner）
-cart: CartUpdate | None                # 购物车状态
-order: OrderDraft | None               # 订单状态（待确认/已提交/已取消，含地址）
-plan: ExecutionPlan | None             # 多步计划及每步状态
-session_id: str | None
-intent: dict
-retrieval_source: "vector" | "lexical" | "hybrid" | "none"
-degraded: bool
-warnings: list[str]
-```
-
-`ProductCard`：`product_id / title / brand / category / sub_category / price / price_label / price_summary / lowest_price_sku / selected_price_sku / image_path / detail_path / matched_reason`。前端可直接渲染回答、卡片、详情入口，并按 `degraded` / `warnings` 做调试提示。
-
-## 测试
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-测试覆盖意图（LLM + 规则兜底）、检索（含 RRF）、对比、多步规划、购物车与下单、库存、收货地址、多轮记忆、排除判定、诚实回复、路由分类等。注意：Milvus Lite 测试在受限 sandbox 里可能因 `Operation not permitted` 失败，正常本机权限下可通过。
-
-## 现状与后续
-
-已上线：LLM 意图解析、多轮记忆、hybrid RRF 检索、首屏极速响应（开场白 + 预热 + 卡片优先 + prompt 压缩）、两级回答缓存、图搜、购物车与下单、多步规划、库存、上下文路由。后续可继续：检索 reranker / 评分权重、真实支付与物流、把会话内购物车/订单/库存状态持久化到数据库、日志 trace 与 evaluation。
+已经做完的：模型意图解析、多轮记忆、混合检索、首屏极速、两级缓存、图搜、购物车与下单、多步规划、库存、上下文路由。往后可以做的：检索精排、真实支付与物流、把会话状态落到数据库、加日志追踪和评测集。

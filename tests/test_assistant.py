@@ -1110,6 +1110,12 @@ def test_unrecognised_pending_reply_falls_through_to_normal_routing():
     assert prepared.products
 
 
+def test_prepare_records_the_client_address_on_the_session_order_state():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐面霜", session_id="addr", top_k=3, client_address="上海市浦东新区世纪大道1号")
+    assert assistant._session("addr").order.address == "上海市浦东新区世纪大道1号"
+
+
 # --- proactive clarification (主动反问) -----------------------------------------
 
 class _RouteParseLLM:

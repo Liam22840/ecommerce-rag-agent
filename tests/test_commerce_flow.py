@@ -12,6 +12,7 @@ from server.commerce import (
     OrderState,
     _coerce_int,
     _looks_like_add_ref,
+    _pending_reply_refs,
     _pool_product_id,
     looks_like_commerce,
 )
@@ -1006,3 +1007,148 @@ def test_add_ordinal_out_of_range_asks_to_clarify():
     )
     assert res.cart.needs_clarification is True
     assert "序号" in res.answer  # asks for a valid position rather than grabbing the first item
+
+
+# --- inventory caps (multi-add / increment / set_quantity), select-all, winner-ref -----
+
+def _multi_session(catalog, *pids):
+    return [{"id": pid, "title": catalog.get(pid)["title"]} for pid in pids]
+
+
+def test_multi_add_reports_sold_out_items():
+    # p_beauty_002 is pinned sold-out; the healthy one is added, the sold-out one is reported.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="add", product_ids=["p_beauty_001", "p_beauty_002"],
+                                target_scope="shown_products", confidence="high"),
+        "把这两个加入购物车", cart_items=[],
+        session_products=_multi_session(catalog, "p_beauty_001", "p_beauty_002"), order_state=OrderState(),
+    )
+    assert {i.product_id for i in res.cart.items} == {"p_beauty_001"}
+    assert "库存不足，未加入" in res.answer
+
+
+def test_multi_add_reports_when_some_items_capped():
+    # p_digital_003 (stock 2) capped, p_beauty_001 (healthy) full at 5.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="add", product_ids=["p_digital_003", "p_beauty_001"], quantity=5,
+                                target_scope="shown_products", confidence="high"),
+        "各来五件", cart_items=[],
+        session_products=_multi_session(catalog, "p_digital_003", "p_beauty_001"), order_state=OrderState(),
+    )
+    assert {i.product_id: i.quantity for i in res.cart.items} == {"p_digital_003": 2, "p_beauty_001": 5}
+    assert "部分商品已按库存上限加入" in res.answer
+
+
+def test_select_all_scopes_the_add_to_the_latest_batch():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    ids = ["p_beauty_007", "p_beauty_008", "p_beauty_011"]
+    svc = CommerceService(catalog, llm=_StubLLM({"action": "add", "product_ids": ids}))
+    res = svc.maybe_handle(
+        "都加入购物车", cart_items=[], session_products=_multi_session(catalog, *ids),
+        order_state=OrderState(), latest_batch_ids=["p_beauty_007", "p_beauty_008"],
+    )
+    assert {i.product_id for i in res.cart.items} == {"p_beauty_007", "p_beauty_008"}  # 011 (older batch) dropped
+
+
+def test_add_referring_to_a_winner_with_none_on_record_clarifies():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="add", product_ids=["p_beauty_007"],
+                                target_scope="shown_products", confidence="high"),
+        "买之前对比胜出的那个", cart_items=[],
+        session_products=_multi_session(catalog, "p_beauty_007"), order_state=OrderState(),
+    )
+    assert res.cart.needs_clarification is True
+    assert "对比结果已经更新" in res.answer
+
+
+def test_increment_blocked_when_stock_exhausted():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="increment", quantity=1, target_scope="cart_items", confidence="high"),
+        "再加一件", cart_items=[{"product_id": "p_digital_003", "quantity": 2}],
+        session_products=None, order_state=OrderState(),
+    )
+    assert res.cart.items[0].quantity == 2  # already at stock 2, unchanged
+    assert "已无法再增加" in res.answer
+
+
+def test_increment_capped_to_available_stock():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="increment", quantity=5, target_scope="cart_items", confidence="high"),
+        "再加五件", cart_items=[{"product_id": "p_digital_003", "quantity": 1}],
+        session_products=None, order_state=OrderState(),
+    )
+    assert res.cart.items[0].quantity == 2  # 1 + capped 1
+    assert "已按上限" in res.answer
+
+
+def test_set_quantity_variant_switch_keeps_quantity_and_reprices():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="set_quantity", sku="家用装", target_scope="cart_items", confidence="high"),
+        "换成家用装", cart_items=[{"product_id": "p_beauty_001", "quantity": 2}],
+        session_products=None, order_state=OrderState(),
+    )
+    item = res.cart.items[0]
+    assert item.quantity == 2              # quantity preserved
+    assert item.unit_price == 1260.0       # re-priced to 75ml 家用装
+    assert "换成" in res.answer
+
+
+def test_set_quantity_capped_to_available_stock():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="set_quantity", quantity=5, target_scope="cart_items", confidence="high"),
+        "数量改成5", cart_items=[{"product_id": "p_digital_003", "quantity": 1}],
+        session_products=None, order_state=OrderState(),
+    )
+    assert res.cart.items[0].quantity == 2  # capped to stock 2
+    assert "已按上限" in res.answer
+
+
+def test_set_address_with_empty_value_keeps_the_existing_address():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    state = OrderState(address="北京市海淀区中关村1号")
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="set_address", address=None, confidence="high"),
+        "改个地址", cart_items=[], session_products=[], order_state=state,
+    )
+    assert state.address == "北京市海淀区中关村1号"  # empty address ignored, existing kept
+    assert "北京市海淀区中关村1号" in res.answer
+
+
+def test_pending_reply_refs_empty_without_a_ref_or_ordinal():
+    assert _pending_reply_refs("那个便宜的") == []
+
+
+def test_add_multi_ordinal_all_out_of_range_clarifies():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    res = CommerceService(catalog, llm=None).apply_candidate(
+        CommerceActionCandidate(action="add", refs=["第五个"], target_scope="shown_products", confidence="high"),
+        "第五个加入购物车", cart_items=[],
+        session_products=_multi_session(catalog, "p_beauty_007", "p_beauty_008"), order_state=OrderState(),
+    )
+    assert res.cart.needs_clarification is True
+    assert "没有你说的那一个" in res.answer
+
+
+def test_select_all_keeps_everything_when_none_are_in_the_latest_batch():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    ids = ["p_beauty_007", "p_beauty_008"]
+    svc = CommerceService(catalog, llm=_StubLLM({"action": "add", "product_ids": ids}))
+    res = svc.maybe_handle(
+        "都加入购物车", cart_items=[], session_products=_multi_session(catalog, *ids),
+        order_state=OrderState(), latest_batch_ids=["p_beauty_999"],  # nothing resolved is in this batch
+    )
+    assert {i.product_id for i in res.cart.items} == {"p_beauty_007", "p_beauty_008"}  # scope no-op, all kept
+
+
+def test_build_cart_item_with_an_unknown_sku_falls_back_to_the_base_card():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    product = catalog.get("p_beauty_001")
+    item = build_cart_item(catalog, product, 1, sku_id="s_does_not_exist")
+    assert item.unit_price == catalog.lowest_price(product)  # bogus sku -> default lowest price

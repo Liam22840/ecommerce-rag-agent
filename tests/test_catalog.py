@@ -445,3 +445,11 @@ def test_sku_id_for_phrase_matches_label_and_falls_back():
     assert catalog.sku_id_for_phrase(product, target["label"]) == target["sku_id"]
     assert catalog.sku_id_for_phrase(product, "完全不存在的规格xyz") is None
     assert catalog.sku_id_for_phrase(product, None) is None
+
+
+def test_type_group_for_term_returns_empty_for_a_known_subcategory_and_groups_a_family():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assert catalog.type_group_for_term("面霜") == set()   # already a sub-category -> no padding group
+    assert catalog.type_group_for_term("") == set()
+    group = catalog.type_group_for_term("运动鞋")          # not a sub, but several 鞋 sub-categories share the tail
+    assert len(group) >= 2 and all(s.endswith("鞋") for s in group)

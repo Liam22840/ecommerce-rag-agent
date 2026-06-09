@@ -1,6 +1,5 @@
 .DS_Store
 ProjectSpecification.md
-docs/
 .venv/
 .env
 data/*
