@@ -6,9 +6,15 @@ LLM text or user-provided cart labels.
 
 from __future__ import annotations
 
+import os
+
 from server.catalog import ProductCatalog
 from server.intent import SearchFilters
 from server.schemas import CartItem, ProductCard
+
+# Upper bound on a single cart line's quantity. A pathological "要1000000件" clamps to this
+# (env-overridable) instead of pricing an absurd subtotal; the cart then shows the capped count.
+MAX_CART_QUANTITY = int(os.environ.get("RAG_MAX_CART_QUANTITY", "999"))
 
 
 def cart_card(catalog: ProductCatalog, product: dict, sku_id: str | None = None) -> ProductCard:
@@ -39,14 +45,15 @@ def build_cart_item(
     card = cart_card(catalog, product, sku_id)
     selected = card.selected_price_sku or card.lowest_price_sku
     unit_price = float(selected.price if selected else card.price)
+    qty = max(0, min(int(quantity), MAX_CART_QUANTITY))
     return CartItem(
         product_id=card.product_id,
         sku_id=selected.sku_id if selected else sku_id,
-        quantity=max(0, int(quantity)),
+        quantity=qty,
         product=card,
         unit_price=unit_price,
         price_label=card.price_label,
-        line_total=round(unit_price * max(0, int(quantity)), 2),
+        line_total=round(unit_price * qty, 2),
     )
 
 

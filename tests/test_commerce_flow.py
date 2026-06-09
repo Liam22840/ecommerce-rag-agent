@@ -16,6 +16,7 @@ from server.commerce import (
     looks_like_commerce,
 )
 from server.config import Settings
+from server.pricing import MAX_CART_QUANTITY, build_cart_item
 from server.retrieval import ProductRetriever
 
 
@@ -462,6 +463,15 @@ def test_per_item_quantities_on_a_multi_add():
     res = svc.maybe_handle("第一个买两瓶，第二个买三瓶", cart_items=[], session_products=session, order_state=OrderState())
 
     assert {i.product_id: i.quantity for i in res.cart.items} == {p0: 2, p1: 3}
+
+
+def test_cart_line_quantity_is_capped_to_a_sane_maximum():
+    # A pathological "要1000000件" clamps to MAX_CART_QUANTITY instead of pricing an absurd subtotal.
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    product = catalog.products[0]
+    item = build_cart_item(catalog, product, 1_000_000)
+    assert item.quantity == MAX_CART_QUANTITY
+    assert item.line_total == round(item.unit_price * MAX_CART_QUANTITY, 2)
 
 
 def test_add_honours_a_named_sku_price():
