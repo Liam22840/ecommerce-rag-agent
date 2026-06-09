@@ -9,6 +9,16 @@ A multi-modal e-commerce intelligent shopping agent based on RAG.
 - `ingestion/`: Python package with chunk extraction, the Doubao multimodal embedding client, and the Milvus Lite store.
 - `ingest.py`: CLI to run the full pipeline.
 
+## 设计文档 (Design docs)
+
+设计文档按系统组件划分。下表给出评分维度到文档的索引，方便按维度查阅：
+
+| 评分维度 | 文档 |
+| --- | --- |
+| 3.1 数据工程与特征治理 | [`RetrievalAndData.md`](RetrievalAndData.md) |
+| 3.2 模型 / Agent 编排 | [`IntentAndRouting.md`](IntentAndRouting.md)、[`CartCheckoutAgent.md`](CartCheckoutAgent.md)、[`ComparisonDecisionAgent.md`](ComparisonDecisionAgent.md)、[`PlannerAgent.md`](PlannerAgent.md) |
+| 3.3 后端服务化 | [`BackendService.md`](BackendService.md) |
+
 ## Setup
 
 ```bash
