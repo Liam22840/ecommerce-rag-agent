@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from server.textutil import (
+    chinese_to_int,
     dedupe,
     dedupe_ids,
     dedupe_int,
@@ -11,6 +12,28 @@ from server.textutil import (
     normalize_spec,
     trim,
 )
+
+
+# --- chinese_to_int -------------------------------------------------------------
+
+def test_chinese_to_int_parses_digits_chinese_and_mixed():
+    assert chinese_to_int("7") == 7
+    assert chinese_to_int("三") == 3
+    assert chinese_to_int("十") == 10
+    assert chinese_to_int("二十三") == 23
+    assert chinese_to_int("三百五十") == 350
+    assert chinese_to_int("三百五") == 350  # trailing bare digit scales by the last unit
+    assert chinese_to_int("一万") == 10000
+    assert chinese_to_int("1万") == 10000
+
+
+def test_chinese_to_int_keeps_zero_but_rejects_non_numbers():
+    # A real zero must round-trip (used by "数量改成0"); only unparseable input is None.
+    assert chinese_to_int("0") == 0
+    assert chinese_to_int("零") == 0
+    assert chinese_to_int("") is None
+    assert chinese_to_int("第三个") is None
+    assert chinese_to_int("三只松鼠") is None
 
 
 # --- json_object ----------------------------------------------------------------

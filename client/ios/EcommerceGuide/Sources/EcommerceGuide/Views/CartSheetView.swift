@@ -11,7 +11,9 @@ struct CartSheetView: View {
 
     private var total: Decimal {
         items.reduce(Decimal.zero) { partialResult, item in
-            partialResult + (item.product.basePrice * Decimal(item.quantity))
+            // Use the chosen SKU's unit price when the server has priced it; otherwise the base price.
+            let unit = item.unitPrice.map { Decimal($0) } ?? item.product.basePrice
+            return partialResult + (unit * Decimal(item.quantity))
         }
     }
 
@@ -140,7 +142,7 @@ private struct CartItemRowView: View {
                 ProductSpecLine(product: item.product)
 
                 HStack(alignment: .center) {
-                    Text(item.product.formattedPrice)
+                    Text(item.priceLabel ?? item.product.formattedPrice)
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(GuideTheme.accent)
 

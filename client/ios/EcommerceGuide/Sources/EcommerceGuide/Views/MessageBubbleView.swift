@@ -13,12 +13,22 @@ struct MessageBubbleView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(message.text.isEmpty ? "正在思考..." : message.text)
-                    .font(.subheadline)
-                    .lineSpacing(2)
-                    .foregroundStyle(message.role == .user ? .white : GuideTheme.inkStrong)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if let imageData = message.imageData, let image = platformImage(data: imageData) {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: 180, maxHeight: 180)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                if !(message.imageData != nil && message.text.isEmpty) {
+                    Text(message.text.isEmpty ? "正在思考..." : message.text)
+                        .font(.subheadline)
+                        .lineSpacing(2)
+                        .foregroundStyle(message.role == .user ? .white : GuideTheme.inkStrong)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
 
                 if message.isStreaming {
                     ProgressView()
@@ -61,3 +71,19 @@ struct AssistantAvatarView: View {
         .accessibilityHidden(true)
     }
 }
+
+#if canImport(UIKit)
+import UIKit
+
+func platformImage(data: Data) -> Image? {
+    UIImage(data: data).map { Image(uiImage: $0) }
+}
+#elseif canImport(AppKit)
+import AppKit
+
+func platformImage(data: Data) -> Image? {
+    NSImage(data: data).map { Image(nsImage: $0) }
+}
+#else
+func platformImage(data: Data) -> Image? { nil }
+#endif

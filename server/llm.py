@@ -1,4 +1,4 @@
-"""Volcengine Ark chat client with OpenAI-compatible streaming parsing."""
+"""OpenAI-compatible chat client with streaming parsing."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ class ModelUnavailable(RuntimeError):
     """Raised when the model cannot be called and the app should degrade."""
 
 
-class ArkChatClient:
+class ChatClient:
     def __init__(
         self,
         api_key: str | None,
@@ -31,7 +31,7 @@ class ArkChatClient:
 
     def complete(self, messages: list[dict[str, str]]) -> str:
         if not self._api_key:
-            raise ModelUnavailable("ARK_CHAT_API_KEY not set")
+            raise ModelUnavailable("CHAT_API_KEY not set")
         resp = requests.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers(),
@@ -45,7 +45,7 @@ class ArkChatClient:
 
     def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
         if not self._api_key:
-            raise ModelUnavailable("ARK_CHAT_API_KEY not set")
+            raise ModelUnavailable("CHAT_API_KEY not set")
         with requests.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers(),

@@ -54,6 +54,16 @@ class DoubaoEmbedder:
         key = text_key(text)
         return self._embed_item(key, {"type": "text", "text": text})
 
+    def embed_image(self, image_bytes: bytes) -> list[float]:
+        """Embed an uploaded image (raw bytes) with the same model/cache as image chunks."""
+        key = image_key(image_bytes)
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        item = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        }
+        return self._embed_item(key, item)
+
     def _build_input(self, chunk: Chunk) -> tuple[str, dict]:
         """Return (cache_key, api_input_item) for a single chunk."""
         if chunk.chunk_type == "image":

@@ -78,7 +78,7 @@ def test_parses_brand_exclusion_for_future_advanced_cases():
 
 def test_excluded_brand_clears_contradictory_positive_brand():
     # Regression: "不要华为的" matches 华为 as both a bare substring (positive brand) and an
-    # exclusion; the contradictory positive brand must be dropped so the filter isn't impossible.
+    # exclusion. The contradictory positive brand must be dropped so the filter isn't impossible.
     filters = _parser().parse("推荐手机，不要华为的")
 
     assert "华为" in filters.excluded_brands
@@ -86,7 +86,7 @@ def test_excluded_brand_clears_contradictory_positive_brand():
 
 
 def test_approximate_price_widens_zero_width_band():
-    # Regression: the LLM collapses "三百左右" to min==max==300, which matches nothing; an
+    # Regression: the LLM collapses "三百左右" to min==max==300, which matches nothing, so an
     # approximate marker must widen it to a tolerance band.
     parser = _llm_parser({"sub_category": "面霜", "min_price": 300, "max_price": 300})
 
@@ -122,6 +122,24 @@ def test_parses_requested_specs():
 def test_parses_min_price_above_and_not_below():
     assert _parser().parse("1000元以上的手机").min_price == 1000.0
     assert _parser().parse("不低于500的耳机").min_price == 500.0
+
+
+def test_rule_parser_understands_chinese_numeral_prices():
+    # The chat model handles Chinese numbers directly. This covers the deterministic fallback for
+    # when the model is unavailable, which must also parse Chinese numerals, not only Arabic digits.
+    p = _parser()
+    assert p.parse("三百以内的洗面奶").max_price == 300.0
+    assert p.parse("不超过一万的手机").max_price == 10000.0
+    assert p.parse("一千元以上的耳机").min_price == 1000.0
+    assert p.parse("三百五十以内的面霜").max_price == 350.0
+    # Numerals inside a name must not be read as a price.
+    assert p.parse("三只松鼠的零食").max_price is None
+
+
+def test_llm_planned_task_intent_is_coerced_and_routes():
+    # The intent LLM is now the router; planned_task must survive coercion (it's a valid intent value).
+    parser = _llm_parser({"intent_type": "planned_task"})
+    assert parser.parse("推荐跑鞋并对比最便宜的两双加入购物车").intent_type == "planned_task"
 
 
 def test_parses_excluded_terms_from_negation():

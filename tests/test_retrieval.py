@@ -184,6 +184,55 @@ def test_vector_search_exception_degrades_to_lexical():
     assert result.hits  # lexical fallback still produced results
 
 
+# --- image-vector path (photo-find) ---------------------------------------------
+
+def test_embed_image_delegates_to_embedder():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    embedder = FakeEmbedder(vector=[0.7, 0.8])
+    embedder.embed_image = lambda b: [0.7, 0.8]  # type: ignore[attr-defined]
+    retriever = _retriever_with_vector(catalog, raw_hits=[], embedder=embedder)
+    assert retriever.embed_image(b"\xff\xd8") == [0.7, 0.8]
+
+
+def test_embed_image_is_none_without_vector_search():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = ProductRetriever(catalog, _lexical_settings())  # vector disabled
+    assert retriever.embed_image(b"\xff\xd8") is None
+
+
+def test_retrieve_with_image_vector_searches_store_and_ranks():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    raw = [{"product_id": "p_beauty_011", "score": 0.9, "text": "图片片段"}]
+    retriever = _retriever_with_vector(catalog, raw)
+
+    # No lexical overlap ("zzzzz") -> only the image-vector hit survives, source is vector.
+    result = retriever.retrieve("zzzzz", SearchFilters(), limit=3, image_vector=[0.1, 0.2])
+
+    assert result.source == "vector"
+    assert [hit.product["product_id"] for hit in result.hits] == ["p_beauty_011"]
+    # The store was searched with the image vector, and embed_text was NOT called.
+    assert retriever._store.calls[0][0] == [0.1, 0.2]
+    assert retriever._embedder.calls == []
+
+
+def test_retrieve_with_image_vector_degrades_to_lexical_on_store_error():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+
+    class _BoomStore(FakeStore):
+        def search(self, vector, k):
+            raise RuntimeError("milvus down")
+
+    retriever = _retriever_with_vector(catalog, raw_hits=[])
+    retriever._store = _BoomStore([])
+
+    query = "推荐一款适合油皮的洗面奶"
+    result = retriever.retrieve(query, _filters(catalog, query), limit=3, image_vector=[0.1, 0.2])
+
+    assert result.source == "lexical"
+    assert any("image vector search unavailable" in w for w in result.warnings)
+    assert result.hits  # lexical still produced results
+
+
 # --- _merge_hit -----------------------------------------------------------------
 
 def test_merge_hit_inserts_new_product():
@@ -234,7 +283,7 @@ def test_rrf_fusion_combines_by_rank_not_raw_magnitude():
     retriever._fuse_by_rank(merged, vector_ranked)
     retriever._fuse_by_rank(merged, lexical_ranked)
 
-    # A = 1/RRF_K (vec #1) + 1/(RRF_K+1) (lex #2); B is the mirror image -> equal scores.
+    # A = 1/RRF_K (vec #1) + 1/(RRF_K+1) (lex #2), B is the mirror image -> equal scores.
     assert abs(merged["A"].score - merged["B"].score) < 1e-12
     assert merged["A"].score == 1.0 / RRF_K + 1.0 / (RRF_K + 1)
     assert merged["A"].source == "hybrid" and merged["B"].source == "hybrid"
@@ -279,7 +328,7 @@ def test_prewarm_query_ignores_embed_failure():
     embedder = FakeEmbedder(error=RuntimeError("embed down"))
     retriever = _retriever_with_vector(catalog, raw_hits=[], embedder=embedder)
 
-    retriever.prewarm_query("推荐一款洗面奶")  # the embed runs on a worker; the failure stays in the future
+    retriever.prewarm_query("推荐一款洗面奶")  # the embed runs on a worker, the failure stays in the future
 
     assert _wait_until(lambda: embedder.calls == ["推荐一款洗面奶"])
     # When retrieval awaits the failed pre-warm it degrades to lexical, never crashes.
@@ -289,7 +338,7 @@ def test_prewarm_query_ignores_embed_failure():
 
 def test_prewarm_then_retrieve_embeds_the_query_only_once():
     # The whole point of the fix: retrieval awaits the in-flight pre-warm instead of embedding
-    # the query a second time (which the cold-embed-slower-than-intent case used to trigger).
+    # the query a second time (which the cold-embed-slower-than-intent case would otherwise cause).
     catalog = ProductCatalog.load(DATASET_ROOT)
     raw = [{"product_id": "p_beauty_011", "score": 0.5, "text": "片段"}]
     embedder = FakeEmbedder()

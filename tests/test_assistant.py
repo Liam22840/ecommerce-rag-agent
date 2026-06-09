@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from server.assistant import ShoppingAssistant, _chunk_text, _reason
+from server.assistant import ShoppingAssistant, _chunk_text, _looks_like_greeting, _reason
 from server.catalog import CatalogHit, ProductCatalog
+from server.commerce import CommerceActionCandidate
 from server.config import Settings
 from server.filter_cache import FilterCache
 from server.intent import SearchFilters
@@ -95,7 +96,7 @@ def test_excluded_ids_ignores_ids_not_in_shortlist():
 def test_excluded_ids_falls_back_to_deterministic_when_llm_unavailable():
     assistant = _assistant(llm=FakeLLM(available=False))
     hits = _hits(assistant, "p_beauty_007", "p_beauty_008")
-    # p_beauty_008's own copy positively claims 烟酰胺; 007 does not.
+    # p_beauty_008's own copy positively claims 烟酰胺, 007 does not.
     assert assistant._excluded_ids(hits, ["烟酰胺"]) == {"p_beauty_008"}
 
 
@@ -185,7 +186,7 @@ def test_stream_answer_stops_without_duplicate_when_stream_fails_midway():
 
     tokens = list(assistant.stream_answer(prepared))
 
-    # First token already sent; we stop rather than re-emitting the fallback.
+    # First token already sent, we stop rather than re-emitting the fallback.
     assert tokens == ["部分"]
     assert prepared.grounded_answer not in "".join(tokens)
 
@@ -269,12 +270,14 @@ class _SpyRetriever:
     def __init__(self):
         self.queries: list[str] = []
         self.prewarmed: list[str] = []
+        self.limits: list[int] = []
 
     def prewarm_query(self, text):
         self.prewarmed.append(text)
 
-    def retrieve(self, query, filters, limit):
+    def retrieve(self, query, filters, limit, image_vector=None):
         self.queries.append(query)
+        self.limits.append(limit)
         return RetrievalResult(hits=[], source="none")
 
 
@@ -322,19 +325,67 @@ def test_prepare_skips_prewarm_for_explicit_comparison():
     assert spy.prewarmed == []  # comparison never retrieves, so nothing to pre-warm
 
 
-def test_lead_in_is_tailored_by_rule_parser_or_neutral():
+def test_opener_matches_the_route():
     a = _assistant()
-    # A named product type personalises the opener (rule parser maps it, no model call).
-    assert "面霜" in a.lead_in("三百以内的面霜")
-    # An explicit comparison from the request opens with 对比.
-    assert "对比" in a.lead_in("随便", compare_product_ids=["a", "b"])
-    # A vague / chit-chat query the rules can't place falls back to a bare neutral ack — no
-    # lookup implication, no greeting (which would clash with a chit-chat reply's own greeting).
-    assert a.lead_in("你好") == "好的～\n"
-    # A modifier negation still tailors (they want 面霜, just not greasy)...
-    assert "面霜" in a.lead_in("不要油腻的面霜")
-    # ...but negating the type itself opens neutral, never offering the excluded type.
-    assert a.lead_in("不要面霜") == "好的～\n"
+    # A search opener names the product type — the label comes from the instant rule parse.
+    assert "面霜" in a.opener("product_search", "三百以内的面霜")
+    assert "面霜" in a.opener("product_search", "不要油腻的面霜")  # modifier negation still tailors
+    # Negating the type itself yields no label, so a generic search opener (never offers 面霜).
+    assert "面霜" not in a.opener("product_search", "不要面霜")
+    # Other routes get a route-appropriate opener, not a search line.
+    assert "对比" in a.opener("comparison", "随便")
+    assert "购物车" in a.opener("cart_action", "把最贵的删了")
+    # Chitchat gets no opener — its reply greets for itself.
+    assert a.opener("chitchat", "你好") == ""
+    # The opener leads with one of the varied acknowledgements (one of which itself contains a 顿号,
+    # so match the prefix rather than splitting on the separator).
+    leads = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+    opener = a.opener("product_search", "面霜")
+    assert any(opener.startswith(lead) for lead in leads)
+
+
+_OPENER_LEADS = ("好的", "好嘞", "没问题", "收到", "好的呀", "嗯，好的")
+
+
+def test_streaming_opener_flushes_instant_lead_then_route_tail():
+    # 首Token: the instant lead is flushed before the router, then the route-specific tail completes
+    # the line once the route is known (intent_llm off -> fallback route -> product_search).
+    a = _assistant()
+    tokens = [u for u in a.prepare_stream("三百以内的面霜", session_id="s", top_k=3) if isinstance(u, str)]
+    assert len(tokens) == 2
+    assert tokens[0].startswith(_OPENER_LEADS) and tokens[0].endswith("，")  # instant, route-neutral
+    assert "面霜" in tokens[1]  # the tail names the product type once the route is known
+    assert "".join(tokens).endswith("～\n")
+
+
+def test_streaming_greeting_suppresses_instant_lead_and_opener():
+    # A greeting routes to chitchat (the stub router answers it) and the greeting gate suppresses the
+    # instant lead, so the turn streams no opener at all — the chitchat reply greets for itself.
+    a = _assistant_with_intent(_ScriptedLLM())
+    tokens = [u for u in a.prepare_stream("你好", session_id="s", top_k=3) if isinstance(u, str)]
+    assert tokens == []
+
+
+def test_greeting_gate_only_catches_short_greetings():
+    assert _looks_like_greeting("你好") is True
+    assert _looks_like_greeting("谢谢") is True
+    assert _looks_like_greeting("hi") is True
+    # A real shopping turn that merely opens with a greeting is too long to be gated, so it keeps its
+    # instant lead; a plain shopping query has no greeting token at all.
+    assert _looks_like_greeting("你好，推荐个面霜") is False
+    assert _looks_like_greeting("推荐面霜") is False
+
+
+def test_comparison_winner_cleared_on_new_search_but_survives_other_turns():
+    a = _assistant()
+    sid = "win"
+    a._session(sid).last_winner_id = "p_beauty_007"
+    # A turn that shows no new product list (e.g. a cart turn) must not drop the winner.
+    a._remember_turn(sid, "q", SearchFilters(), [])
+    assert a._session(sid).last_winner_id == "p_beauty_007"
+    # A fresh product list invalidates it, so a later "更好的那个" can't resolve to a stale winner.
+    a.prepare("推荐三款面霜", session_id=sid, top_k=3)
+    assert a._session(sid).last_winner_id is None
 
 
 # --- filter-keyed safe cache ---------------------------------------------------
@@ -392,6 +443,25 @@ def test_filter_cache_skips_session_context_turns():
 
 # --- multi-round history + relative refinements --------------------------------
 
+_ROUTE_FROM_INTENT = {
+    "product_search": "search", "comparison": "comparison", "chitchat": "chitchat",
+    "cart_action": "cart", "checkout": "checkout", "planned_task": "plan",
+}
+
+
+def _route_reply_for(user_message: str, next_intent_json: str) -> str:
+    """Derive the focused-router answer. A greeting routes to chitchat (which no longer runs the intent
+    parse, so it consumes nothing); otherwise derive from the next queued intent so the router and the
+    intent parse agree (the router peeks, the intent parse pops)."""
+    if any(g in user_message for g in ("你好", "你是谁", "谢谢")):
+        return json.dumps({"route": "chitchat"})
+    try:
+        intent = json.loads(next_intent_json).get("intent_type", "product_search")
+    except (ValueError, AttributeError):
+        intent = "product_search"
+    return json.dumps({"route": _ROUTE_FROM_INTENT.get(intent, "search")})
+
+
 class _SeqLLM:
     """Intent LLM that returns a different canned JSON per call (turn-by-turn)."""
 
@@ -401,12 +471,14 @@ class _SeqLLM:
         self._responses = list(responses)
 
     def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return _route_reply_for(messages[1]["content"], self._responses[0] if self._responses else "{}")
         return self._responses.pop(0) if self._responses else "{}"
 
 
 class _ScriptedLLM:
     """Intent LLM whose next response is settable. Defaults to '{}' so untouched turns fall
-    back to the rule parser; set `next_response` right before a turn that needs a canned JSON
+    back to the rule parser. Set `next_response` right before a turn that needs a canned JSON
     (useful when the value depends on ids produced by earlier turns, e.g. recall)."""
 
     available = True
@@ -416,6 +488,8 @@ class _ScriptedLLM:
         self.calls: list = []
 
     def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return _route_reply_for(messages[1]["content"], self.next_response)
         self.calls.append(messages)
         return self.next_response
 
@@ -582,6 +656,141 @@ def test_recall_ignores_ids_not_in_catalog():
     assert all(product.product_id != "p_nope_999" for product in prepared.products)
 
 
+# --- photo-find (拍照找货) -------------------------------------------------------
+
+class _PhotoRetriever:
+    """Fake retriever for photo turns: returns a fixed product and records calls."""
+
+    def __init__(self, catalog, product_id, vector=None):
+        self._catalog = catalog
+        self._product_id = product_id
+        self._vector = vector if vector is not None else [0.5, 0.5]
+        self.retrieve_calls = []
+        self.embed_calls = []
+
+    def prewarm_query(self, text):
+        pass
+
+    def embed_image(self, image_bytes):
+        self.embed_calls.append(image_bytes)
+        return self._vector
+
+    def retrieve(self, query, filters, limit, image_vector=None):
+        self.retrieve_calls.append((query, filters, image_vector))
+        hit = CatalogHit(product=self._catalog.require(self._product_id), score=1.0, source="vector")
+        return RetrievalResult(hits=[hit], source="vector")
+
+
+def _photo_assistant(intent_llm, product_id="p_clothes_007"):
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    retriever = _PhotoRetriever(catalog, product_id)
+    assistant = ShoppingAssistant(
+        catalog=catalog, retriever=retriever, llm=None, intent_llm=intent_llm, settings=_settings()
+    )
+    return assistant, retriever
+
+
+def test_photo_turn_embeds_image_and_retrieves_with_vector():
+    intent_llm = FakeLLM(complete_result=json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "跑步鞋",
+        "vision_description": "白色跑鞋", "vision_confidence": "high",
+    }))
+    assistant, retriever = _photo_assistant(intent_llm)
+
+    prepared = assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8\xff\xd9")
+
+    assert retriever.embed_calls == [b"\xff\xd8\xff\xd9"]
+    query, filters, image_vector = retriever.retrieve_calls[0]
+    assert image_vector == [0.5, 0.5]
+    assert query == "白色跑鞋"
+    assert [p.product_id for p in prepared.products] == ["p_clothes_007"]
+    assert prepared.filters.intent_type == "product_search"
+
+
+def test_photo_turn_streams_an_instant_lead_before_the_slow_search():
+    # 首Token: the photo path flushes an instant opener before the (slow) embed + VLM, then the result.
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, _ = _photo_assistant(intent_llm)
+    items = list(assistant.prepare_stream("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8"))
+    assert isinstance(items[0], str) and "识别图片" in items[0]  # instant lead first
+    assert any(not isinstance(it, str) for it in items)  # the prepared result follows
+
+
+def test_photo_low_confidence_drops_category_gate():
+    intent_llm = FakeLLM(complete_result=json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "跑步鞋",
+        "vision_description": "某种外套", "vision_confidence": "low",
+    }))
+    assistant, retriever = _photo_assistant(intent_llm)
+
+    assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8\xff\xd9")
+
+    _, filters, _ = retriever.retrieve_calls[0]
+    assert filters.category is None and filters.sub_category is None
+
+
+def test_photo_turn_degrades_to_lexical_when_embed_fails():
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, retriever = _photo_assistant(intent_llm)
+    retriever.embed_image = lambda b: (_ for _ in ()).throw(RuntimeError("embed down"))
+
+    prepared = assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8")
+
+    _, _, image_vector = retriever.retrieve_calls[0]
+    assert image_vector is None
+    assert prepared.products
+
+
+def test_photo_turn_records_session_memory_for_followup():
+    intent_llm = FakeLLM(complete_result=json.dumps({"intent_type": "product_search", "vision_confidence": "high"}))
+    assistant, _ = _photo_assistant(intent_llm)
+
+    assistant.prepare("找同款", session_id="s", top_k=3, image_bytes=b"\xff\xd8")
+    shown = assistant._session_products("s")
+    assert shown and shown[0]["id"] == "p_clothes_007"
+
+
+# --- verification fixes: sort over-fetch, plan-cart pool, session history ------
+
+def test_sort_query_overfetches_full_category_before_truncating():
+    # A price/rating sort must retrieve the whole filtered category, not just the relevance-top-k,
+    # or the true cheapest/highest-rated gets truncated away before _order_hits sorts.
+    from server.assistant import _SORT_CANDIDATE_POOL
+    intent_llm = _SeqLLM([json.dumps(
+        {"intent_type": "product_search", "category": "数码电子", "sub_category": "笔记本电脑", "sort_by": "price_desc"}
+    )])
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=intent_llm)
+    assistant.prepare("高端的笔记本电脑", session_id="s", top_k=3)
+    assert spy.limits[0] >= _SORT_CANDIDATE_POOL  # over-fetched, not just top_k=3
+
+
+def test_relevance_query_does_not_overfetch():
+    spy = _SpyRetriever()
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    assistant = ShoppingAssistant(catalog=catalog, retriever=spy, llm=None, intent_llm=None)
+    assistant.prepare("推荐笔记本电脑", session_id="s", top_k=3)
+    assert spy.limits[0] == 3  # no sort -> normal top_k, no over-fetch
+
+
+def test_pool_with_ids_guarantees_the_targets_resolve():
+    assistant = _assistant(llm=None)
+    pool = assistant._pool_with_ids(["p_clothes_007"], existing=None)
+    assert any(entry["id"] == "p_clothes_007" for entry in pool)
+    # existing entries are preserved and not duplicated
+    pool2 = assistant._pool_with_ids(["p_clothes_007"], existing=[{"id": "p_clothes_007"}])
+    assert len(pool2) == 1
+
+
+def test_has_session_history_only_true_after_a_recorded_turn():
+    assistant = _assistant(llm=None)
+    assert assistant.has_session_history("s") is False  # no entry, doesn't create one
+    assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert assistant.has_session_history("s") is True
+    assert assistant.has_session_history(None) is False
+
+
 # --- small helpers -------------------------------------------------------------
 
 def test_chunk_text_splits_into_fixed_windows():
@@ -626,7 +835,7 @@ def test_session_products_cap_evicts_least_recently_shown():
     shoe = assistant.prepare("推荐跑鞋", session_id="s", top_k=1).products[0].product_id
 
     ids = [item["id"] for item in assistant._session_products("s")]
-    assert cream not in ids          # oldest, least-recently-shown — evicted
+    assert cream not in ids          # oldest, least-recently-shown, evicted
     assert phone in ids and shoe in ids
 
 
@@ -640,6 +849,22 @@ def test_reshowing_a_product_saves_it_from_eviction():
     ids = [item["id"] for item in assistant._session_products("s")]
     assert cream in ids and shoe in ids
     assert phone not in ids          # phone is now the least-recently-shown
+
+
+def test_single_item_detail_view_does_not_reshuffle_ordinal_order():
+    # Show a 3-item list, then a single-item detail re-display ("第一个怎么样" / "最后一个是什么牌子").
+    # The detail view must not float its product to the front, or a later "第N个" targets the wrong
+    # card. Ordinal resolution also follows the server's display order, not the client's recency.
+    assistant = _assistant(llm=None)
+    pids = ["p_beauty_007", "p_beauty_012", "p_beauty_008"]
+    cards = [assistant.catalog.product_card(assistant.catalog.require(pid)) for pid in pids]
+    assistant._remember_shown_products("s", cards, advances_order=True)         # a real 3-item list
+    assistant._remember_shown_products("s", [cards[2]], advances_order=False)   # detail view of #3
+
+    assert [e["id"] for e in assistant._session_products("s")] == pids          # #3 did NOT move to front
+    # Even when the client's recent buffer reshuffled #3 to the front, "第N个" follows server order.
+    pool = assistant._commerce_products("s", ["p_beauty_008", "p_beauty_007", "p_beauty_012"])
+    assert [e["id"] for e in pool] == pids
 
 
 # --- backtracking depth + recall interactions ----------------------------------
@@ -683,9 +908,10 @@ def test_refining_after_a_recall_carries_from_the_recall_turn():
 # --- multi-feature journeys + cross-branch memory ------------------------------
 
 def test_chitchat_turn_preserves_all_memory():
+    # The chitchat turn no longer runs the intent parse, so it consumes no queued response (the router
+    # recognises the greeting by query); only the two searches pop.
     llm = _SeqLLM([
         json.dumps({"intent_type": "product_search", "category": "美妆护肤", "sub_category": "面霜"}),
-        json.dumps({"intent_type": "chitchat"}),
         json.dumps({"intent_type": "product_search", "sort_by": "price_asc"}),
     ])
     assistant = _assistant(intent_llm=llm)
@@ -746,10 +972,10 @@ def test_degraded_mode_carries_category_across_a_refinement_chain():
     assert second.filters.sub_category == "面霜"
 
 
-# --- required attributes: rank, don't gate; flag honestly when unmet -----------
+# --- required attributes: rank, don't gate, flag honestly when unmet -----------
 
 def test_unmet_required_term_surfaces_closest_and_flags_honestly():
-    # The LLM asks for 防水 on a 面霜 search; no face cream evidences it.
+    # The LLM asks for 防水 on a 面霜 search, no face cream evidences it.
     intent_llm = _SeqLLM([
         json.dumps({"intent_type": "product_search", "category": "美妆护肤",
                     "sub_category": "面霜", "required_terms": ["防水"]}),
@@ -758,7 +984,126 @@ def test_unmet_required_term_surfaces_closest_and_flags_honestly():
 
     prepared = assistant.prepare("防水的面霜", session_id="s", top_k=3)
 
-    assert prepared.products  # creams still surface — not silently dropped
+    assert prepared.products  # creams still surface, not silently dropped
     assert "没有" in prepared.grounded_answer and "防水" in prepared.grounded_answer  # honest line
     # no card claims the unmet attribute
     assert all("匹配防水需求" not in (product.matched_reason or "") for product in prepared.products)
+
+
+# --- planner-engine helpers, id resolution, sort variants, router branches ----
+
+def test_order_hits_sorts_by_rating_descending():
+    assistant = _assistant(llm=None)
+    hits = _hits(assistant, "p_beauty_007", "p_beauty_008", "p_beauty_011")
+    ordered = assistant._order_hits(hits, SearchFilters(sort_by="rating_desc"))
+    ratings = [assistant.catalog.avg_rating(hit.product) for hit in ordered]
+    assert ratings == sorted(ratings, reverse=True)
+
+
+def test_select_products_orders_by_price_and_truncates():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_beauty_007", "p_beauty_008", "p_beauty_011"])
+    desc = assistant._select_products(cards, "price_desc", 2)
+    assert [c.price for c in desc] == sorted([c.price for c in cards], reverse=True)[:2]
+    # an unknown criteria keeps the given order, just truncates
+    kept = assistant._select_products(cards, None, 2)
+    assert [c.product_id for c in kept] == [c.product_id for c in cards[:2]]
+
+
+def test_cart_target_ids_falls_back_to_the_first_product():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_beauty_007", "p_beauty_008"])
+    assert assistant._cart_target_ids(None, [], None, cards) == ["p_beauty_007"]
+
+
+def test_pool_with_ids_skips_an_unresolvable_id():
+    assistant = _assistant(llm=None)
+    pool = assistant._pool_with_ids(["p_nope_999", "p_beauty_007"], existing=None)
+    assert [entry["id"] for entry in pool] == ["p_beauty_007"]
+
+
+def test_product_cards_from_ids_skips_unknown_ids():
+    assistant = _assistant(llm=None)
+    cards = assistant._product_cards_from_ids(["p_nope_999", "p_beauty_007"])
+    assert [c.product_id for c in cards] == ["p_beauty_007"]
+
+
+def test_cart_for_intent_drops_rows_whose_product_is_unknown():
+    assistant = _assistant(llm=None)
+    rows = assistant._cart_for_intent([{"product_id": "p_nope_999"}, {"product_id": "p_beauty_007", "quantity": 1}])
+    assert rows is not None and len(rows) == 1 and rows[0]["title"]
+
+
+def test_display_price_falls_back_to_lowest_price_without_a_selected_sku():
+    assistant = _assistant(llm=None)
+    product = assistant.catalog.require("p_beauty_007")
+    assert assistant._display_price(product, SearchFilters()) == assistant.catalog.lowest_price(product)
+
+
+def test_grounded_answer_appends_sku_detail_for_a_multi_sku_product():
+    assistant = _assistant(llm=None)
+    pid = next(p["product_id"] for p in assistant.catalog.products
+               if len({s["price"] for s in assistant.catalog.sku_prices(p)}) >= 2)
+    answer = assistant._grounded_answer("看看", SearchFilters(), _hits(assistant, pid))
+    assert "SKU价格明细" in answer
+
+
+def test_commerce_products_dedupes_and_drops_unresolvable_client_ids():
+    assistant = _assistant(llm=None)
+    assistant.prepare("推荐三款保湿面霜", session_id="s", top_k=3)
+    shown_id = assistant._session_products("s")[0]["id"]
+    pool = assistant._commerce_products("s", ["p_nope_999", shown_id, shown_id])
+    ids = [entry["id"] for entry in pool]
+    assert "p_nope_999" not in ids
+    assert ids.count(shown_id) == 1  # client dup + session entry both collapse to one
+
+
+class _SearchRouteChitchatParse:
+    """Router says product_search, but the intent parse downgrades to chitchat (out of catalogue)."""
+
+    available = True
+
+    def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return json.dumps({"route": "search"})
+        return json.dumps({"intent_type": "chitchat"})
+
+    def stream(self, messages):
+        yield from []
+
+
+def test_product_search_route_downgrades_to_chitchat_for_an_out_of_catalogue_item():
+    assistant = _assistant(intent_llm=_SearchRouteChitchatParse())
+    prepared = assistant.prepare("推荐一块机械手表", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "chitchat"
+    assert prepared.products == []
+
+
+class _PlannedRouteThenSearch:
+    """Router says planned_task, but the planner (no LLM, single action) declines, so it must fall back
+    to a plain product search."""
+
+    available = True
+
+    def complete(self, messages):
+        if "意图路由器" in messages[0]["content"]:
+            return json.dumps({"route": "plan"})  # the router emits short labels; "plan" -> planned_task
+        return json.dumps({"intent_type": "product_search", "sub_category": "面霜"})
+
+    def stream(self, messages):
+        yield from []
+
+
+def test_planned_route_that_declines_falls_back_to_product_search():
+    assistant = _assistant(intent_llm=_PlannedRouteThenSearch())
+    prepared = assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.products
+
+
+def test_unrecognised_pending_reply_falls_through_to_normal_routing():
+    assistant = _assistant(llm=None)
+    assistant._session("s").order.pending_action = CommerceActionCandidate(action="add", target_scope="shown_products")
+    prepared = assistant.prepare("推荐面霜", session_id="s", top_k=3)
+    assert prepared.filters.intent_type == "product_search"
+    assert prepared.products

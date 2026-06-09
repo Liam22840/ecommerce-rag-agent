@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from server.commerce import looks_like_commerce
-from server.llm import ArkChatClient
+from server.llm import ChatClient
 from server.prompts import planner_messages
-from server.textutil import json_object
+from server.textutil import chinese_to_int, json_object
 
 
 PlanAction = Literal[
@@ -36,6 +36,13 @@ ALLOWED_ACTIONS = {
 }
 SELECT_CRITERIA = {"price_asc", "price_desc", "rating_desc", "relevance"}
 TARGETS = {"selected_products", "comparison_winner", "previous_step"}
+
+# How many candidates the deterministic fallback shortlists: a comparison needs at least two to
+# weigh against each other, anything else defaults to a single pick.
+_COMPARISON_SELECTION_COUNT = 2
+_DEFAULT_SELECTION_COUNT = 1
+# A step title is the raw query when it's short enough to read at a glance, otherwise a generic label.
+_MAX_PLAN_TITLE_LEN = 18
 
 
 @dataclass
@@ -64,7 +71,7 @@ class PlannerService:
         categories: set[str],
         sub_categories: set[str],
         brands: set[str],
-        llm: ArkChatClient | None = None,
+        llm: ChatClient | None = None,
     ):
         self._categories = categories
         self._sub_categories = sub_categories
@@ -75,10 +82,13 @@ class PlannerService:
         self,
         message: str,
         *,
+        force: bool = False,
         session_products: list[dict[str, Any]] | None = None,
         cart_items: list[dict[str, Any]] | None = None,
     ) -> PlannedTask | None:
-        if not looks_like_planned_task(message):
+        # The router decides whether this is a multi-step task. `force` is set when the intent LLM
+        # routed here; otherwise `looks_like_planned_task` is the fallback router's own pre-check.
+        if not force and not looks_like_planned_task(message):
             return None
         llm_plan = self._llm_plan(message, session_products, cart_items or [])
         if llm_plan is not None:
@@ -104,7 +114,7 @@ class PlannerService:
                     cart_items=cart_items,
                 )
             )
-        except Exception:  # noqa: BLE001 - planner must degrade to deterministic handling.
+        except Exception:  # noqa: BLE001 (planner must degrade to deterministic handling)
             return None
         if raw.strip().lower() in {"null", "none", ""}:
             return None
@@ -126,7 +136,7 @@ class PlannerService:
         has_comparison = _looks_like_comparison(message)
         has_cart = looks_like_commerce(message)
         has_checkout = _looks_like_checkout(message)
-        count = _selection_count(message, default=2 if has_comparison else 1)
+        count = _selection_count(message, default=_COMPARISON_SELECTION_COUNT if has_comparison else _DEFAULT_SELECTION_COUNT)
 
         steps: list[PlannedStep] = []
         if _looks_like_search(message):
@@ -212,7 +222,11 @@ def _action_count(text: str) -> int:
 
 
 def _looks_like_search(text: str) -> bool:
-    return bool(re.search(r"(推荐|找|看看|筛选|有没有|有哪些|想买|买.*[鞋机霜奶茶衣包]|需要)", text))
+    # Deliberately broad: this only pre-filters which turns are worth handing to the planner LLM,
+    # which is the real decider (it returns null for anything that isn't a genuine multi-step task).
+    # Enumerating product nouns here would silently drop requests for anything not in the list. The
+    # bare 买 excludes a deictic add ("买这个/买它") so a plain cart-add isn't miscounted as a search.
+    return bool(re.search(r"(推荐|找|看看|筛选|有没有|有哪些|想买|想要|要买|需要|买(?![这它那]))", text))
 
 
 def _looks_like_comparison(text: str) -> bool:
@@ -240,15 +254,15 @@ def _selection_criteria(text: str) -> str:
 def _selection_count(text: str, default: int) -> int:
     match = re.search(r"最[^，。,.]*?([一二两三四五六七八九十\d]+)\s*(?:个|件|款|双)", text)
     if match:
-        return _chinese_number(match.group(1)) or default
+        return chinese_to_int(match.group(1)) or default
     if "两" in text or "二" in text:
-        return max(default, 2)
+        return max(default, _COMPARISON_SELECTION_COUNT)
     return default
 
 
 def _quantity(text: str) -> int | None:
     match = re.search(r"([一二两三四五六七八九十\d]+)\s*(?:个|件|款|双)", text)
-    return _chinese_number(match.group(1)) if match else None
+    return chinese_to_int(match.group(1)) if match else None
 
 
 def _search_query(text: str) -> str:
@@ -260,7 +274,7 @@ def _search_query(text: str) -> str:
 
 
 def _title(default: str, query: str) -> str:
-    return query if 0 < len(query) <= 18 else default
+    return query if 0 < len(query) <= _MAX_PLAN_TITLE_LEN else default
 
 
 def _select_title(criteria: str, count: int) -> str:
@@ -292,23 +306,6 @@ def _positive_int(value: Any) -> int | None:
     if isinstance(value, float):
         return int(value) if value > 0 else None
     if isinstance(value, str):
-        parsed = _chinese_number(value) if not value.isdigit() else int(value)
+        parsed = chinese_to_int(value) if not value.isdigit() else int(value)
         return parsed if parsed and parsed > 0 else None
-    return None
-
-
-def _chinese_number(value: str) -> int | None:
-    value = value.strip()
-    if value.isdigit():
-        return int(value)
-    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    if value in digits:
-        return digits[value]
-    if value == "十":
-        return 10
-    if "十" in value:
-        left, _, right = value.partition("十")
-        tens = digits.get(left, 1) if left else 1
-        ones = digits.get(right, 0) if right else 0
-        return tens * 10 + ones
     return None

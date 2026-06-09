@@ -1,7 +1,7 @@
 """Deciding what to compare: extract comparison dimensions from the query.
 
-Two paths produce DimensionSpec lists — an LLM payload (_specs_from_llm_payload) and a
-deterministic fallback (_dynamic_specs) — backed by the product corpus so every term is
+Two paths produce DimensionSpec lists, an LLM payload (_specs_from_llm_payload) and a
+deterministic fallback (_dynamic_specs), both backed by the product corpus so every term is
 grounded in real catalog text.
 """
 
@@ -27,6 +27,12 @@ class DimensionSpec:
     terms: tuple[str, ...]
     preference: str = "higher_is_better"
     evidence: bool = True
+    asked: bool = False
+
+
+# Marker for a price-led comparison: price is decided by the structured 价格与SKU row (lower wins),
+# so it carries no evidence terms of its own. Frozen, so this single instance is safe to share.
+PRICE_LED_SPEC = DimensionSpec(label="价格", terms=PRICE_FOCUS_TERMS, preference="lower_is_better", evidence=False)
 
 
 def _dimension_extraction_messages(query: str, products: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -82,12 +88,22 @@ def _specs_from_llm_payload(
             continue
         matched_terms = tuple(term for term in terms if normalize(term) in corpus)
         if not matched_terms:
+            # The user explicitly asked about this, but no product evidences it. Keep a marker (no
+            # terms, non-evidence) so the comparison discloses the gap instead of silently deciding
+            # on other dimensions. Dimensions the user didn't ask about are still dropped.
+            if raw.get("asked"):
+                seen.add(normalized_label)
+                specs.append(DimensionSpec(label=label, terms=(), evidence=False, asked=True))
             continue
         preference = str(raw.get("preference", "")).strip()
         if preference not in {"higher_is_better", "lower_is_better"}:
             preference = _infer_preference(query, label)
         seen.add(normalized_label)
-        specs.append(DimensionSpec(label=label, terms=matched_terms, preference=preference))
+        specs.append(DimensionSpec(label=label, terms=matched_terms, preference=preference, asked=bool(raw.get("asked"))))
+    # The LLM (not keyword spotting) decides whether the comparison is price-led; the structured
+    # price row then decides the winner (lower price wins). Price is never a free-ranking dimension.
+    if payload.get("price_led"):
+        specs.append(PRICE_LED_SPEC)
     return _dedupe_specs(specs)[:4]
 
 
@@ -136,6 +152,11 @@ def _dynamic_specs(
             continue
         terms = _attribute_terms(label)
         if not any(normalize(term) in corpus for term in terms):
+            continue
+        # Price is decided by the structured 价格与SKU row (lower price wins), never a free-ranking
+        # evidence dimension. Without this the fallback builds a higher-is-better 价格 row and the
+        # dearer product wins. The LLM spec path already filters this the same way.
+        if _is_price_dimension(label, terms):
             continue
         seen.add(normalized_label)
         specs.append(DimensionSpec(
@@ -285,5 +306,5 @@ def _dedupe_specs(specs: list[DimensionSpec]) -> list[DimensionSpec]:
 
 def _price_is_priority(filters: SearchFilters) -> bool:
     # Whether price should drive the comparison comes from the LLM-set preference, not keyword
-    # spotting — the intent LLM already understands "性价比"/"划算"/"不那么烧钱" and sets prefer_low_price.
+    # spotting. The intent LLM already understands "性价比"/"划算"/"不那么烧钱" and sets prefer_low_price.
     return filters.prefer_low_price

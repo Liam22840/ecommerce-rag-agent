@@ -1,4 +1,8 @@
 import SwiftUI
+import PhotosUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @available(iOS 17.0, macOS 13.0, *)
 public struct ShoppingConciergeRootView: View {
@@ -39,7 +43,8 @@ public struct ShoppingConciergeRootView: View {
                         screen = .chat
                     }
                 },
-                captureAction: {
+                captureAction: { imageData, caption in
+                    viewModel.sendPhoto(imageData: imageData, caption: caption)
                     withAnimation(.easeInOut(duration: 0.18)) {
                         screen = .chat
                     }
@@ -161,27 +166,110 @@ private struct OnboardingScreen: View {
 @available(iOS 17.0, macOS 13.0, *)
 private struct PhotoSearchScreen: View {
     let backAction: () -> Void
-    let captureAction: () -> Void
+    let captureAction: (Data, String) -> Void
 
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var isCameraPresented = false
     @State private var isSearching = false
+    // Once an image is picked it's staged here (not sent) so the shopper can add a caption first.
+    // The preview is decoded once at stage time, not in `body`, so typing the caption doesn't re-decode it.
+    @State private var stagedImage: Data?
+    @State private var stagedPreview: Image?
+    @State private var caption: String = ""
+
+    // The Simulator has no camera, so the shutter is only live on a real device.
+    private var cameraAvailable: Bool {
+        #if os(iOS)
+        return UIImagePickerController.isSourceTypeAvailable(.camera)
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
 
-            ZStack {
-                viewfinder
+            if let stagedImage {
+                reviewView(imageData: stagedImage)
+            } else {
+                ZStack {
+                    viewfinder
 
-                if isSearching {
-                    searchingOverlay
+                    if isSearching {
+                        searchingOverlay
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            controls
+                controls
+            }
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
+        .cameraCover(isPresented: $isCameraPresented) { data in
+            stage(data)
+        }
+    }
+
+    // Stage a picked/captured photo: normalise to JPEG and decode the preview once (not on each render).
+    private func stage(_ data: Data) {
+        let jpeg = normalizedJPEG(data)
+        stagedImage = jpeg
+        stagedPreview = platformImage(data: jpeg)
+    }
+
+    // After a photo is chosen: preview it, let the shopper type an optional caption ("我想要同款外套"),
+    // and only send on tap so the image and the words go together.
+    private func reviewView(imageData: Data) -> some View {
+        VStack(spacing: 18) {
+            if let image = stagedPreview {
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            TextField("想找什么？例如：我想要同款外套", text: $caption)
+                .textFieldStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            HStack(spacing: 14) {
+                Button {
+                    stagedImage = nil
+                    stagedPreview = nil
+                    caption = ""
+                    pickerItem = nil
+                } label: {
+                    Text("重选")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    captureAction(imageData, caption)
+                } label: {
+                    Text("发送")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(GuideTheme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
     }
 
     private var header: some View {
@@ -245,44 +333,138 @@ private struct PhotoSearchScreen: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 32) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.42), lineWidth: 2)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .frame(width: 44, height: 44)
-                .accessibilityHidden(true)
+        HStack(spacing: 36) {
+            // Pick an existing photo (works on Simulator and device).
+            PhotosPicker(selection: $pickerItem, matching: .images) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 54, height: 54)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .disabled(isSearching)
+            .accessibilityLabel("从相册选择商品图片")
 
+            // Shutter: opens the live camera (device only; dimmed where there's no camera).
             Button {
-                guard !isSearching else { return }
-                isSearching = true
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    await MainActor.run {
-                        captureAction()
-                    }
-                }
+                guard cameraAvailable, !isSearching else { return }
+                isCameraPresented = true
             } label: {
                 Circle()
-                    .fill(isSearching ? Color.white.opacity(0.3) : GuideTheme.accent)
+                    .fill(GuideTheme.accent)
                     .frame(width: 56, height: 56)
                     .padding(6)
                     .background(Color.white, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(Color.white.opacity(0.82), lineWidth: 4)
-                    }
+                    .overlay { Circle().stroke(Color.white.opacity(0.82), lineWidth: 4) }
+                    .opacity(cameraAvailable ? 1 : 0.35)
             }
             .buttonStyle(.plain)
-            .disabled(isSearching)
-            .accessibilityLabel("拍照识别商品")
+            .disabled(!cameraAvailable || isSearching)
+            .accessibilityLabel("拍照")
 
-            Color.clear
-                .frame(width: 44, height: 44)
+            // Keeps the shutter centred opposite the album button.
+            Color.clear.frame(width: 54, height: 54)
         }
-        .padding(.top, 24)
+        .padding(.top, 20)
         .padding(.bottom, 32)
+        .onChange(of: pickerItem) { newItem in
+            guard let newItem else { return }
+            isSearching = true
+            Task {
+                let data = try? await newItem.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    isSearching = false
+                    if let data {
+                        stage(data)
+                    }
+                }
+            }
+        }
     }
 }
+
+/// Normalises any picked/captured image to a small JPEG: downscale the longest side to 1024px before
+/// encoding. A raw camera photo is several MB, which both slows the upload (so the instant opener is
+/// delayed until the request lands) and makes the server-side embed + VLM slower. 1024px keeps plenty
+/// of detail for visual search. Falls through to the raw bytes if decoding isn't available.
+private func normalizedJPEG(_ data: Data) -> Data {
+    #if canImport(UIKit)
+    guard let image = UIImage(data: data) else { return data }
+    return downscaled(image, maxDimension: 1024).jpegData(compressionQuality: 0.85) ?? data
+    #else
+    return data
+    #endif
+}
+
+#if canImport(UIKit)
+private func downscaled(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    let longest = max(image.size.width, image.size.height)
+    guard longest > maxDimension else { return image }
+    let scale = maxDimension / longest
+    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+    // Force a 1x render so the output is exactly `size` pixels, not size × screen-scale.
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        image.draw(in: CGRect(origin: .zero, size: size))
+    }
+}
+#endif
+
+@available(iOS 17.0, macOS 13.0, *)
+private extension View {
+    /// Presents the live-camera capture sheet on iOS; a no-op where there's no camera support.
+    @ViewBuilder
+    func cameraCover(isPresented: Binding<Bool>, onCapture: @escaping (Data) -> Void) -> some View {
+        #if os(iOS)
+        fullScreenCover(isPresented: isPresented) {
+            CameraPicker(onCapture: onCapture).ignoresSafeArea()
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+/// Thin SwiftUI wrapper over the system camera. Returns JPEG bytes via `onCapture`.
+@available(iOS 17.0, *)
+private struct CameraPicker: UIViewControllerRepresentable {
+    let onCapture: (Data) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+
+        init(_ parent: CameraPicker) { self.parent = parent }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.85) {
+                parent.onCapture(data)
+            }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+#endif
 
 @available(iOS 17.0, macOS 13.0, *)
 private enum PhotoCorner: CaseIterable {
@@ -479,7 +661,7 @@ private struct OrderReviewScreen: View {
 }
 
 @available(iOS 17.0, macOS 13.0, *)
-private struct EditableOrderField: View {
+struct EditableOrderField: View {
     let title: String
     @Binding var text: String
     var axis: Axis = .horizontal

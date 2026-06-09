@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,28 @@ BRAND_ALIASES: dict[str, str] = {
     "苹果": "Apple 苹果",
     "北面": "The North Face",
 }
+
+# The dataset carries no inventory, so stock is seeded deterministically at load time (the raw data
+# on disk is never modified). The number is stable per product_id, so every product — including any
+# added later — gets one automatically and it never drifts between runs. A few recognisable products
+# are pinned to low / sold-out so the cart blocking and the order-time decrement are reliably
+# demonstrable. These are seed values, not business logic: the source of truth, grounded reporting,
+# enforcement and real-time decrement built on top are the real parts.
+_STOCK_PINS: dict[str, int] = {
+    "p_digital_003": 2,   # iPhone 17 Pro Max — low, so "buy it out then it's gone" demos cleanly
+    "p_beauty_002": 0,    # 兰蔻小黑瓶 — sold out, so an add is refused outright
+}
+
+
+def _seed_stock(product_id: str) -> int:
+    # The formula gives every product a comfortably healthy, varied number (12-59); the few low /
+    # sold-out items used to demo blocking and decrement are the explicit pins above. Keeping the
+    # formula above any realistic cart quantity means normal adds always succeed, so only the
+    # deliberately pinned products are ever constrained.
+    if product_id in _STOCK_PINS:
+        return _STOCK_PINS[product_id]
+    return 12 + int(hashlib.sha1(product_id.encode("utf-8")).hexdigest(), 16) % 48
+
 
 # Chinese negation prefixes (a small closed grammatical class, not a meaning library). Used so an
 # excluded term ("不要油腻") doesn't drop a product whose own copy NEGATES it ("清爽不油腻").
@@ -74,6 +99,7 @@ class ProductCatalog:
             canonical = BRAND_ALIASES.get(product.get("brand", ""))
             if canonical:
                 product["brand"] = canonical
+            product["stock"] = _seed_stock(product["product_id"])
 
     @classmethod
     def load(cls, dataset_root: Path) -> "ProductCatalog":
@@ -90,13 +116,31 @@ class ProductCatalog:
             products[product_id] = product
         return cls(products)
 
+    def stock(self, product_id: str) -> int:
+        """Seeded base stock for a product (0 when unknown). Available stock subtracts what the
+        session has already ordered; that lives in the commerce layer's per-session ledger."""
+        product = self._products.get(product_id)
+        return int(product.get("stock", 0)) if product else 0
+
     @property
     def categories(self) -> set[str]:
         return {p["category"] for p in self._products.values()}
 
-    @property
+    @cached_property
     def sub_categories(self) -> set[str]:
+        # Immutable after load; cached so the per-turn type-group lookups don't rescan all products.
         return {p["sub_category"] for p in self._products.values()}
+
+    def type_group_for_term(self, term: str) -> set[str]:
+        """If `term` is a product-type word that several sub-categories share a trailing noun with
+        (运动鞋 -> 跑步鞋/篮球鞋/徒步鞋, all ending in 鞋), return that sub-category group. Empty when the
+        term isn't such a type — an attribute like 防水/保湿 shares no trailing noun with >=2 sub-
+        categories. Lets the search drop off-type "closest" padding for a type it can't otherwise gate."""
+        subs = self.sub_categories
+        if not term or term in subs:
+            return set()
+        group = {s for s in subs if s[-1] == term[-1]}
+        return group if len(group) >= 2 else set()
 
     def scope_summary(self) -> str:
         """Human-readable "what we actually stock", grouped sub-categories under each category.
@@ -150,11 +194,13 @@ class ProductCatalog:
             matched_reason=matched_reason,
         )
 
-    def product_facts(self, product: dict[str, Any], filters: SearchFilters | None = None) -> dict[str, Any]:
+    def product_facts(
+        self, product: dict[str, Any], filters: SearchFilters | None = None, available: int | None = None
+    ) -> dict[str, Any]:
         # Kept lean to cut answer-prompt size (faster first token). Price/SKU fields are
-        # load-bearing for grounding and stay whole; the per-product price instruction was
-        # dropped (the same rule lives once in SYSTEM_PROMPT), and the free-text fields are
-        # trimmed to a couple of short snippets each.
+        # load-bearing for grounding and stay whole. The price rule lives once in SYSTEM_PROMPT
+        # rather than per product, and the free-text fields are trimmed to a couple of short
+        # snippets each.
         reviews = product.get("rag_knowledge", {}).get("user_reviews", [])
         faqs = product.get("rag_knowledge", {}).get("official_faq", [])
         selected_sku = self.selected_price_sku(product, filters)
@@ -171,6 +217,9 @@ class ProductCatalog:
             "selected_price_sku": selected_sku,
             "sku_prices": self.sku_prices(product),
             "sku_count": len(product.get("skus", [])),
+            # Available stock (session-aware when the caller passes it, else the seeded base). The
+            # answer model reports it verbatim and never invents a number.
+            "available": available if available is not None else int(product.get("stock", 0)),
             "description": trim(product.get("rag_knowledge", {}).get("marketing_description", ""), 160),
             "faq": [
                 {"question": trim(str(faq.get("question", "")), 60), "answer": trim(str(faq.get("answer", "")), 120)}
@@ -291,6 +340,32 @@ class ProductCatalog:
                     return item
         return self.lowest_price_sku(product)
 
+    def sku_id_for_phrase(self, product: dict[str, Any], phrase: str | None) -> str | None:
+        """Resolve a user's 规格 phrase ("50g标准装") to a real sku_id, or None when it matches nothing
+        (so the caller falls back to the default/lowest SKU). Same normalize_spec matching as
+        selected_price_sku, but only ever returns an actual SKU id."""
+        spec = normalize_spec(phrase or "")
+        if not spec:
+            return None
+        skus = [item for item in self.sku_prices(product) if item["sku_id"] is not None]
+        for item in skus:
+            label = normalize_spec(item["label"])
+            # Match either direction: the user may name a superset of the label ("…版本" vs the
+            # label's "…版") or a subset. One-directional substring missed the superset case and
+            # silently fell back to the cheapest SKU.
+            if spec in label or label in spec:
+                return item["sku_id"]
+        # Fall back to the distinctive alphanumeric specs the user named (512gb, 75ml, 16gb+512gb):
+        # if every one appears in the label, that's the variant even when generic words (版/版本/款)
+        # or other tokens (a colour) sit between them and break a plain substring match.
+        codes = re.findall(r"[a-z0-9]+(?:\+[a-z0-9]+)*", spec)
+        if codes:
+            for item in skus:
+                label = normalize_spec(item["label"])
+                if all(code in label for code in codes):
+                    return item["sku_id"]
+        return None
+
     def price_label(self, product: dict[str, Any], filters: SearchFilters | None = None) -> str:
         sku_prices = self.sku_prices(product)
         if not sku_prices:
@@ -396,7 +471,7 @@ class ProductCatalog:
         return 8.0 if self.matches_requested_specs(product, filters.requested_specs) else 0.0
 
     def unmet_requested_specs(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
-        """Requested specs that none of the hits match — for honest narration."""
+        """Requested specs that none of the hits match, for honest narration."""
         if not filters.requested_specs:
             return []
         return [
@@ -406,11 +481,11 @@ class ProductCatalog:
 
     def evidences_required_term(self, product: dict[str, Any], term: str) -> bool:
         """Does the product clearly evidence a required attribute? Used to rank and to narrate
-        honestly — NOT to exclude (see matches_filters)."""
+        honestly, NOT to exclude (see matches_filters)."""
         return self._matches_required_term(product, term, self._haystack(product))
 
     def unmet_required_terms(self, hits: list[CatalogHit], filters: SearchFilters) -> list[str]:
-        """Required attributes that none of the hits clearly evidence — for honest narration."""
+        """Required attributes that none of the hits clearly evidence, for honest narration."""
         if not filters.required_terms:
             return []
         evidence = [(hit.product, self._haystack(hit.product)) for hit in hits]  # one haystack per hit

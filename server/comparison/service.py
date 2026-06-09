@@ -15,7 +15,7 @@ from server.intent import SearchFilters
 from server.schemas import ComparisonRow, ComparisonValue, ProductComparison
 from server.textutil import dedupe, dedupe_int, json_object, normalize
 from server.comparison.dimensions import (
-    PRICE_FOCUS_TERMS,
+    PRICE_LED_SPEC,
     DimensionSpec,
     _dedupe_specs,
     _dimension_extraction_messages,
@@ -34,6 +34,10 @@ from server.comparison.evidence import (
 from server.comparison.resolver import _asks_for_current_two, _best_ref_match, _name_score
 from server.comparison.text import _source_texts
 
+
+# Weight for a dimension the user explicitly named: high enough to outweigh another product winning
+# the other (auto-surfaced) evidence dimensions, so the answer to the asked question wins.
+_ASKED_DIMENSION_WEIGHT = 5.0
 
 ORDINALS = {
     "第一个": 0,
@@ -94,7 +98,9 @@ class ComparisonService:
         ]
         rows.extend(self._evidence_rows(products, focus_specs, query))
 
-        winner_product_id, recommendation = self._recommend(products, rows, filters)
+        asked = {spec.label for spec in focus_specs if spec.asked}
+        price_led = any(spec.label == "价格" for spec in focus_specs)
+        winner_product_id, recommendation = self._recommend(products, rows, filters, asked, price_led)
         summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
         return ProductComparison(
             products=cards,
@@ -153,14 +159,14 @@ class ComparisonService:
     ) -> tuple[list[str], str | None]:
         """Confidence-ordered: explicit (structured) ids first, then the ids the LLM resolved
         from session_products, then the LLM's named references mapped deterministically, then
-        the deterministic ordinal/name waterfall as the fallback. No extra LLM call — the LLM
+        the deterministic ordinal/name waterfall as the fallback. No extra LLM call, the LLM
         signals come from the intent parser's existing call."""
         valid_explicit = self._valid_catalog_ids(explicit_product_ids)
         if len(valid_explicit) >= 2:
             return valid_explicit[:3], None
         # LLM resolved the referenced products to exact ids (it sees session_products in
         # most-recent-first order, so "第一个/第二个" map to the latest search). Trust them only
-        # after validating against the catalog; the deterministic ordinal/name waterfall below is
+        # after validating against the catalog. The deterministic ordinal/name waterfall below is
         # the fallback when the LLM is unavailable or couldn't resolve them.
         llm_ids = self._valid_catalog_ids(filters.compare_product_ids)
         if len(llm_ids) >= 2:
@@ -227,8 +233,13 @@ class ComparisonService:
     ) -> list[DimensionSpec]:
         llm_specs = self._llm_specs(query, products)
         specs = llm_specs if llm_specs else _dynamic_specs(query, products)
-        if _price_is_priority(filters):
-            specs.append(DimensionSpec(label="价格", terms=PRICE_FOCUS_TERMS, preference="lower_is_better", evidence=False))
+        # Whether price leads is the LLM's call: the intent parser sets prefer_low_price, or the
+        # dimension extractor emits a 价格 spec. We never read the raw query to decide it. When price
+        # does lead it has to survive the 4-spec cap, so it goes first rather than being appended
+        # behind four quality dims and truncated out (which silently dropped the price row).
+        price_led = _price_is_priority(filters) or any(spec.label == "价格" for spec in specs)
+        if price_led:
+            specs = [PRICE_LED_SPEC] + [spec for spec in specs if spec.label != "价格"]
         return _dedupe_specs(specs)[:4]
 
     def _llm_specs(self, query: str, products: list[dict[str, Any]]) -> list[DimensionSpec]:
@@ -237,7 +248,7 @@ class ComparisonService:
         try:
             raw = self._llm.complete(_dimension_extraction_messages(query, products))
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - LLM dimension extraction must degrade to deterministic fallback.
+        except Exception:  # noqa: BLE001 (LLM dimension extraction must degrade to deterministic fallback)
             return []
         return _specs_from_llm_payload(payload, query, products)
 
@@ -305,7 +316,7 @@ class ComparisonService:
         focus_specs: list[DimensionSpec],
         query: str,
     ) -> list[ComparisonRow]:
-        """LLM judges each evidence dimension; any dimension it can't judge falls back
+        """LLM judges each evidence dimension. Any dimension it can't judge falls back
         to the deterministic _evidence_row."""
         evidence_specs = [spec for spec in focus_specs if spec.evidence]
         judged = self._llm_judge(products, evidence_specs, query)
@@ -322,7 +333,7 @@ class ComparisonService:
         try:
             raw = self._llm.complete(_evidence_judge_messages(query, products, evidence_specs))
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - evidence judging must degrade to the deterministic scorer.
+        except Exception:  # noqa: BLE001 (evidence judging must degrade to the deterministic scorer)
             return {}
         if not isinstance(payload.get("judgments"), list):
             return {}
@@ -379,9 +390,15 @@ class ComparisonService:
         products: list[dict[str, Any]],
         rows: list[ComparisonRow],
         filters: SearchFilters,
+        asked: set[str],
+        price_led: bool = False,
     ) -> tuple[str | None, str]:
         scores = {product["product_id"]: 0.0 for product in products}
         reason_dimensions: dict[str, list[str]] = {product["product_id"]: [] for product in products}
+        # A dimension the user explicitly named ("哪个更保湿") should decide the winner, even if the
+        # extractor also surfaced related dimensions; otherwise the holistic winner can contradict
+        # the actual question. The extractor (LLM) flags those dimensions; other (auto-surfaced) ones
+        # still rank, just with less weight.
         for row in rows:
             if not row.winner_product_id:
                 continue
@@ -389,20 +406,29 @@ class ComparisonService:
             if row.dimension in {"基础定位", "规格明细"}:
                 weight = 0.0
             elif row.dimension == "价格与SKU":
-                weight = 1.5 if _price_is_priority(filters) else 0.0
+                weight = 1.5 if price_led else 0.0
+            elif row.dimension in asked:
+                weight = _ASKED_DIMENSION_WEIGHT
             else:
-                weight = 2.0
+                # A price-led comparison is settled by the price row; auto-surfaced quality
+                # dimensions must not outvote it (the user asked about price, not these).
+                weight = 0.0 if price_led else 2.0
             scores[row.winner_product_id] += weight
             if weight > 0:
                 reason_dimensions[row.winner_product_id].append(row.dimension)
         winner = max(scores, key=scores.get)
+        # The user may have asked about something no product evidences ("哪个更防水" on two T-shirts):
+        # disclose that gap instead of quietly deciding on other dimensions.
+        evidenced = {row.dimension for row in rows if row.winner_product_id}
+        unevidenced = [dim for dim in asked if dim not in evidenced]
+        gap = f"商品库里没有关于{'、'.join(unevidenced)}的明确信息。" if unevidenced else ""
         if scores[winner] <= 0:
-            return None, "这几款商品各有侧重，商品库证据不足以给出单一绝对赢家。建议根据你更看重的维度继续筛选。"
+            return None, gap + "这几款商品各有侧重，商品库证据不足以给出单一绝对赢家。建议根据你更看重的维度继续筛选。"
         reasons = reason_dimensions[winner]
         reason_text = "、".join(reasons[:3]) if reasons else "综合证据"
         subject = self._price_subject(winner, products, filters) if "价格与SKU" in reasons else self._title(winner, products)
-        suffix = "；如果你要对比指定规格，请直接说明容量/规格，系统会按对应 SKU 比价。" if "价格与SKU" in reasons else "；如果你的优先级不同，可以继续指定预算、肤质或使用场景。"
-        return winner, f"更推荐{subject}：它在{reason_text}上更符合当前问题{suffix}"
+        suffix = "；如果你要对比指定规格，请直接说明容量/规格，系统会按对应 SKU 比价。" if "价格与SKU" in reasons else "；如果你的优先级不同，可以继续指定预算、偏好或使用场景。"
+        return winner, gap + f"更推荐{subject}：它在{reason_text}上更符合当前问题{suffix}"
 
     def _summary(
         self,

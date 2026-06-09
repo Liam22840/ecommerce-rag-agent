@@ -1,15 +1,15 @@
-"""Tests for the Ark chat client: request shaping, error handling, SSE parsing."""
+"""Tests for the chat client: request shaping, error handling, SSE parsing."""
 
 from __future__ import annotations
 
 import pytest
 
-from server.llm import ArkChatClient, ModelUnavailable
+from server.llm import ChatClient, ModelUnavailable
 
 
-def _client(api_key: str | None = "secret") -> ArkChatClient:
+def _client(api_key: str | None = "secret") -> ChatClient:
     # Trailing slash on base_url is intentional: the client must strip it.
-    return ArkChatClient(api_key=api_key, base_url="https://ark.example/api/v3/", model="m1")
+    return ChatClient(api_key=api_key, base_url="https://ark.example/api/v3/", model="m1")
 
 
 class _FakeStreamResponse:
@@ -38,7 +38,7 @@ def test_available_reflects_presence_of_api_key():
 # --- complete() ----------------------------------------------------------------
 
 def test_complete_without_key_raises_model_unavailable():
-    with pytest.raises(ModelUnavailable, match="ARK_CHAT_API_KEY"):
+    with pytest.raises(ModelUnavailable, match="CHAT_API_KEY"):
         _client(None).complete([{"role": "user", "content": "hi"}])
 
 
@@ -72,7 +72,7 @@ def test_complete_raises_on_http_error_with_status_and_body(mocker):
 # --- stream() ------------------------------------------------------------------
 
 def test_stream_without_key_raises_model_unavailable():
-    with pytest.raises(ModelUnavailable, match="ARK_CHAT_API_KEY"):
+    with pytest.raises(ModelUnavailable, match="CHAT_API_KEY"):
         list(_client(None).stream([{"role": "user", "content": "hi"}]))
 
 
