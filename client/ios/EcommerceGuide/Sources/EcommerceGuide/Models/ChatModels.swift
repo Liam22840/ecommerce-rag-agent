@@ -10,17 +10,20 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     public let role: ChatRole
     public var text: String
     public var isStreaming: Bool
+    public var imageData: Data?
 
     public init(
         id: UUID = UUID(),
         role: ChatRole,
         text: String,
-        isStreaming: Bool = false
+        isStreaming: Bool = false,
+        imageData: Data? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.isStreaming = isStreaming
+        self.imageData = imageData
     }
 }
 
@@ -30,7 +33,7 @@ public enum ChatTimelineItem: Identifiable, Equatable, Sendable {
     case products(id: UUID, products: [Product])
     case comparison(id: UUID, comparison: ProductComparison)
     case cartStatus(id: UUID, text: String)
-    case orderStatus(id: UUID, text: String)
+    case orderStatus(id: UUID, order: Order)
     case error(id: UUID, message: String)
 
     public var id: UUID {
@@ -55,8 +58,32 @@ public enum ChatStreamEvent: Equatable, Sendable {
     case comparison(ProductComparison)
     case cartUpdated([CartItem], summary: String)
     case cartStatus(summary: String)
-    case orderStatus(summary: String)
+    case orderStatus(Order)
     case done(messageID: String?)
+}
+
+public struct Order: Equatable, Sendable {
+    public let orderID: String?
+    public let status: String   // "awaiting_confirmation" | "submitted" | "cancelled"
+    public let address: String
+    public let subtotal: Double
+    public let summary: String
+
+    public var isAwaitingConfirmation: Bool { status == "awaiting_confirmation" }
+
+    public init(
+        orderID: String? = nil,
+        status: String,
+        address: String = "默认地址",
+        subtotal: Double = 0,
+        summary: String
+    ) {
+        self.orderID = orderID
+        self.status = status
+        self.address = address
+        self.subtotal = subtotal
+        self.summary = summary
+    }
 }
 
 public struct PlanStep: Codable, Equatable, Sendable {

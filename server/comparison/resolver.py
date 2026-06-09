@@ -1,7 +1,7 @@
 """Deterministic matching of free-text references to catalog products.
 
 Pure helpers used by ComparisonService to map ordinal/name/brand references onto
-concrete products. No catalog or LLM dependency — operates on product dicts.
+concrete products. No catalog or LLM dependency, operates on product dicts.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _best_ref_match(ref: str, pool: list[dict[str, Any]]) -> dict[str, Any] | No
         return None
     scored: list[tuple[float, dict[str, Any]]] = []
     for product in pool:
-        # _name_score already rewards the brand/title appearing in the ref; here we add the
+        # _name_score already rewards the brand/title appearing in the ref. Here we add the
         # reverse direction: a short ref being a fragment of the brand/title.
         score = _name_score(normalized_ref, product)
         brand = normalize(product.get("brand", ""))

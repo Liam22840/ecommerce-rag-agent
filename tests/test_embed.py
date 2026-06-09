@@ -72,6 +72,25 @@ def test_embeds_image_chunk_as_base64(tmp_path: Path, mocker):
     assert expected_b64 in item["image_url"]["url"]
 
 
+def test_embed_image_sends_base64_and_caches(tmp_path: Path, mocker):
+    mock_post = mocker.patch("ingestion.embed.requests.post",
+                             return_value=_ok_response([0.3, 0.6]))
+    cache = EmbeddingCache(tmp_path / "c.jsonl")
+    embedder = DoubaoEmbedder(api_key="fake", cache=cache)
+
+    img_bytes = b"\xff\xd8\xff\xd9"
+    assert embedder.embed_image(img_bytes) == [0.3, 0.6]
+    assert mock_post.call_count == 1
+    item = mock_post.call_args.kwargs["json"]["input"][0]
+    assert item["type"] == "image_url"
+    expected_b64 = base64.b64encode(img_bytes).decode("ascii")
+    assert item["image_url"]["url"] == f"data:image/jpeg;base64,{expected_b64}"
+
+    # Same bytes are served from cache, no second API call.
+    assert embedder.embed_image(img_bytes) == [0.3, 0.6]
+    assert mock_post.call_count == 1
+
+
 def test_retries_on_5xx_then_succeeds(tmp_path: Path, mocker):
     bad = MagicMock()
     bad.status_code = 503

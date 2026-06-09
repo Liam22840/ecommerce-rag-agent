@@ -164,8 +164,8 @@ final class SSEEventParserTests: XCTestCase {
             ""
         ])
 
-        XCTAssertEqual(draft, .orderStatus(summary: "订单待确认"))
-        XCTAssertEqual(submitted, .orderStatus(summary: "订单已提交"))
+        XCTAssertEqual(draft, .orderStatus(Order(status: "awaiting_confirmation", summary: "订单待确认")))
+        XCTAssertEqual(submitted, .orderStatus(Order(status: "submitted", summary: "订单已提交")))
     }
 
     func testParsesPlannerEvent() throws {

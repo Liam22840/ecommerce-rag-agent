@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from collections.abc import Iterator
 
@@ -15,7 +17,7 @@ from server.catalog import ProductCatalog
 from server.commerce import looks_like_commerce
 from server.config import Settings
 from server.filter_cache import FilterCache
-from server.llm import ArkChatClient
+from server.llm import ChatClient
 from server.planner import looks_like_planned_task
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
@@ -41,7 +43,7 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
     if assistant is None:
         catalog = ProductCatalog.load(settings.dataset_root)
         retriever = ProductRetriever(catalog, settings)
-        llm = ArkChatClient(
+        llm = ChatClient(
             api_key=settings.chat_api_key if settings.enable_llm else None,
             base_url=settings.chat_base_url,
             model=settings.chat_model,
@@ -80,9 +82,13 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
+        image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
-        key, cached = _cache_lookup(cache, message, request)
+        key, cached = _cache_lookup(cache, message, request, app.state.assistant)
         if cached is not None:
+            # A cache hit skips the assistant, so record the turn into session memory anyway,
+            # otherwise the next message has no context to carry over or resolve against.
+            app.state.assistant.record_cached_turn(request.effective_session_id, message, cached)
             return ChatResponse(**cached)
         response = app.state.assistant.answer(
             message,
@@ -91,6 +97,8 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
+            image_bytes=image_bytes,
+            client_address=request.client_context.address,
         )
         if key is not None:
             _maybe_store(cache, key, response)
@@ -102,13 +110,18 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         message = request.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="message cannot be empty")
+        image_bytes = _decode_image(request)
         cache: QueryCache = app.state.query_cache
-        key, cached = _cache_lookup(cache, message, request)
+        key, cached = _cache_lookup(cache, message, request, app.state.assistant)
         if cached is not None:
-            return _sse_response(_sse_replay(cached, settings.stream_chunk_size))
+            assistant = app.state.assistant
+            assistant.record_cached_turn(request.effective_session_id, message, cached)
+            # A cache hit is always a product search; emit the opener at once (no router wait).
+            opener = assistant.opener("product_search", message)
+            return _sse_response(_sse_replay(cached, settings.stream_chunk_size, opener))
         # prepare() runs inside the generator (after the lead-in is flushed) so the first
         # streamed token lands in <1s instead of after intent + retrieval.
-        return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key))
+        return _sse_response(_sse_stream(app.state.assistant, message, request, cache, key, image_bytes))
 
     @app.get("/api/products/{product_id}")
     def product_detail(product_id: str) -> dict:
@@ -120,8 +133,29 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
     return app
 
 
-def _cache_lookup(cache: QueryCache, message: str, request: ChatRequest) -> tuple[str | None, dict | None]:
-    if looks_like_planned_task(message) or looks_like_commerce(message) or request.client_context.cart_items:
+def _decode_image(request: ChatRequest) -> bytes | None:
+    attachment = request.image_attachment
+    if attachment is None:
+        return None
+    try:
+        return base64.b64decode(attachment.data, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="图片格式无法识别，请重新拍一张。")
+
+
+def _cache_lookup(
+    cache: QueryCache, message: str, request: ChatRequest, assistant: ShoppingAssistant
+) -> tuple[str | None, dict | None]:
+    # A turn in a session that already has history may be a context-dependent refinement ("便宜点的")
+    # whose meaning the text key can't capture, so it must neither hit nor populate the text cache —
+    # the server's own session memory is the source of truth here, not the client-sent recent ids.
+    if (
+        looks_like_planned_task(message)
+        or looks_like_commerce(message)
+        or request.client_context.cart_items
+        or request.attachments
+        or assistant.has_session_history(request.effective_session_id)
+    ):
         return None, None
     compare_ids = request.effective_compare_product_ids
     recent_ids = request.client_context.recent_product_ids
@@ -142,10 +176,10 @@ def _sse_stream(
     request: ChatRequest,
     cache: QueryCache | None = None,
     key: str | None = None,
+    image_bytes: bytes | None = None,
 ) -> Iterator[str]:
-    # Lead-in first: a deterministic, rule-picked opener flushed before intent+retrieval so 首
-    # Token lands in <1s. Streaming-only — not collected into the stored answer.
-    yield _token_event(assistant.lead_in(message, request.effective_compare_product_ids))
+    # The opener is the first thing prepare_stream yields — a route-tailored line emitted the moment
+    # the router decides (empty for chitchat). Streaming-only, not collected into the stored answer.
     try:
         prepared = None
         for update in assistant.prepare_stream(
@@ -155,12 +189,16 @@ def _sse_stream(
             request.effective_compare_product_ids,
             request.client_context.recent_product_ids,
             request.client_context.cart_items,
+            image_bytes=image_bytes,
+            client_address=request.client_context.address,
         ):
-            if isinstance(update, ExecutionPlan):
+            if isinstance(update, str):
+                yield _token_event(update)  # opener continuation
+            elif isinstance(update, ExecutionPlan):
                 yield _plan_frame(_model_dump(update))
             else:
                 prepared = update
-    except Exception:  # noqa: BLE001 - lead-in already sent; close the stream cleanly
+    except Exception:  # noqa: BLE001 (lead-in already sent, close the stream cleanly)
         yield _token_event("抱歉，出了一点问题，请再试一次。")
         yield _done_frame(request.effective_session_id, "none", ["prepare failed"])
         return
@@ -192,7 +230,11 @@ def _sse_stream(
     assistant.maybe_store_filter_cache(prepared, response)
 
 
-def _sse_replay(cached: dict, chunk_size: int) -> Iterator[str]:
+def _sse_replay(cached: dict, chunk_size: int, opener: str = "") -> Iterator[str]:
+    # Open with the same opener as a fresh turn so a cached reply reads identically. It stays
+    # instant since the rest of the replay is already in memory.
+    if opener:
+        yield _token_event(opener)
     products = [_enrich_product_dict(dict(p)) for p in cached.get("products", [])]
     yield _cards_frame(products, cached.get("comparison"))
     for token in _chunk_text(cached.get("answer", ""), chunk_size):

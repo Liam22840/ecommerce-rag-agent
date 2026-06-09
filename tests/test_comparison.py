@@ -26,6 +26,7 @@ from server.comparison.evidence import (
 from server.comparison.resolver import _asks_for_current_two, _best_ref_match, _name_score
 from server.comparison.text import _chunks
 from server.intent import SearchFilters
+from server.schemas import ComparisonRow
 from server.textutil import json_object, normalize, trim
 
 
@@ -58,6 +59,32 @@ def _product(
 
 def _catalog(*products: dict) -> ProductCatalog:
     return ProductCatalog({p["product_id"]: p for p in products})
+
+
+# --- asked-dimension wins the comparison -------------------------------------
+
+def test_specs_from_llm_payload_carries_the_asked_flag():
+    products = [_product(desc="主打保湿水润、长效锁水，肤感也清爽不油腻")]
+    payload = {"dimensions": [
+        {"label": "保湿", "aliases": ["保湿", "水润"], "preference": "higher_is_better", "asked": True},
+        {"label": "清爽", "aliases": ["清爽"], "preference": "higher_is_better", "asked": False},
+    ]}
+    by_label = {s.label: s for s in _specs_from_llm_payload(payload, "这两款面霜哪个更保湿", products)}
+    assert by_label["保湿"].asked is True
+    assert by_label["清爽"].asked is False
+
+
+def test_recommend_lets_the_asked_dimension_decide():
+    svc = ComparisonService(_catalog(_product("p1"), _product("p2")))
+    products = [svc._catalog.require("p1"), svc._catalog.require("p2")]
+    # p2 wins two auto-surfaced dimensions, but p1 wins the one the user actually asked about.
+    rows = [
+        ComparisonRow(dimension="保湿", values=[], winner_product_id="p1", verdict=""),
+        ComparisonRow(dimension="清爽", values=[], winner_product_id="p2", verdict=""),
+        ComparisonRow(dimension="质地", values=[], winner_product_id="p2", verdict=""),
+    ]
+    winner, _ = svc._recommend(products, rows, SearchFilters(), {"保湿"})
+    assert winner == "p1"
 
 
 # --- normalize / trim / _chunks ----------------------------------------------
@@ -238,7 +265,7 @@ def test_specs_from_llm_payload_coerces_non_list_aliases():
 
 
 def test_specs_from_llm_payload_drops_noise_label():
-    # The LLM occasionally emits a meta word ("对比") as a dimension — it must be dropped.
+    # The LLM occasionally emits a meta word ("对比") as a dimension, it must be dropped.
     products = [_product(desc="降噪效果出色")]
     payload = {"dimensions": [{"label": "对比", "aliases": ["对比"]}]}
     assert _specs_from_llm_payload(payload, "哪个更好", products) == []
@@ -499,7 +526,7 @@ def test_llm_resolved_compare_ids_win_over_the_dictionary():
     b = _product("p2", title="B面霜", category="美妆护肤", sub_category="面霜")
     svc = ComparisonService(_catalog(a, b))
 
-    # Phrasing the ORDINALS dict cannot parse, and no recent context — only the LLM-resolved
+    # Phrasing the ORDINALS dict cannot parse, and no recent context, so only the LLM-resolved
     # ids (validated against the catalog) can pin this comparison.
     comparison = svc.build(
         "排第一的那个和最后那个哪个更保湿",

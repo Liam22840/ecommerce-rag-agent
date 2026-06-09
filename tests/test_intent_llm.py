@@ -21,7 +21,7 @@ BRANDS = {"华为", "雅诗兰黛", "兰蔻"}
 
 
 class FakeLLM:
-    """Stand-in for ArkChatClient: returns canned JSON (or raises)."""
+    """Stand-in for ChatClient: returns canned JSON (or raises)."""
 
     def __init__(self, response, available: bool = True):
         self._response = response
@@ -87,7 +87,7 @@ def test_merge_validated_llm_category_survives_unmapped_subcategory():
     resp = json.dumps({"category": "美妆护肤", "sub_category": "唇釉"})
     f = _parser(resp).parse("推荐口红")
     assert f.sub_category == "唇釉"
-    assert f.category == "美妆护肤"  # 唇釉 is not in SUB_CATEGORY_TO_CATEGORY; came from LLM
+    assert f.category == "美妆护肤"  # 唇釉 is not in SUB_CATEGORY_TO_CATEGORY, came from LLM
 
 
 # --- Session context carry-over + rewrite --------------------------------------
@@ -211,7 +211,7 @@ def test_empty_payload_falls_back_to_rule_values():
 def test_hallucinated_category_is_dropped():
     resp = json.dumps({"category": "奢侈品", "sub_category": "唇釉"})
     f = _parser(resp).parse("推荐口红")
-    # 奢侈品 isn't a real category -> dropped; 唇釉 isn't in the backfill dict -> category stays None.
+    # 奢侈品 isn't a real category -> dropped. 唇釉 isn't in the backfill dict -> category stays None.
     assert f.category is None
     assert f.sub_category == "唇釉"
 
@@ -270,7 +270,7 @@ def test_no_llm_uses_rule_path():
 def test_unavailable_llm_is_not_called():
     parser = _parser(json.dumps({"sub_category": "唇釉"}), available=False)
     f = parser.parse("推荐一款适合油皮的洗面奶")
-    assert f.sub_category == "洁面"  # rule path; LLM skipped despite a canned response
+    assert f.sub_category == "洁面"  # rule path, LLM skipped despite a canned response
 
 
 def test_json_embedded_in_prose_is_extracted():
@@ -359,4 +359,111 @@ def test_llm_relative_cheaper_emits_tighter_max_price_with_carry():
     )
     assert f.sub_category == "面霜"
     assert f.max_price == 80.0
+    assert f.prefer_low_price is True
+
+
+# --- photo-find: VLM intent over an image --------------------------------------
+
+def test_parse_image_merges_vlm_filters_with_text_rules():
+    # VLM reads the photo (category + style + confidence); the accompanying text supplies price.
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "短袖T恤",
+        "required_terms": ["黑色"], "vision_description": "黑色短袖T恤", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="300以内的")
+    # At high confidence the broad category gates (keeps cross-category junk out of a photo search),
+    # but the fine sub_category stays a soft hint so a VLM/catalogue taxonomy mismatch can't drop the
+    # product from its own photo. The visual category still carries into vision_description for ranking.
+    assert f.category == "服饰运动"      # broad category gates
+    assert f.sub_category is None        # fine sub_category does not
+    assert f.vision_description == "黑色短袖T恤"
+    assert "黑色" in f.required_terms
+    assert f.max_price == 300.0          # picked up from the text by the rule parser
+    assert f.vision_confidence == "high"
+
+
+def test_parse_image_degrades_to_low_confidence_without_llm():
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"})  # no VLM
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="便宜的")
+    assert f.vision_confidence == "low"   # can't gauge category match without the VLM
+    assert f.prefer_low_price is True     # text rule still applies
+
+
+def test_parse_image_low_confidence_defaulted_when_vlm_omits_it():
+    resp = json.dumps({"intent_type": "product_search", "vision_description": "某物"})
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="")
+    assert f.vision_confidence == "low"   # absent -> treated as low
+
+
+def test_clean_redundant_terms_drops_negation_required_and_brand_excluded_terms():
+    # The LLM sometimes emits a negation as a "required" term ("不含酒精") or repeats the excluded
+    # brand inside excluded_terms ("耐克的跑步鞋"). Both are dropped so honest narration isn't muddied.
+    resp = json.dumps({
+        "intent_type": "product_search", "sub_category": "面霜",
+        "required_terms": ["不含酒精", "保湿"],
+        "excluded_brands": ["耐克"], "excluded_terms": ["耐克的跑步鞋", "油腻"],
+    })
+    parser = IntentParser(CATEGORIES, SUB_CATEGORIES, BRANDS | {"耐克"}, llm=FakeLLM(resp))
+    f = parser.parse("推荐保湿面霜")
+    assert "不含酒精" not in f.required_terms and "保湿" in f.required_terms   # negation dropped, sellpoint kept
+    assert "耐克的跑步鞋" not in f.excluded_terms and "油腻" in f.excluded_terms  # brand-phrase dropped, exclusion kept
+
+
+def test_parse_image_drops_vision_only_brand_so_it_does_not_hard_gate():
+    # A brand the VLM read off the logo (no text brand) must not hard-filter: a photo of an
+    # Adidas shoe should still surface our Nike/Anta basketball shoes (brand stays soft).
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "篮球鞋",
+        "brand": "阿迪达斯", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="")
+    assert f.brand is None              # vision-only brand dropped from the gate
+    assert f.category == "服饰运动"      # broad category still gates at high confidence
+    assert f.sub_category is None       # but the fine sub_category is a soft hint
+
+
+def test_parse_image_keeps_a_text_typed_brand_as_a_hard_gate():
+    # When the user actually typed the brand, it should still gate.
+    resp = json.dumps({
+        "intent_type": "product_search", "category": "服饰运动", "sub_category": "篮球鞋",
+        "brand": "耐克", "vision_confidence": "high",
+    })
+    parser = IntentParser({"服饰运动"}, {"篮球鞋"}, {"耐克", "阿迪达斯"}, llm=FakeLLM(resp))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="要耐克的")
+    assert f.brand == "耐克"             # text-typed brand survives as a gate
+
+
+# --- router classification + degradation -------------------------------------
+
+def _route_kwargs():
+    return dict(has_cart=False, has_results=False, has_draft=False, just_compared=False)
+
+
+def test_classify_route_maps_the_short_label_to_an_intent_type():
+    route, _ = _parser('{"route":"comparison","reply":""}').classify_route("A和B哪个好", **_route_kwargs())
+    assert route == "comparison"
+
+
+def test_classify_route_degrades_to_keyword_fallback_when_llm_raises():
+    route, reply = _parser(RuntimeError("router down")).classify_route("推荐面霜", **_route_kwargs())
+    assert route is None and reply == ""
+
+
+def test_classify_route_returns_none_when_llm_unavailable():
+    route, reply = _parser("{}", available=False).classify_route("推荐面霜", **_route_kwargs())
+    assert route is None and reply == ""
+
+
+def test_llm_available_reflects_the_intent_llm_state():
+    assert _parser("{}").llm_available is True
+    assert _parser("{}", available=False).llm_available is False
+
+
+def test_parse_image_falls_back_to_low_confidence_when_the_vlm_raises():
+    parser = IntentParser({"服饰运动"}, {"短袖T恤"}, {"耐克"}, llm=FakeLLM(RuntimeError("vlm down")))
+    f = parser.parse_image(b"\xff\xd8\xff\xd9", text="便宜的")
+    assert f.vision_confidence == "low"   # VLM failure degrades to the text rule parser
     assert f.prefer_low_price is True

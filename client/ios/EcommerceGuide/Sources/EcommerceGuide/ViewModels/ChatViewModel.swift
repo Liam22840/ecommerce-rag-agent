@@ -9,6 +9,9 @@ public final class ChatViewModel: ObservableObject {
     @Published public var isSending: Bool
     @Published public var isListening: Bool
     @Published public var errorMessage: String?
+    // The shipping address shown in the order card. Sent with every request so the order carries it,
+    // and re-synced from the server's order whenever one arrives (e.g. after a conversational change).
+    @Published public var shippingAddress: String = "北京市朝阳区望京SOHO T1 12层"
 
     public let conversationID: UUID
 
@@ -46,12 +49,23 @@ public final class ChatViewModel: ObservableObject {
         send(message: draftMessage)
     }
 
+    public func sendPhoto(imageData: Data, caption: String) {
+        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = trimmed.isEmpty ? "找同款" : trimmed
+        send(message: message, imageData: imageData)
+    }
+
     public func retryLastMessage() {
         guard let lastSubmittedMessage else {
             return
         }
 
         send(message: lastSubmittedMessage)
+    }
+
+    /// Send a fixed reply on the user's behalf, e.g. the order card's 确认 / 取消订单 buttons.
+    public func sendQuickReply(_ text: String) {
+        send(message: text)
     }
 
     public func addToCart(product: Product) {
@@ -118,7 +132,7 @@ public final class ChatViewModel: ObservableObject {
         }
     }
 
-    private func send(message: String) {
+    private func send(message: String, imageData: Data? = nil) {
         if isListening {
             stopVoiceInput()
         }
@@ -145,14 +159,16 @@ public final class ChatViewModel: ObservableObject {
             return false
         }
 
-        timeline.append(.message(ChatMessage(role: .user, text: trimmedMessage)))
+        timeline.append(.message(ChatMessage(role: .user, text: trimmedMessage, imageData: imageData)))
         timeline.append(.message(ChatMessage(id: assistantID, role: .assistant, text: "", isStreaming: true)))
 
         let request = ChatRequest(
             conversationID: conversationID,
             message: trimmedMessage,
             cartItems: cartItems,
-            recentProductIDs: recentProductIDs
+            recentProductIDs: recentProductIDs,
+            imageData: imageData,
+            address: shippingAddress
         )
 
         streamTask?.cancel()
@@ -241,8 +257,12 @@ public final class ChatViewModel: ObservableObject {
             timeline.append(.cartStatus(id: UUID(), text: summary))
         case .cartStatus(let summary):
             timeline.append(.cartStatus(id: UUID(), text: summary))
-        case .orderStatus(let summary):
-            timeline.append(.orderStatus(id: UUID(), text: summary))
+        case .orderStatus(let order):
+            // Keep the editable field in step with the order (e.g. after a conversational "改地址").
+            if !order.address.isEmpty {
+                shippingAddress = order.address
+            }
+            timeline.append(.orderStatus(id: UUID(), order: order))
         case .done:
             finishCompletedStream()
         }

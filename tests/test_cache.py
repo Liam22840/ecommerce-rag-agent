@@ -48,7 +48,7 @@ def test_cache_handles_multiple_entries(tmp_path: Path):
 
 
 def test_load_skips_blank_lines(tmp_path: Path):
-    # Append-only writes plus an editor or a crash can leave blank lines; loading must skip them.
+    # Append-only writes plus an editor or a crash can leave blank lines, loading must skip them.
     cache_file = tmp_path / "cache.jsonl"
     cache_file.write_text(
         '{"key": "a", "vector": [1.0]}\n'
@@ -74,7 +74,7 @@ def test_concurrent_put_and_get_is_thread_safe(tmp_path: Path):
 
     def reader() -> None:
         for i in range(n):
-            cache.get(f"k{i}")  # may be None or the value; just must never raise
+            cache.get(f"k{i}")  # may be None or the value, just must never raise
 
     threads = [threading.Thread(target=writer) for _ in range(4)] + [
         threading.Thread(target=reader) for _ in range(4)

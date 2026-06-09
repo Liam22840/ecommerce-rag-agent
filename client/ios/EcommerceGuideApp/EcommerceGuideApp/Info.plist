@@ -29,6 +29,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于连接同一局域网内的本地导购后端服务。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于拍照识别相似商品</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于把你的语音购物需求转成文字。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

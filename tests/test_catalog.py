@@ -55,6 +55,22 @@ def test_catalog_loads_all_products_and_builds_cards():
     assert card.detail_path == "/api/products/p_beauty_011"
 
 
+def test_seeded_stock_is_deterministic_pinned_and_surfaced():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    reloaded = ProductCatalog.load(DATASET_ROOT)
+
+    # Stable across loads, and the formula keeps every non-pinned product comfortably in stock.
+    assert catalog.stock("p_beauty_001") == reloaded.stock("p_beauty_001")
+    assert catalog.stock("p_beauty_001") >= 12
+    # Demo pins: one sold out, one low.
+    assert catalog.stock("p_beauty_002") == 0
+    assert catalog.stock("p_digital_003") == 2
+    # The answer model is given availability; the base value is used when no session value is passed.
+    facts = catalog.product_facts(catalog.require("p_digital_003"))
+    assert facts["available"] == 2
+    assert catalog.product_facts(catalog.require("p_digital_003"), available=0)["available"] == 0
+
+
 def test_catalog_exposes_sku_safe_price_labels():
     catalog = ProductCatalog.load(DATASET_ROOT)
 
@@ -112,7 +128,7 @@ def test_sensitive_skin_search_ranks_evidenced_first_without_dropping_others():
     hits = catalog.search_lexical("推荐50g适合敏感肌的保湿霜，cheaper is better", filters, limit=5)
     ids = [hit.product["product_id"] for hit in hits]
 
-    # required_terms no longer hard-filter: the sensitive-evidenced cream ranks first, but the
+    # required_terms rank rather than hard-filter: the sensitive-evidenced cream ranks first, but the
     # other 50g cream still surfaces (ranked below) rather than being silently dropped.
     assert ids[0] == "p_beauty_007"
     assert "p_beauty_008" in ids
@@ -167,8 +183,8 @@ def test_violates_excluded_ignores_third_party_reviews():
 
 
 def test_matches_filters_no_longer_gates_excluded_terms():
-    # excluded_terms moved out of the retrieval gate (now an LLM judge + violates_excluded fallback
-    # over the shortlist), so matches_filters ignores it; excluded_brands stays a hard gate.
+    # excluded_terms are not a retrieval gate (an LLM judge + violates_excluded fallback apply
+    # over the shortlist), so matches_filters ignores it. excluded_brands stays a hard gate.
     catalog = _catalog(_product("p1", desc="含有酒精成分"))
     assert catalog.matches_filters(catalog.require("p1"), SearchFilters(excluded_terms=["酒精"])) is True
 
@@ -347,7 +363,7 @@ def test_avg_rating_ignores_non_numeric_ratings():
 
 
 def test_required_terms_no_longer_hard_filter():
-    # A product that doesn't evidence the attribute is NOT dropped — required_terms rank, not gate.
+    # A product that doesn't evidence the attribute is NOT dropped. required_terms rank, not gate.
     catalog = _catalog(_product(title="普通面霜", desc="温和"))
     product = catalog.require("p1")
     assert catalog.matches_filters(product, SearchFilters(required_terms=["敏感肌"])) is True
@@ -420,3 +436,12 @@ def test_product_facts_is_slim_for_a_compact_answer_prompt():
     assert "price_instruction" not in facts
     assert len(facts["description"]) <= 160  # long marketing copy is truncated
     assert facts["sku_count"] == 0
+
+
+def test_sku_id_for_phrase_matches_label_and_falls_back():
+    catalog = ProductCatalog.load(DATASET_ROOT)
+    product = next(p for p in catalog.products if len(catalog.sku_prices(p)) >= 2)
+    target = catalog.sku_prices(product)[-1]
+    assert catalog.sku_id_for_phrase(product, target["label"]) == target["sku_id"]
+    assert catalog.sku_id_for_phrase(product, "完全不存在的规格xyz") is None
+    assert catalog.sku_id_for_phrase(product, None) is None

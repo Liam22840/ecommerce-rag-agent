@@ -1,18 +1,19 @@
 """Intent and constraint parsing.
 
 A deterministic rule pass extracts price/category constraints, and when an LLM is
-available it refines the result; both produce the same SearchFilters structure and
+available it refines the result. Both produce the same SearchFilters structure and
 the rule pass is the fallback when the model is unavailable.
 """
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from server.prompts import intent_messages
-from server.textutil import dedupe, json_object, normalize, normalize_spec, trim
+from server.prompts import intent_messages, route_messages, vision_intent_messages
+from server.textutil import chinese_to_int, dedupe, json_object, normalize, normalize_spec, trim
 
 
 # Single source of truth for sellpoint-attribute synonyms: the rule-parser extracts these from a
@@ -70,7 +71,7 @@ SUB_CATEGORY_TO_CATEGORY: dict[str, str] = {
 }
 
 SORT_BY_VALUES = {"relevance", "price_asc", "price_desc", "rating_desc"}
-INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout"}
+INTENT_TYPE_VALUES = {"product_search", "comparison", "chitchat", "cart_action", "checkout", "planned_task"}
 
 # Rule-fallback comparison detection. Kept local (not imported from comparison.py,
 # which imports SearchFilters from here) so the rule path can set intent_type when the
@@ -97,21 +98,25 @@ class SearchFilters:
     excluded_terms: list[str] = field(default_factory=list)
     compare_refs: list[str] = field(default_factory=list)
     raw_query: str = ""
-    # LLM-rewritten standalone retrieval query for context-dependent follow-ups;
-    # empty means "use raw_query".
+    # LLM-rewritten standalone retrieval query for context-dependent follow-ups.
+    # Empty means "use raw_query".
     rewritten_query: str = ""
     # LLM-set flag for novelty refinements ("还有别的/换一批"): drop already-shown products.
     exclude_seen: bool = False
     # LLM-picked product ids (copied from session_products) for backtracking recall
-    # ("回到最开始那个"); validated against the catalog before use.
+    # ("回到最开始那个"), validated against the catalog before use.
     recall_product_ids: list[str] = field(default_factory=list)
     # LLM-resolved product ids (copied from session_products) for a comparison turn
-    # ("第一个和第二个"); validated against the catalog, with the ordinal/name waterfall as fallback.
+    # ("第一个和第二个"), validated against the catalog, with the ordinal/name waterfall as fallback.
     compare_product_ids: list[str] = field(default_factory=list)
     commerce_action: str | None = None
     commerce_refs: list[str] = field(default_factory=list)
     commerce_quantity: int | None = None
     commerce_target_scope: str | None = None
+    # VLM-only (photo-find): a standalone retrieval phrase describing the image subject,
+    # and the VLM's confidence that the subject maps to a stocked category (high|low|"").
+    vision_description: str = ""
+    vision_confidence: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -138,13 +143,14 @@ class IntentParser:
         previous_filters: SearchFilters | None = None,
         history: list[dict[str, Any]] | None = None,
         session_products: list[dict[str, Any]] | None = None,
+        cart: list[dict[str, Any]] | None = None,
     ) -> SearchFilters:
-        # `previous_filters` drives the deterministic backstop (last turn only); `history`
-        # is the few-round refinement context; `session_products` is the whole-session list
+        # `previous_filters` drives the deterministic backstop (last turn only). `history`
+        # is the few-round refinement context. `session_products` is the whole-session list
         # of shown products the LLM uses to resolve backtracking ("回到最开始那个").
         rule = self._rule_parse(message)
         if self._should_use_llm():
-            llm = self._llm_parse(message, history, session_products)
+            llm = self._llm_parse(message, history, session_products, cart)
             base = rule if llm is None else self._merge(rule, llm, message)
         else:
             base = rule
@@ -152,18 +158,101 @@ class IntentParser:
         # when the LLM is unavailable or omits the carry. LLM proposes, this disposes.
         base = self._apply_session_context(base, previous_filters)
         # Safety net for either source contradicting itself: a brand can't be both wanted and
-        # excluded. The rule parser already avoids this; this also catches the LLM if it ever
+        # excluded. The rule parser already avoids this. This also catches the LLM if it ever
         # emits a brand it simultaneously excluded, which would otherwise match nothing.
         if base.brand and base.brand in base.excluded_brands:
             base.brand = None
+        self._clean_redundant_terms(base)
         self._widen_approximate_price(base, message)
         return base
 
+    @staticmethod
+    def _clean_redundant_terms(filters: SearchFilters) -> None:
+        """Drop term-list noise the LLM sometimes emits, so it doesn't muddy honest narration. A
+        negation ("不含酒精") is never a positive sellpoint, and a brand already in excluded_brands
+        shouldn't also sit in excluded_terms as a phrase ("耐克的跑步鞋"). Price/tier adjectives are
+        kept out of required_terms by the intent prompt, not patched here."""
+        filters.required_terms = [t for t in filters.required_terms if not t.startswith("不")]
+        if filters.excluded_brands:
+            filters.excluded_terms = [
+                t for t in filters.excluded_terms
+                if not any(brand in t for brand in filters.excluded_brands)
+            ]
+
+    def parse_image(
+        self,
+        image_bytes: bytes,
+        text: str = "",
+        history: list[dict[str, Any]] | None = None,
+        session_products: list[dict[str, Any]] | None = None,
+    ) -> SearchFilters:
+        """Photo-find intent: the VLM reads the image (+ accompanying text) and proposes the same
+        SearchFilters the text parser produces, plus a description and a confidence. The rule pass
+        over the accompanying text disposes (price/excludes), and is the whole fallback when the
+        VLM is unavailable."""
+        rule = self._rule_parse(text or "")
+        if not self._should_use_llm():
+            rule.vision_confidence = "low"  # no VLM -> can't judge category match
+            return rule
+        vision = self._vision_parse(image_bytes, text or "", history, session_products)
+        if vision is None:
+            rule.vision_confidence = "low"
+            return rule
+        merged = self._merge(rule, vision, text or "")
+        if merged.brand and merged.brand in merged.excluded_brands:
+            merged.brand = None
+        # A brand read off the photo's logo is a soft hint, not a hard constraint: a photo means
+        # "find similar", so we must not zero out results just because we don't stock that exact
+        # brand (e.g. an Adidas-shoe photo when we carry Nike/Anta basketball shoes). It stays in
+        # required_terms / vision_description, so same-brand items still rank up; it just no longer
+        # gates. A brand the user actually typed in text still gates.
+        if merged.brand and merged.brand != rule.brand:
+            merged.brand = None
+        if not merged.vision_confidence:
+            merged.vision_confidence = "low"
+        # The fine sub_category is always a soft hint: the VLM's read can disagree with the catalogue's
+        # taxonomy (a 神仙水 read as 精华 but filed under 化妆水), and gating on it would drop the product
+        # from its own photo. The broad category stays a gate when the VLM is confident, so cross-
+        # category junk (a milk carton surfacing for a phone photo) is kept out while a same-category
+        # taxonomy mismatch still survives. At low confidence the category relaxes too, letting visual
+        # similarity surface the nearest items. A category the user typed in text always wins.
+        merged.sub_category = rule.sub_category
+        if merged.vision_confidence != "high":
+            merged.category = rule.category
+        return merged
+
+    def _vision_parse(
+        self,
+        image_bytes: bytes,
+        text: str,
+        history: list[dict[str, Any]] | None,
+        session_products: list[dict[str, Any]] | None,
+    ) -> SearchFilters | None:
+        data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+        try:
+            raw = self._llm.complete(
+                vision_intent_messages(
+                    text,
+                    self._categories,
+                    self._sub_categories,
+                    self._brands,
+                    data_url,
+                    history=history,
+                    session_products=session_products,
+                )
+            )
+            payload = json_object(raw)
+        except Exception:  # noqa: BLE001 (VLM parse must degrade to the text rule parser)
+            return None
+        if not payload:
+            return None
+        return self._filters_from_llm_payload(payload, text)
+
     def lead_in_hint(self, message: str) -> tuple[str, str | None]:
-        """Instant, deterministic guess for the streaming opener — no LLM call. Rule-parse the
+        """Instant, deterministic guess for the streaming opener, no LLM call. Rule-parse the
         raw text and report what to acknowledge: ("search", <type>) when a catalog category is
         named, ("compare", None) for a comparison phrasing, else ("neutral", None). Type wins
-        over the fuzzy comparison regex; anything unrecognised falls back to neutral, so chit-chat
+        over the fuzzy comparison regex. Anything unrecognised falls back to neutral, so chit-chat
         is never mis-opened. The real understanding is still the LLM's job, behind the opener."""
         rule = self._rule_parse(message)
         # Only tailor toward a type the user positively wants. If the detected type is itself
@@ -209,13 +298,49 @@ class IntentParser:
         if filters.prefer_low_price:
             filters.sort_by = "price_asc"
         # Rule-fallback comparison detection keeps comparison routing working when the
-        # LLM is unavailable; chitchat is not rule-detectable, so it stays product_search.
+        # LLM is unavailable. Chitchat is not rule-detectable, so it stays product_search.
         if _looks_like_comparison(text):
             filters.intent_type = "comparison"
         filters.required_terms = _parse_required_terms(text)
         filters.requested_specs = _parse_requested_specs(text)
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
+
+    _ROUTE_MAP = {
+        "search": "product_search", "comparison": "comparison", "cart": "cart_action",
+        "checkout": "checkout", "plan": "planned_task", "chitchat": "chitchat",
+    }
+
+    def classify_route(
+        self,
+        query: str,
+        *,
+        has_cart: bool,
+        has_results: bool,
+        has_draft: bool,
+        just_compared: bool,
+        last_route: str | None = None,
+    ) -> tuple[str | None, str]:
+        """Focused, route-only classifier — a short prompt that reliably decides the turn kind, which
+        the overloaded intent parser does not. For chitchat it also answers inline, so that turn needs
+        no second model call. Returns (intent_type, chitchat_reply); intent_type is None when the LLM
+        is unavailable or the answer unusable (caller then falls back to the keyword router)."""
+        if not self._should_use_llm():
+            return None, ""
+        try:
+            payload = json_object(self._llm.complete(route_messages(
+                query, has_cart=has_cart, has_results=has_results,
+                has_draft=has_draft, just_compared=just_compared, last_route=last_route,
+            )))
+        except Exception:  # noqa: BLE001 (routing must degrade to the keyword fallback)
+            return None, ""
+        return self._ROUTE_MAP.get(payload.get("route")), str(payload.get("reply") or "")
+
+    @property
+    def llm_available(self) -> bool:
+        """Whether the intent LLM can act as the router this turn. When False, the assistant uses the
+        deterministic keyword fallback router instead of trusting the rule parser's intent_type."""
+        return self._should_use_llm()
 
     def _should_use_llm(self) -> bool:
         return bool(self._llm) and getattr(self._llm, "available", False)
@@ -225,6 +350,7 @@ class IntentParser:
         message: str,
         history: list[dict[str, Any]] | None = None,
         session_products: list[dict[str, Any]] | None = None,
+        cart: list[dict[str, Any]] | None = None,
     ) -> SearchFilters | None:
         try:
             raw = self._llm.complete(
@@ -235,10 +361,11 @@ class IntentParser:
                     self._brands,
                     history=history,
                     session_products=session_products,
+                    cart=cart,
                 )
             )
             payload = json_object(raw)
-        except Exception:  # noqa: BLE001 - LLM parse must degrade to the rule parser.
+        except Exception:  # noqa: BLE001 (LLM parse must degrade to the rule parser)
             return None
         if not payload:
             return None
@@ -265,6 +392,8 @@ class IntentParser:
         filters.exclude_seen = _coerce_bool(payload.get("exclude_seen"))
         filters.recall_product_ids = _coerce_str_list(payload.get("recall_product_ids"))
         filters.compare_product_ids = _coerce_str_list(payload.get("compare_product_ids"))
+        filters.vision_description = _coerce_query(payload.get("vision_description"))
+        filters.vision_confidence = _coerce_enum(payload.get("vision_confidence"), {"high", "low"}, "")
         return filters
 
     def _merge(self, rule: SearchFilters, llm: SearchFilters, message: str) -> SearchFilters:
@@ -286,6 +415,8 @@ class IntentParser:
         merged.exclude_seen = llm.exclude_seen  # novelty flag is only produced by the LLM
         merged.recall_product_ids = llm.recall_product_ids  # recall ids only come from the LLM
         merged.compare_product_ids = llm.compare_product_ids  # comparison ids only come from the LLM
+        merged.vision_description = llm.vision_description  # vision fields only come from the VLM
+        merged.vision_confidence = llm.vision_confidence
         self._backfill_category(merged)
         return merged
 
@@ -303,6 +434,10 @@ class IntentParser:
         if filters.intent_type != "product_search":
             return filters
         if filters.category or filters.sub_category:
+            return filters
+        # Naming a different brand is a pivot to that brand's products ("跑步鞋" -> "巴黎欧莱雅有什么"),
+        # not a refinement of the previous category, so the old category must not carry over.
+        if filters.brand and filters.brand != previous_filters.brand:
             return filters
         if not (previous_filters.category or previous_filters.sub_category):
             return filters
@@ -351,19 +486,30 @@ class IntentParser:
         return excluded
 
 
+# A price number, in Arabic digits and/or Chinese numerals (三百, 一万, 1万, 三百五). Scoped to the
+# price patterns below so it never touches numerals inside names (e.g. 三只松鼠).
+_PRICE_NUMBER = r"([\d零〇一二两三四五六七八九十百千万]+(?:\.\d+)?)"
+def _to_number(token: str) -> float | None:
+    try:
+        return float(token)
+    except ValueError:
+        value = chinese_to_int(token)
+        return float(value) if value is not None else None
+
+
 def _parse_max_price(text: str) -> float | None:
     patterns = [
-        r"(?:预算|价格|价位)?\s*(\d+(?:\.\d+)?)\s*(?:元|块|rmb|人民币)?\s*(?:以下|以内|内|之内)",
-        r"(?:不超过|不超|小于|低于|少于|<=|≤)\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*(?:元|块)?\s*(?:封顶|以下)",
+        rf"(?:预算|价格|价位)?\s*{_PRICE_NUMBER}\s*(?:元|块|rmb|人民币)?\s*(?:以下|以内|内|之内)",
+        rf"(?:不超过|不超|小于|低于|少于|<=|≤)\s*{_PRICE_NUMBER}",
+        rf"{_PRICE_NUMBER}\s*(?:元|块)?\s*(?:封顶|以下)",
     ]
     return _first_number(patterns, text)
 
 
 def _parse_min_price(text: str) -> float | None:
     patterns = [
-        r"(\d+(?:\.\d+)?)\s*(?:元|块|rmb|人民币)?\s*(?:以上|起)",
-        r"(?:不低于|大于|高于|>=|≥)\s*(\d+(?:\.\d+)?)",
+        rf"{_PRICE_NUMBER}\s*(?:元|块|rmb|人民币)?\s*(?:以上|起)",
+        rf"(?:不低于|大于|高于|>=|≥)\s*{_PRICE_NUMBER}",
     ]
     return _first_number(patterns, text)
 
@@ -379,7 +525,9 @@ def _first_number(patterns: list[str], text: str) -> float | None:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            return float(match.group(1))
+            value = _to_number(match.group(1))
+            if value is not None:
+                return value
     return None
 
 
@@ -453,7 +601,7 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _coerce_price(value: Any) -> float | None:
-    if isinstance(value, bool):  # bool is an int subclass; reject explicitly
+    if isinstance(value, bool):  # bool is an int subclass, reject explicitly
         return None
     try:
         price = float(value)

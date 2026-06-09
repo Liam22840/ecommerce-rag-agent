@@ -6,9 +6,9 @@ intent ("便宜的洗面奶" / "平价一点的洁面" / "实惠的洗面奶") o
 higher than the exact-text QueryCache. It is safe where an embedding-similarity cache is not:
 the LLM resolves negation into structure before the key exists, so "便宜"→prefer_low_price:true
 and "不便宜"→prefer_low_price:false get different keys and cannot collide. The match itself is
-exact on every field — price and numeric bounds only hit if identical, never "close enough".
+exact on every field: price and numeric bounds only hit if identical, never "close enough".
 
-Storage (append-only JSONL, in-memory LRU) is inherited from QueryCache; only the key and
+Storage (append-only JSONL, in-memory LRU) is inherited from QueryCache. Only the key and
 eligibility differ.
 """
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from server.intent import SearchFilters
 
 
-# The fields that define WHAT to retrieve and HOW to rank — the meaning of the query. Session/raw
+# The fields that define WHAT to retrieve and HOW to rank, the meaning of the query. Session/raw
 # fields (raw_query, rewritten_query, exclude_seen, recall_product_ids, compare_product_ids) are
 # deliberately excluded: they are about phrasing or conversation state, not the intent itself.
 _SCALAR_FIELDS = ("max_price", "min_price", "category", "sub_category", "brand", "prefer_low_price", "sort_by")
