@@ -125,6 +125,7 @@ class CommerceService:
         session_products: list[dict[str, Any]] | None,
         order_state: OrderState,
         comparison_winner_id: str | None = None,
+        latest_batch_ids: list[str] | None = None,
     ) -> CommerceResult | None:
         if order_state.pending_action is not None and _looks_like_pending_reply(message):
             candidate = _candidate_from_pending(order_state.pending_action, message)
@@ -140,7 +141,9 @@ class CommerceService:
             candidate = self._deterministic_parse(message, bool(cart_items), bool(order_state.draft))
         if not candidate.is_commerce:
             return None
-        return self._apply(candidate, message, cart_items, session_products, order_state)
+        return self._apply(
+            candidate, message, cart_items, session_products, order_state, latest_batch_ids, comparison_winner_id
+        )
 
     def apply_candidate(
         self,
@@ -303,6 +306,8 @@ class CommerceService:
         raw_cart_items: list[dict[str, Any]],
         session_products: list[dict[str, Any]] | None,
         order_state: OrderState,
+        latest_batch_ids: list[str] | None = None,
+        comparison_winner_id: str | None = None,
     ) -> CommerceResult:
         cart = self._normalize_cart(raw_cart_items)
         intent = {
@@ -334,10 +339,20 @@ class CommerceService:
             return CommerceResult("已取消本次下单，购物车商品仍会保留。", self._cart_update(cart, "cancel_order", self._cart_summary(cart)), order, intent)
 
         if candidate.action == "add":
-            resolved = self._resolve_products(candidate, session_products or [], cart, prefer_cart=False)
+            # A reference to a comparison result ("买之前对比胜出的那个") when no winner is on record
+            # (a newer list cleared it) must clarify, not resolve to a stale or cart-biased product.
+            if comparison_winner_id is None and _looks_like_winner_ref(message):
+                return self._clarify(cart, "刚才的对比结果已经更新了，请直接说要加入哪一款（可以说序号或商品名）。", intent)
+            resolved = self._resolve_products(candidate, session_products or [], cart, prefer_cart=False, message=message)
             if isinstance(resolved, str):
                 order_state.pending_action = candidate
                 return self._clarify(cart, resolved, intent)
+            # "都/全部/所有加入" means the most-recently-shown batch, not every product seen this
+            # session. The LLM is told this; scope it deterministically as a backstop when it over-reaches.
+            if latest_batch_ids and len(resolved) > 1 and _looks_like_select_all(message):
+                scoped = [item for item in resolved if item.product_id in set(latest_batch_ids)]
+                if scoped:
+                    resolved = scoped
             # quantity is per item; the LLM is told a count of products ("两双") goes in product_ids,
             # not here, so we trust it and default to 1 when unset. item_quantities overrides per id.
             qty = candidate.quantity or 1
@@ -369,12 +384,22 @@ class CommerceService:
             cart = self._upsert(cart, resolved_item.product_id, delta)
             summary = f"已将「{resolved_item.product.title}」数量增加到 {self._quantity_for(cart, resolved_item.product_id)}。"
         elif candidate.action == "decrement":
-            cart = self._set_quantity(cart, resolved_item.product_id, resolved_item.quantity - (candidate.quantity or 1))
-            summary = f"已更新「{resolved_item.product.title}」数量。"
+            new_qty = resolved_item.quantity - (candidate.quantity or 1)
+            cart = self._set_quantity(cart, resolved_item.product_id, new_qty)
+            summary = (f"已将「{resolved_item.product.title}」数量减到 {new_qty}。" if new_qty > 0
+                       else f"已从购物车删除「{resolved_item.product.title}」。")
         elif candidate.action == "set_quantity":
-            qty = max(0, candidate.quantity or 0)
-            cart = self._set_quantity(cart, resolved_item.product_id, qty)
-            summary = f"已将「{resolved_item.product.title}」数量改成 {qty}。" if qty > 0 else f"已从购物车删除「{resolved_item.product.title}」。"
+            sku_id = (self._catalog.sku_id_for_phrase(self._catalog.require(resolved_item.product_id), candidate.sku)
+                      if candidate.sku else None)
+            if candidate.quantity is None and sku_id is not None:
+                # A pure variant switch ("换成家庭装"): keep the quantity, re-price to the named SKU.
+                cart = self._set_quantity(cart, resolved_item.product_id, resolved_item.quantity, sku_id)
+                summary = f"已将「{resolved_item.product.title}」换成{candidate.sku}。"
+            else:
+                qty = max(0, candidate.quantity or 0)
+                cart = self._set_quantity(cart, resolved_item.product_id, qty, sku_id)
+                summary = (f"已将「{resolved_item.product.title}」数量改成 {qty}。" if qty > 0
+                           else f"已从购物车删除「{resolved_item.product.title}」。")
         else:
             order_state.pending_action = candidate
             return self._clarify(cart, "我还不能确定要怎么操作购物车，请换一种说法。", intent)
@@ -429,19 +454,25 @@ class CommerceService:
         session_products: list[dict[str, Any]],
         cart: list[CartItem],
         prefer_cart: bool,
+        message: str = "",
     ) -> list[CartItem] | str:
         """Resolve one or more products for an add. The LLM's ids (which can be several, e.g. a fuzzy
         "便宜的两个") and explicit ordinals ("第一个和第二个") resolve to multiple items; everything
         else falls back to the single-item resolver. LLM ids are verified against what was actually
         shown/in the cart, so the model can't add an off-screen product (e.g. resolving "最便宜的那个"
         to the globally cheapest item the user never saw)."""
+        pool = cart if prefer_cart else session_products
+        # An out-of-range ordinal ("第一百个" / "第零个" when 3 are shown) must clarify, even if the LLM
+        # optimistically resolved it to a product_id — verify the named position against what's shown.
+        # Read it from the original message too: the LLM often drops the ref once it has resolved an id.
+        ordinals = _ordinal_refs(candidate.refs) or _ordinal_refs([message])
+        if ordinals and any(not (1 <= o <= len(pool)) for o in ordinals):
+            return f"现在只展示了 {len(pool)} 款商品，没有你说的那一个，请说一个有效的序号或商品名。"
         shown = {_pool_product_id(p) for p in session_products} | {item.product_id for item in cart}
         ids = [pid for pid in candidate.product_ids if pid in shown and self._catalog.get(pid) is not None]
         if ids:
             return [build_cart_item(self._catalog, self._catalog.require(pid), 1) for pid in ids]
-        ordinals = _ordinal_refs(candidate.refs)
         if ordinals:
-            pool = cart if prefer_cart else session_products
             items = [
                 build_cart_item(self._catalog, self._catalog.require(_pool_product_id(pool[o - 1])), 1)
                 for o in ordinals
@@ -571,6 +602,18 @@ def _dedupe_cart(items: list[CartItem], catalog: ProductCatalog) -> list[CartIte
     return [build_cart_item(catalog, catalog.require(pid), by_id[pid], sku_by_id[pid]) for pid in order]
 
 
+def _looks_like_winner_ref(text: str) -> bool:
+    """An explicit reference back to a comparison's result ("之前对比胜出的那款"). Used only to clarify
+    when there is no winner on record; a bare "更划算的那个" (a description) is intentionally excluded."""
+    return bool(re.search(r"胜出|之前对比|刚才对比|对比[^。]{0,6}(赢|胜|更好|那[个款])", text))
+
+
+def _looks_like_select_all(text: str) -> bool:
+    """A "select everything just shown" add ("都加入"/"全部要了"/"这些都要"). Used only to scope such
+    an add to the latest batch; the LLM still decides the action."""
+    return bool(re.search(r"都|全部|所有|全都|这些", text))
+
+
 def _looks_like_add_ref(text: str, has_cart: bool) -> bool:
     if re.search(r"(加|买|放|加入).*(第[一二三四五六七八九十\d]+|这个|刚才)", text):
         return True
@@ -628,7 +671,9 @@ def _ordinal_ref(refs: list[str]) -> int | None:
 def _ordinal_refs(refs: list[str]) -> list[int]:
     out: list[int] = []
     for ref in refs:
-        match = re.search(r"第([一二三四五六七八九十\d]+)", ref)
+        # Include 零/百/千 so an out-of-range ordinal ("第一百"=100, "第零"=0) parses to its real value
+        # and the caller can reject it, instead of "第一百" mis-reading as "第一".
+        match = re.search(r"第([零一二三四五六七八九十百千\d]+)", ref)
         if match:
             value = chinese_to_int(match.group(1))
             if value is not None:

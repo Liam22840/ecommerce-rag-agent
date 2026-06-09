@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -298,15 +300,23 @@ class ProductCatalog:
         spec = normalize_spec(phrase or "")
         if not spec:
             return None
-        for item in self.sku_prices(product):
-            if item["sku_id"] is None:
-                continue
+        skus = [item for item in self.sku_prices(product) if item["sku_id"] is not None]
+        for item in skus:
             label = normalize_spec(item["label"])
             # Match either direction: the user may name a superset of the label ("…版本" vs the
             # label's "…版") or a subset. One-directional substring missed the superset case and
             # silently fell back to the cheapest SKU.
             if spec in label or label in spec:
                 return item["sku_id"]
+        # Fall back to the distinctive alphanumeric specs the user named (512gb, 75ml, 16gb+512gb):
+        # if every one appears in the label, that's the variant even when generic words (版/版本/款)
+        # or other tokens (a colour) sit between them and break a plain substring match.
+        codes = re.findall(r"[a-z0-9]+(?:\+[a-z0-9]+)*", spec)
+        if codes:
+            for item in skus:
+                label = normalize_spec(item["label"])
+                if all(code in label for code in codes):
+                    return item["sku_id"]
         return None
 
     def price_label(self, product: dict[str, Any], filters: SearchFilters | None = None) -> str:

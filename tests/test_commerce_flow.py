@@ -911,4 +911,4 @@ def test_add_ordinal_out_of_range_asks_to_clarify():
         "第五个加入购物车", cart_items=[], session_products=_session(catalog, p0, p1), order_state=OrderState()
     )
     assert res.cart.needs_clarification is True
-    assert "第几个商品" in res.answer
+    assert "序号" in res.answer  # asks for a valid position rather than grabbing the first item

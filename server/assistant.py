@@ -312,6 +312,7 @@ class ShoppingAssistant:
             commerce = self._commerce.maybe_handle(
                 query, cart_items=cart_items, session_products=session_products,
                 order_state=order_state, comparison_winner_id=self._session(session_id).last_winner_id,
+                latest_batch_ids=self._latest_batch_ids(session_id),
             )
             if commerce is not None:
                 yield ("prepared", self._prepare_commerce(query, session_id, commerce))
@@ -1135,6 +1136,15 @@ class ShoppingAssistant:
         # fallback both rely on this exact order, so it lives in one place to avoid drift.
         shown = self._session(session_id).shown_products
         return sorted(shown, key=lambda item: (-item["last_seq"], item["position"]))
+
+    def _latest_batch_ids(self, session_id: str | None) -> list[str]:
+        # Ids of just the most-recently-shown batch (one turn). "都/全部加入" means this batch, not
+        # every product seen all session; commerce uses it to deterministically scope an add-all.
+        shown = self._session(session_id).shown_products
+        if not shown:
+            return []
+        latest = max(item["last_seq"] for item in shown)
+        return [item["id"] for item in shown if item["last_seq"] == latest]
 
     def _recent_product_ids(self, session_id: str | None, client_recent_product_ids: list[str]) -> list[str]:
         # Recency view derived from the single shown-products log so comparison's "第一个/前两个"
