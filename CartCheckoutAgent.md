@@ -97,6 +97,9 @@ CommerceActionCandidate(
 - `refs`：用户原话里的引用，例如“第一个”“这个”。
 - `product_ids`：已经解析出的真实商品 id，只能来自已知上下文。
 - `quantity`：数量。
+- `item_quantities`：多商品不同件数时的逐商品数量（如“第一个买两瓶，第二个买三瓶”），`product_id -> quantity`，缺省回退到 `quantity`。
+- `sku`：用户点名的规格原话（如“50g标准装”“512GB高配版”），加购时解析成真实 sku_id 再定价。
+- `address`：`set_address` 动作里用户说的收货地址原文。
 - `target_scope`：引用对象属于 `shown_products`、`cart_items` 或 `unknown`。
 - `confidence`：`high`、`medium`、`low`。
 
@@ -148,10 +151,12 @@ OrderDraft(
     status="awaiting_confirmation",
     items=[...],
     subtotal=89.0,
-    address="默认地址",
+    address=order_state.address,   # 真实收货地址，来自客户端字段或 set_address，"默认地址" 只是兜底
     summary="订单待确认..."
 )
 ```
+
+`_checkout` 与 `_confirm_order` 都把 `order_state.address` 盖到 `OrderDraft.address` 和摘要文案上（“……收货地址为{address}……”）。地址不再是硬编码，详见下文「收货地址确认」。
 
 确认提交后：
 
@@ -177,11 +182,14 @@ increment
 decrement
 clear
 show_cart
+set_address
 checkout
 confirm_order
 cancel_order
 none
 ```
+
+其中 `set_address` 是对话式设置 / 修改收货地址（“把地址改成上海徐汇区…”“寄到…”）：LLM 把地址原文照抄进 `address`，确定性写入 `order_state.address`；若有待确认草稿则重建草稿刷新卡片和摘要。详见下文「收货地址确认」与「库存」两节。
 
 ### add
 
@@ -458,6 +466,8 @@ OrderState(
     draft=OrderDraft | None,
     cart_signature=(("p1", 1), ("p2", 2)),
     pending_action=CommerceActionCandidate | None,
+    stock_sold={},                # 本会话已下单的逐商品数量（库存台账），下单提交时累加
+    address="默认地址",            # 本会话收货地址，每轮从客户端字段写入，set_address 可覆盖
 )
 ```
 
@@ -539,7 +549,7 @@ iOS 端：
 - `OrderReviewScreen` 展示确认订单页面。
 - 结算页支持修改联系人、手机号、详细地址。
 
-当前地址编辑在前端完成，订单提交仍是模拟闭环；后续如果接真实订单 API，需要把 shipping info 加到 request/order payload。
+收货地址已随每个请求发送到服务端并盖到订单上（详见「收货地址确认」），对话里也可“把地址改成…”。订单提交本身仍是模拟闭环，后续如果接真实订单 API，把这份 shipping info 转给真实下单接口即可。
 
 ## 与 Planner Agent 的关系
 
@@ -738,9 +748,30 @@ TMPDIR=/private/tmp CLANG_MODULE_CACHE_PATH=.build/module-cache swift test --dis
 
 ## 已知边界和后续增强
 
-1. 当前前端结算页支持编辑联系人、手机号、详细地址，但后端 `OrderDraft.address` 仍是模拟默认地址。
+1. 收货地址已端到端打通（客户端字段每轮发送 + 对话 `set_address`，盖到订单上），详见下文「收货地址确认」。但另有一个独立的前端结算表单页（联系人/手机号等）仍是不驱动服务端的模拟页，不在本闭环内。
 2. 当前 iOS cart 没有 SKU picker；无 `sku_id` 时使用 catalog 选中的/最低价 SKU。
-3. 真实支付、库存、优惠券、物流不在当前闭环范围。
-4. 后续可以把 shipping info 加进 `ChatRequest.client_context` 或独立 checkout API。
-5. 后续可以支持“把购物车里最贵的删掉”“只保留最便宜的两个”等集合操作。
-6. 后续可以把 cart/order state 持久化到数据库，而不是只存在 session memory 和前端 context。
+3. 库存已纳入闭环（如实播报 + 加购钳制 + 下单扣减，详见下文「库存」），但库存值是为固定数据集合成的，不是真实仓储。真实支付、优惠券、物流仍不在范围。
+4. 后续可以支持“把购物车里最贵的删掉”“只保留最便宜的两个”等集合操作。
+5. 后续可以把 cart/order state 持久化到数据库，而不是只存在 session memory 和前端 context。
+
+## 收货地址确认
+
+对应 4.1 ⭐⭐⭐「引导用户确认收货地址」。地址作为会话状态放在 `OrderState.address`（本来就被穿进每个 commerce 入口、随会话持久化，和购物车状态同源），由两个输入喂同一个值：
+
+- **客户端字段**：客户端把当前地址放进 `client_context.address` 每轮发送，所以订单从一开始就带真实地址（默认一个北京地址，而非“默认地址”）。
+- **对话改地址**：`set_address` 动作为这一轮覆盖它。因为 commerce 在每轮赋值之后才跑，口头改地址在本轮胜出；服务端把新地址回写到订单，客户端再从 `order.address` 同步自己的字段，两者不分叉。
+
+`set_address` 和「把数量改成 2」同一套路——LLM 理解语言、确定性执行：`COMMERCE_INTENT_SYSTEM` 解析出 `action=set_address` 并把地址原文照抄进 `address`，`_apply` 写入 `order_state.address`，有待确认草稿时重跑 `_checkout` 刷新卡片和摘要（购物车没变、签名仍匹配，“确认”照样提交）。LLM 不可用时不合成 `set_address`，降级到客户端字段。
+
+客户端：`ChatViewModel.shippingAddress` 随每个请求发送、收到订单事件时从 `order.address` 回同步；`OrderCardView` 在待确认态展示可编辑地址行（复用 `EditableOrderField`），“确认”沿用既有发送路径把地址带上。
+
+## 库存
+
+对应 spec 3.1「数据一致性保障：价格、库存等关键参数准确且实时生效」。
+
+**重要前提：库存是合成的。** 原始数据集没有库存字段。库存在加载时按 `product_id` 确定性生成（`_seed_stock`：`12 + sha1(pid) % 48`，得 12–59 的稳定值），并把两个好认的商品钉为低/售罄供演示（iPhone=2、兰蔻小黑瓶=0）。诚实地讲，库存数字是为这套固定数据集播种的演示值；可被评分的是建在其上的工程——单一真相源 → 如实播报 → 购物车强制 → 下单实时扣减——这几层是真的。
+
+- **会话台账**：`OrderState.stock_sold`（`product_id -> 已下单量`）只在订单提交时增加。`available = max(0, catalog.stock(pid) - stock_sold)`；待结算的购物车行不算扣减。
+- **如实播报**：`product_facts` 多一个 `available` 字段交给回答模型，搜索路径用会话感知的 `_available_by_id` 算出可用量，文本与图搜共用同一解析器；`SYSTEM_PROMPT` 要求库存只照抄 `available`，为 0 即售罄、不作首选，禁止编造。
+- **购物车强制**：`_apply` 的 add/increment/set_quantity 把结果数量钳到 `_available`，售罄跳过、超买加到上限并点明，`_upsert`/`_set_quantity` 保持纯粹。单行数量另有上限 `MAX_CART_QUANTITY`（`pricing.py`，默认 999，可用 env 覆盖），避免“要1000000件”这类病态值。
+- **实时扣减**：`_confirm_order` 提交时对每行执行 `stock_sold[pid] += qty`，之后同一会话再加该商品或重新搜索看到的就是减少（或为 0）的可用量。扣减是会话内的，一次演示不会掏空全局。

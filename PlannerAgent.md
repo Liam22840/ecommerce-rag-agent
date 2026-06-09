@@ -112,12 +112,12 @@ LLM planner 只能输出 JSON 或 `null`。单步需求输出 `null`，复合需
 
 ### 1. 判断是否为复合任务
 
-`looks_like_planned_task(message)` 会要求：
+现在先由专注的 LLM 路由分类器（`classify_route`）判定这一轮是不是 `plan`。判定为 `plan` 时，assistant 用 `force=True` 调 planner，**绕过** `looks_like_planned_task`。`looks_like_planned_task(message)` 只在 LLM 不可用、走关键词兜底路由时作为前置判断，它要求：
 
-- 句子里有连接关系，例如“并且 / 然后 / 同时 / 顺便 / 逗号”。
+- 句子里有连接关系或分句符，例如“并且 / 然后 / 再 / 同时 / 顺便 / 逗号 / 句号”。
 - 至少包含两个可执行动作，例如搜索 + 加购、搜索 + 对比、对比 + 加购。
 
-这样可以避免单步需求被 planner 抢走。
+不论哪条路径，单步需求都不会被 planner 抢走（`_valid_plan` 要求至少两个动作，单步指代加购仍走购物车模块）。
 
 ### 2. 生成计划
 
@@ -142,7 +142,7 @@ ProductRetriever.retrieve()
 ShoppingAssistant._prepare_search()
 ```
 
-因此类目、品牌、预算、属性、价格排序等仍沿用现有搜索能力。
+因此类目、品牌、预算、属性、价格排序等仍沿用现有搜索能力。如果这一步的搜索被解析成 chitchat（想要的商品不在售，如“手表”），整个计划会中止：该步标记 failed、回一句“本店暂不提供这件商品。”，而不是继续把最近邻商品硬塞进购物车。
 
 ### 4. 执行选择
 
@@ -150,7 +150,7 @@ ShoppingAssistant._prepare_search()
 
 - `price_asc` 按 `ProductCard.price` 升序。
 - `price_desc` 按 `ProductCard.price` 降序。
-- `relevance` 保留搜索排序。
+- `rating_desc` / `relevance` 保留搜索排序——评分/相关度的排序是在 search 步骤里通过 `filters.sort_by` 完成的，select 步骤只再做价格排序。
 
 这里不会让 LLM 写商品 id，也不会让 LLM 自己判断价格。
 
@@ -180,6 +180,8 @@ CommerceService.apply_candidate()
 ```
 
 这样购物车 item、SKU、unit price、line total、subtotal 全部来自统一 commerce/pricing 逻辑。
+
+cart 步骤还会把 search 步骤解析出的 `requested_specs`（用户点名的规格，如“512GB高配版”）透传进 `_apply_cart_targets`，拼成 `candidate.sku`，让 planner 加购的那一行按该 SKU 定价，而不是默认回退到最便宜 SKU——和直接加购路径一致。
 
 ### 7. 返回和展示计划
 
@@ -344,8 +346,9 @@ git diff --check
 
 ## 后续可扩展点
 
-1. 支持每一步实时 running/done 的多次 `event: plan` 更新，而不是 prepare 完成后一次性返回最终状态。
-2. 支持更多 action，例如 `remove_from_cart`、`set_quantity`、`apply_coupon`。
+> 注：每一步实时 running/done 的多次 `event: plan` 流式更新已经实现（`_prepare_planned_task_updates`：循环前先发一帧，每步置 running 再发，done/failed 时再发），不再是一次性返回最终状态。
+
+1. 支持更多 action，例如 `remove_from_cart`、`set_quantity`、`apply_coupon`。
 3. 支持更细的 clarification，例如“你是想对比最便宜的两款，还是把最便宜的一款直接加入购物车？”
 4. 将 planner execution trace 存入 session，方便用户问“刚才为什么选这个？”。
 5. 给 planner 增加 offline evaluation set，按真实用户复合句统计路由准确率。
