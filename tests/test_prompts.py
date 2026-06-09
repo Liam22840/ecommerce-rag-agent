@@ -59,3 +59,25 @@ def test_chitchat_messages_without_categories_still_valid():
     messages = chitchat_messages("你好")
     assert messages[0]["role"] == "system"
     assert messages[1] == {"role": "user", "content": "你好"}
+
+
+from server.prompts import opener_continuation, intent_messages, commerce_intent_messages
+
+
+def test_opener_continuation_is_empty_for_chitchat_but_set_for_a_search():
+    # chitchat's reply greets for itself, so no route tail is prepended; a real search gets one.
+    assert opener_continuation("chitchat") == ""
+    assert opener_continuation("product_search", "面霜") != ""
+
+
+def test_intent_messages_include_cart_and_recent_turns_when_present():
+    content = intent_messages(
+        "再加一件", {"美妆护肤"}, {"面霜"}, {"雅诗兰黛"},
+        history=[{"query": "推荐面霜"}], cart=[{"title": "面霜", "price": 10.0, "quantity": 1}],
+    )[1]["content"]
+    assert "recent_turns" in content and "cart" in content
+
+
+def test_commerce_intent_messages_include_the_comparison_winner_when_present():
+    content = commerce_intent_messages("买胜出的那个", [], [], comparison_winner_id="p_beauty_007")[1]["content"]
+    assert "comparison_winner_id" in content and "p_beauty_007" in content
