@@ -40,7 +40,7 @@ Milvus collection 是 `products`，主键 `chunk_id`，核心字段：`product_i
 
 项目默认不重建 `data/milvus.db`，把它当作团队已生成的 populated vector store；正常开发只读取它，只有明确需要重新 ingestion 时才运行 `ingest.py`。
 
-embedding 结果落在一个 append-only 的 JSONL 磁盘缓存（`ingestion/cache.py` 的 `EmbeddingCache`，key 是文本 / 图片字节的 SHA-256），ingestion 和 serve 共用：构造时整盘读进内存做 O(1) 查，重复文本 / 图片不再打 API。append-only 写保证中途失败不会损坏已有条目；因为服务端请求线程、预热线程、FastAPI 线程池会并发读写同一份缓存，`_index` 和写入都用一把锁串行化。
+embedding 结果落在一个 append-only 的 JSONL 磁盘缓存（`ingestion/cache.py` 的 `EmbeddingCache`，key 是文本 / 图片字节的 SHA-256），ingestion 和 serve 共用：构造时整盘读进内存做 O(1) 查，命中缓存的文本 / 图片直接返回，不重复调用 API。append-only 写保证中途失败不会损坏已有条目；因为服务端请求线程、预热线程、FastAPI 线程池会并发读写同一份缓存，`_index` 和写入都用一把锁串行化。
 
 ## 检索 (Hybrid Retrieval)
 

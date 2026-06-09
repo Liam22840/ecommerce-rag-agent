@@ -34,7 +34,7 @@ Cart Checkout Agent 负责把自然语言购物车指令转换成确定的业务
 
 1. 购物车事实必须来自 catalog 和 pricing，不从 LLM 文案或前端展示文本里推价格。
 2. LLM 只做意图补全和歧义理解，不能决定价格、SKU、订单号、subtotal。
-3. deterministic parser 优先处理高置信度指令；只有信息不完整时才调用 LLM commerce parser。
+3. LLM 负责理解购物车指令；确定性代码做校验和执行，LLM 不可用时才退回规则解析。
 4. 商品引用必须解析成真实 `product_id` 后才能执行。
 5. “第一个/第二个/这个/刚才那个”必须基于最近展示商品或购物车上下文解析。
 6. 如果引用不明确，不猜，进入 clarification。
@@ -50,9 +50,8 @@ Cart Checkout Agent 负责把自然语言购物车指令转换成确定的业务
   -> ShoppingAssistant.prepare()
        -> CommerceService.maybe_handle()
             -> pending clarification resolver
-            -> deterministic parser
-            -> optional LLM parser
-            -> candidate validation/merge
+            -> LLM parser（不可用时退回 deterministic parser）
+            -> candidate 校验
             -> action executor
        -> PreparedChat(cart/order/answer/intent)
   -> FastAPI ChatResponse 或 SSE event
@@ -156,7 +155,7 @@ OrderDraft(
 )
 ```
 
-`_checkout` 与 `_confirm_order` 都把 `order_state.address` 盖到 `OrderDraft.address` 和摘要文案上（“……收货地址为{address}……”）。地址不再是硬编码，详见下文「收货地址确认」。
+`_checkout` 与 `_confirm_order` 都把 `order_state.address` 盖到 `OrderDraft.address` 和摘要文案上（“……收货地址为{address}……”）。地址取自会话里的真实收货地址，详见下文「收货地址确认」。
 
 确认提交后：
 
@@ -454,7 +453,7 @@ Agent：已将「xxx」数量增加到 2。
 - pending action 成功执行后清空。
 - 用户改说其它明确购物车命令时，走新的命令。
 
-这个机制修复了短句被错误路由到 chitchat/comparison 的问题。
+靠这个机制，“1”“第一个”这类短句会被当作上一条待补全命令的回答，而不是被当成闲聊或对比。
 
 ## 下单状态管理
 
