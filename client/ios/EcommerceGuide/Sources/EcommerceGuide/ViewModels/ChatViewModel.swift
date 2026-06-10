@@ -32,19 +32,23 @@ public final class ChatViewModel: ObservableObject {
     private var hasReceivedCardsThisTurn = false
     // Plan step actions that produce product cards; aligned with server/planner.py PlanAction.
     private static let cardActions: Set<String> = ["product_search", "select_products", "comparison"]
+    nonisolated static let assistantSpeechEnabledDefaultsKey = "EcommerceGuideAssistantSpeechEnabled"
     private var pendingSpeechMessage: ChatMessage?
+    private let assistantSpeechDefaults: UserDefaults
 
     public init(
         service: any ChatService = MockChatService(),
         speechRecognitionService: any SpeechRecognitionService = DefaultSpeechRecognitionService(),
         textToSpeechService: (any TextToSpeechService)? = nil,
-        isAssistantSpeechEnabled: Bool = true,
+        isAssistantSpeechEnabled: Bool? = nil,
+        assistantSpeechDefaults: UserDefaults = .standard,
         conversationID: UUID = UUID(),
         timeline: [ChatTimelineItem] = ChatViewModel.initialTimeline
     ) {
         self.service = service
         self.speechRecognitionService = speechRecognitionService
         self.textToSpeechService = textToSpeechService ?? DefaultTextToSpeechService()
+        self.assistantSpeechDefaults = assistantSpeechDefaults
         self.conversationID = conversationID
         self.timeline = timeline
         self.draftMessage = ""
@@ -52,6 +56,8 @@ public final class ChatViewModel: ObservableObject {
         self.isSending = false
         self.isListening = false
         self.isAssistantSpeechEnabled = isAssistantSpeechEnabled
+            ?? assistantSpeechDefaults.object(forKey: Self.assistantSpeechEnabledDefaultsKey) as? Bool
+            ?? true
         self.assistantSpeechPlaybackState = .idle
         self.activeSpeechMessageID = nil
         self.textToSpeechService.setPlaybackStateHandler { [weak self] state in
@@ -174,8 +180,18 @@ public final class ChatViewModel: ObservableObject {
     }
 
     public func toggleAssistantSpeechEnabled() {
-        isAssistantSpeechEnabled.toggle()
-        if !isAssistantSpeechEnabled {
+        setAssistantSpeechEnabled(!isAssistantSpeechEnabled)
+    }
+
+    public func setAssistantSpeechEnabled(_ isEnabled: Bool) {
+        guard isAssistantSpeechEnabled != isEnabled else {
+            return
+        }
+
+        isAssistantSpeechEnabled = isEnabled
+        assistantSpeechDefaults.set(isEnabled, forKey: Self.assistantSpeechEnabledDefaultsKey)
+
+        if !isEnabled {
             textToSpeechService.stopSpeaking()
         }
     }

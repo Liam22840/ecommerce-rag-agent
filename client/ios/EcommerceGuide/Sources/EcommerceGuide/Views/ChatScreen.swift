@@ -7,6 +7,7 @@ public struct ChatScreen: View {
     @State private var selectedProduct: Product?
     @State private var isCartPresented = false
     @State private var isFavouritesPresented = false
+    @State private var isSettingsPresented = false
     @State private var flight: CartFlight?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let cameraAction: () -> Void
@@ -38,6 +39,7 @@ public struct ChatScreen: View {
                 ChatHeaderView(
                     cartItems: viewModel.cartItems,
                     favouritesCount: favourites.items.count,
+                    settingsAction: { isSettingsPresented = true },
                     cartAction: { isCartPresented = true },
                     favouritesAction: { isFavouritesPresented = true }
                 )
@@ -145,6 +147,14 @@ public struct ChatScreen: View {
                     addToCartAction: { viewModel.addToCart(product: $0) }
                 )
                 .environmentObject(favourites)
+            }
+            .sheet(isPresented: $isSettingsPresented) {
+                ChatSettingsSheetView(
+                    isAutoReadingEnabled: Binding(
+                        get: { viewModel.isAssistantSpeechEnabled },
+                        set: { viewModel.setAssistantSpeechEnabled($0) }
+                    )
+                )
             }
         }
         .environmentObject(favourites)
