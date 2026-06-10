@@ -15,6 +15,7 @@ public struct ChatScreen: View {
     private let checkoutAction: () -> Void
 
     private static let skeletonID = "products-skeleton"
+    private static let thinkingID = "assistant-thinking"
     // A fixed invisible element pinned at the very end of the list. Scrolling to a stable id always
     // lands at the true bottom, unlike scrolling to the last timeline item — whose id changes every
     // turn and is often a just-inserted empty bubble, which makes LazyVStack jump to a wrong estimate.
@@ -87,6 +88,12 @@ public struct ChatScreen: View {
                                     .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
                             }
 
+                            if viewModel.isAssistantThinking {
+                                AssistantThinkingRow()
+                                    .id(Self.thinkingID)
+                                    .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
+                            }
+
                             Color.clear
                                 .frame(height: 1)
                                 .id(Self.bottomAnchorID)
@@ -96,6 +103,7 @@ public struct ChatScreen: View {
                         .padding(.vertical, 18)
                         .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.timeline.map(\.id))
                         .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.isAwaitingCards)
+                        .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.isAssistantThinking)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(GuideTheme.pageBackground)
@@ -240,6 +248,25 @@ private struct ChatTimelineItemView: View {
             OrderCardView(order: order, isActionable: isOrderActionable, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
+        }
+    }
+}
+
+/// A standalone assistant bubble holding only the typing dots, shown during the bare gaps in a turn
+/// (e.g. after the cards land while the narration is still being written).
+@available(iOS 17.0, macOS 13.0, *)
+private struct AssistantThinkingRow: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            AssistantAvatarView()
+
+            TypingIndicatorView()
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(GuideTheme.assistantBubble)
+                .clipShape(RoundedRectangle(cornerRadius: GuideTheme.bubbleRadius, style: .continuous))
+
+            Spacer(minLength: 42)
         }
     }
 }
