@@ -45,6 +45,12 @@ struct MessageBubbleView: View {
                         .foregroundStyle(message.role == .user ? .white : GuideTheme.inkStrong)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+
+                    // Keep the dots alive after the opener while the model is still working on the
+                    // rest of the turn, so the sub-second gaps don't read as a frozen bubble.
+                    if message.isStreaming {
+                        TypingIndicatorView()
+                    }
                 }
 
                 if message.role == .assistant, !message.isStreaming, !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

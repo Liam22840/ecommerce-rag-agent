@@ -9,16 +9,25 @@ public struct ChatScreen: View {
     @State private var isFavouritesPresented = false
     @State private var isSettingsPresented = false
     @State private var flight: CartFlight?
+    // Auto-scroll only follows the conversation while the user is at the bottom. Once they scroll up
+    // to read, this goes false and the per-token scrollTo stops, so it never yanks them back.
+    @State private var isPinnedToBottom = true
+    @State private var viewportHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let cameraAction: () -> Void
     private let photoLibraryAction: () -> Void
     private let checkoutAction: () -> Void
 
     private static let skeletonID = "products-skeleton"
+    private static let thinkingID = "assistant-thinking"
     // A fixed invisible element pinned at the very end of the list. Scrolling to a stable id always
     // lands at the true bottom, unlike scrolling to the last timeline item — whose id changes every
     // turn and is often a just-inserted empty bubble, which makes LazyVStack jump to a wrong estimate.
     private static let bottomAnchorID = "chat-bottom-anchor"
+    private static let scrollSpace = "chat-scroll-space"
+    // The user counts as "following" the conversation while the bottom anchor is within this many
+    // points of the viewport, so streaming keeps up but a small manual scroll up still detaches.
+    private static let pinThreshold: CGFloat = 80
 
     @MainActor
     public init() {
@@ -87,30 +96,53 @@ public struct ChatScreen: View {
                                     .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
                             }
 
-                            Color.clear
-                                .frame(height: 1)
-                                .id(Self.bottomAnchorID)
+                            if viewModel.isAssistantThinking {
+                                AssistantThinkingRow()
+                                    .id(Self.thinkingID)
+                                    .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
+                            }
+
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomAnchorOffsetKey.self,
+                                    value: geo.frame(in: .named(Self.scrollSpace)).minY
+                                )
+                            }
+                            .frame(height: 1)
+                            .id(Self.bottomAnchorID)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 18)
                         .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.timeline.map(\.id))
                         .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.isAwaitingCards)
+                        .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.isAssistantThinking)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(GuideTheme.pageBackground)
+                    .coordinateSpace(.named(Self.scrollSpace))
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear
+                                .onAppear { viewportHeight = geo.size.height }
+                                .onChange(of: geo.size.height) { _, height in
+                                    viewportHeight = height
+                                }
+                        }
+                    }
+                    .onPreferenceChange(BottomAnchorOffsetKey.self) { minY in
+                        isPinnedToBottom = minY <= viewportHeight + Self.pinThreshold
+                    }
                     .dismissesKeyboardOnScroll()
                     .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
                     .onChange(of: viewModel.timeline) { _, _ in
-                        withAnimation(GuideMotion.scroll) {
-                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-                        }
+                        // Streaming mutates the timeline on every token; only follow when the user is
+                        // at the bottom, and without animation so it never fights a manual scroll.
+                        guard isPinnedToBottom else { return }
+                        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                     }
                     .onChange(of: viewModel.isAwaitingCards) { _, awaiting in
-                        guard awaiting else {
-                            return
-                        }
-
+                        guard awaiting, isPinnedToBottom else { return }
                         withAnimation(GuideMotion.scroll) {
                             proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
@@ -128,7 +160,10 @@ public struct ChatScreen: View {
                     cameraAction: cameraAction,
                     photoLibraryAction: photoLibraryAction,
                     voiceAction: { viewModel.toggleVoiceInput() },
-                    sendAction: { viewModel.sendDraftMessage() },
+                    sendAction: {
+                        isPinnedToBottom = true
+                        viewModel.sendDraftMessage()
+                    },
                     cancelAction: { viewModel.cancelStreaming() }
                 )
             }
@@ -198,6 +233,15 @@ public struct ChatScreen: View {
     }
 }
 
+/// Carries the bottom anchor's vertical offset within the scroll viewport, used to decide whether
+/// the user is at the bottom (and should keep following new content) or has scrolled up to read.
+private struct BottomAnchorOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 @available(iOS 17.0, macOS 13.0, *)
 private struct ChatTimelineItemView: View {
     let item: ChatTimelineItem
@@ -240,6 +284,25 @@ private struct ChatTimelineItemView: View {
             OrderCardView(order: order, isActionable: isOrderActionable, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
+        }
+    }
+}
+
+/// A standalone assistant bubble holding only the typing dots, shown during the bare gaps in a turn
+/// (e.g. after the cards land while the narration is still being written).
+@available(iOS 17.0, macOS 13.0, *)
+private struct AssistantThinkingRow: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            AssistantAvatarView()
+
+            TypingIndicatorView()
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(GuideTheme.assistantBubble)
+                .clipShape(RoundedRectangle(cornerRadius: GuideTheme.bubbleRadius, style: .continuous))
+
+            Spacer(minLength: 42)
         }
     }
 }

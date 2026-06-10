@@ -27,6 +27,13 @@ public final class ChatViewModel: ObservableObject {
         timeline.last { if case .orderStatus = $0 { return true }; return false }?.id
     }
 
+    /// The turn is still running but nothing is on screen for it right now — the in-between moment
+    /// after the cards land and before the narration starts, for instance. A streaming bubble shows
+    /// its own dots and a card wait shows the skeleton, so this only fires for the bare gaps.
+    public var isAssistantThinking: Bool {
+        isSending && streamingMessageID == nil && !isAwaitingCards
+    }
+
     private let service: any ChatService
     private let speechRecognitionService: any SpeechRecognitionService
     private let textToSpeechService: any TextToSpeechService
