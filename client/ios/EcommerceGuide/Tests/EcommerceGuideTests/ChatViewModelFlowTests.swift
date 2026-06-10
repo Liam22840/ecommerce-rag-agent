@@ -546,6 +546,98 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertFalse(assistantMessage.isStreaming)
     }
 
+    func testIsAwaitingCardsTrueWhileRetrievalStepRuns() async throws {
+        let service = HoldingChatService(events: [
+            .plan([PlanStep(stepID: "s1", title: "检索相关商品", action: "product_search", status: "running")])
+        ])
+        let viewModel = ChatViewModel(service: service, conversationID: UUID(), timeline: [])
+
+        viewModel.draftMessage = "推荐洗面奶"
+        viewModel.sendDraftMessage()
+        try await waitUntil { viewModel.isAwaitingCards }
+
+        XCTAssertTrue(viewModel.isAwaitingCards)
+
+        viewModel.cancelStreaming()
+        XCTAssertFalse(viewModel.isAwaitingCards)
+    }
+
+    func testIsAwaitingCardsFalseForCartOnlyPlan() async throws {
+        let service = HoldingChatService(events: [
+            .plan([PlanStep(stepID: "s1", title: "加入购物车", action: "cart_action", status: "running")])
+        ])
+        let viewModel = ChatViewModel(service: service, conversationID: UUID(), timeline: [])
+
+        viewModel.draftMessage = "加入购物车"
+        viewModel.sendDraftMessage()
+        try await waitUntil {
+            viewModel.timeline.contains { if case .plan = $0 { return true } else { return false } }
+        }
+
+        XCTAssertFalse(viewModel.isAwaitingCards)
+
+        viewModel.cancelStreaming()
+    }
+
+    func testIsAwaitingCardsClearsWhenProductsArrive() async throws {
+        let product = Product.fixture(id: "CARD-1", title: "Card Product")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .plan([PlanStep(stepID: "s1", title: "检索相关商品", action: "product_search", status: "running")]),
+                .products([product]),
+                .done(messageID: "cards-1")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertFalse(viewModel.isAwaitingCards)
+        XCTAssertTrue(viewModel.timeline.contains { if case .products = $0 { return true } else { return false } })
+    }
+
+    func testIsAwaitingCardsClearsOnDoneWithoutProducts() async throws {
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .plan([PlanStep(stepID: "s1", title: "检索相关商品", action: "product_search", status: "running")]),
+                .done(messageID: "no-cards")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertFalse(viewModel.isAwaitingCards)
+    }
+
+    func testAssistantPlaceholderRemovedWhenOnlyCardsArrive() async throws {
+        let product = Product.fixture(id: "ONLY-CARDS", title: "Cards Only")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .products([product]),
+                .done(messageID: "only-cards")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        let emptyAssistantBubbles = viewModel.timeline.filter { item in
+            guard case .message(let message) = item else { return false }
+            return message.role == .assistant && message.text.isEmpty
+        }
+        XCTAssertTrue(emptyAssistantBubbles.isEmpty)
+    }
+
     private func waitUntilNotSending(
         _ viewModel: ChatViewModel,
         timeout: TimeInterval = 1,
@@ -597,6 +689,30 @@ private final class ScriptedChatService: ChatService, @unchecked Sendable {
                 continuation.yield(event)
             }
             continuation.finish()
+        }
+    }
+}
+
+private final class HoldingChatService: ChatService, @unchecked Sendable {
+    private let events: [ChatStreamEvent]
+
+    init(events: [ChatStreamEvent]) {
+        self.events = events
+    }
+
+    func streamChat(for request: ChatRequest) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                for event in events {
+                    continuation.yield(event)
+                }
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 }

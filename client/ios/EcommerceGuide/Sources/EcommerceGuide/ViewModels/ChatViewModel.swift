@@ -12,6 +12,9 @@ public final class ChatViewModel: ObservableObject {
     @Published public var assistantSpeechPlaybackState: TextToSpeechPlaybackState
     @Published public var activeSpeechMessageID: UUID?
     @Published public var errorMessage: String?
+    // True while a plan step that produces product cards is running and no cards have arrived yet,
+    // so the chat can show a card skeleton that never lies about what is coming.
+    @Published public private(set) var isAwaitingCards = false
     // The shipping address shown in the order card. Sent with every request so the order carries it,
     // and re-synced from the server's order whenever one arrives (e.g. after a conversational change).
     @Published public var shippingAddress: String = "北京市朝阳区望京SOHO T1 12层"
@@ -26,6 +29,9 @@ public final class ChatViewModel: ObservableObject {
     private var lastSubmittedMessage: String?
     private var streamingMessageID: UUID?
     private var currentPlanTimelineID: UUID?
+    private var hasReceivedCardsThisTurn = false
+    // Plan step actions that produce product cards; aligned with server/planner.py PlanAction.
+    private static let cardActions: Set<String> = ["product_search", "select_products", "comparison"]
     private var pendingSpeechMessage: ChatMessage?
 
     public init(
@@ -124,6 +130,7 @@ public final class ChatViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = nil
         isSending = false
+        isAwaitingCards = false
         finishStreamingMessage()
     }
 
@@ -201,6 +208,8 @@ public final class ChatViewModel: ObservableObject {
         lastSubmittedMessage = trimmedMessage
         isSending = true
         currentPlanTimelineID = nil
+        hasReceivedCardsThisTurn = false
+        isAwaitingCards = false
 
         let assistantID = UUID()
         streamingMessageID = assistantID
@@ -299,11 +308,18 @@ public final class ChatViewModel: ObservableObject {
         case .plan(let steps):
             finishStreamingMessage()
             upsertPlan(steps)
+            isAwaitingCards = !hasReceivedCardsThisTurn && steps.contains {
+                Self.cardActions.contains($0.action) && $0.status == "running"
+            }
         case .products(let products):
             finishStreamingMessage()
+            hasReceivedCardsThisTurn = true
+            isAwaitingCards = false
             timeline.append(.products(id: UUID(), products: products))
         case .comparison(let products):
             finishStreamingMessage()
+            hasReceivedCardsThisTurn = true
+            isAwaitingCards = false
             timeline.append(.comparison(id: UUID(), comparison: products))
         case .cartUpdated(let items, let summary):
             cartItems = items
@@ -356,16 +372,23 @@ public final class ChatViewModel: ObservableObject {
             return
         }
 
-        message.isStreaming = false
-        timeline[index] = .message(message)
-        if message.role == .assistant {
-            pendingSpeechMessage = message
+        if message.text.isEmpty && message.imageData == nil {
+            // The placeholder never received any text (e.g. a cards-only reply); drop it rather
+            // than leaving an empty bubble in the timeline.
+            timeline.remove(at: index)
+        } else {
+            message.isStreaming = false
+            timeline[index] = .message(message)
+            if message.role == .assistant {
+                pendingSpeechMessage = message
+            }
         }
         self.streamingMessageID = nil
     }
 
     private func handle(_ error: Error) {
         isSending = false
+        isAwaitingCards = false
         finishStreamingMessage()
         pendingSpeechMessage = nil
 
@@ -377,6 +400,7 @@ public final class ChatViewModel: ObservableObject {
 
     private func finishAfterCancellation() {
         isSending = false
+        isAwaitingCards = false
         finishStreamingMessage()
         pendingSpeechMessage = nil
         streamTask = nil
@@ -384,6 +408,7 @@ public final class ChatViewModel: ObservableObject {
 
     private func finishCompletedStream() {
         isSending = false
+        isAwaitingCards = false
         finishStreamingMessage()
         speakPendingAssistantMessage()
         streamTask = nil
