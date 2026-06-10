@@ -15,6 +15,9 @@ from typing import Any
 from server.textutil import normalize
 
 
+_CACHE_SCHEMA = "query-cache-v3-requested-count-and-shoe-types"
+
+
 class QueryCache:
     def __init__(self, path: Path, max_entries: int = 500, enabled: bool = True):
         self._path = Path(path)
@@ -30,7 +33,7 @@ class QueryCache:
 
     @staticmethod
     def key(message: str, top_k: int) -> str:
-        return hashlib.sha256(f"{normalize(message)}|k={top_k}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{_CACHE_SCHEMA}|{normalize(message)}|k={top_k}".encode("utf-8")).hexdigest()
 
     @staticmethod
     def eligible(compare_ids: list[str], recent_ids: list[str]) -> bool:

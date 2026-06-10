@@ -24,6 +24,11 @@ def test_key_collapses_spacing_and_punctuation(tmp_path):
     assert QueryCache.key("abc", 3) != QueryCache.key("abc", 5)  # top_k is part of the key
 
 
+def test_key_ignores_pre_requested_count_cache_schema():
+    old_key = "abc|k=3"
+    assert QueryCache.key("abc", 3) != old_key
+
+
 def test_put_then_get_round_trip(tmp_path):
     cache = QueryCache(tmp_path / "q.jsonl")
     key = cache.key("q", 3)
