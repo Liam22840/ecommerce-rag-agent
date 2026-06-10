@@ -4,29 +4,49 @@ import SwiftUI
 struct ChatHeaderView: View {
     let cartItems: [CartItem]
     let favouritesCount: Int
+    let settingsAction: () -> Void
     let cartAction: () -> Void
     let favouritesAction: () -> Void
 
     var body: some View {
-        HStack(alignment: .center) {
-            FavouritesPillView(count: favouritesCount, action: favouritesAction)
-
-            Spacer(minLength: 8)
-
+        ZStack {
             Text("AI 购物助手")
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(GuideTheme.inkStrong)
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
+                .padding(.horizontal, 112)
 
-            Spacer(minLength: 8)
+            HStack(alignment: .center, spacing: 8) {
+                FavouritesPillView(count: favouritesCount, action: favouritesAction)
 
-            CartPillView(cartItems: cartItems, action: cartAction)
+                Spacer(minLength: 8)
+
+                SettingsButton(action: settingsAction)
+                CartPillView(cartItems: cartItems, action: cartAction)
+            }
         }
         .frame(minHeight: 44)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(GuideTheme.panelBackground)
+    }
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+private struct SettingsButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gearshape")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(GuideTheme.inkStrong)
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("设置")
+        .help("设置")
     }
 }
 

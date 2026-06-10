@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 final class ChatViewModelFlowTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var defaultsSuiteName: String!
+
+    override func setUp() {
+        super.setUp()
+        defaultsSuiteName = "ChatViewModelFlowTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuiteName)!
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        defaults = nil
+        defaultsSuiteName = nil
+        super.tearDown()
+    }
+
     func testMandarinVoiceInputSendsFinalTranscriptThroughChatService() async throws {
         let chatService = ScriptedChatService(events: [
             .token("可以，我来推荐。"),
@@ -92,6 +109,36 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertEqual(textToSpeechService.spokenTexts, ["可以手动朗读。"])
         XCTAssertEqual(viewModel.activeSpeechMessageID, assistantMessage.id)
         XCTAssertEqual(viewModel.assistantSpeechPlaybackState, .speaking)
+    }
+
+    func testAssistantSpeechPreferenceDefaultsFromStorage() {
+        defaults.set(false, forKey: ChatViewModel.assistantSpeechEnabledDefaultsKey)
+
+        let viewModel = ChatViewModel(
+            assistantSpeechDefaults: defaults,
+            timeline: []
+        )
+
+        XCTAssertFalse(viewModel.isAssistantSpeechEnabled)
+    }
+
+    func testToggleAssistantSpeechEnabledPersistsPreferenceAndStopsActivePlayback() {
+        let textToSpeechService = RecordingTextToSpeechService()
+        let assistantMessage = ChatMessage(role: .assistant, text: "正在朗读的内容。")
+        let viewModel = ChatViewModel(
+            textToSpeechService: textToSpeechService,
+            assistantSpeechDefaults: defaults,
+            timeline: [.message(assistantMessage)]
+        )
+
+        viewModel.speakAssistantMessage(assistantMessage)
+        viewModel.toggleAssistantSpeechEnabled()
+
+        XCTAssertFalse(viewModel.isAssistantSpeechEnabled)
+        XCTAssertFalse(defaults.bool(forKey: ChatViewModel.assistantSpeechEnabledDefaultsKey))
+        XCTAssertNil(viewModel.activeSpeechMessageID)
+        XCTAssertEqual(viewModel.assistantSpeechPlaybackState, .idle)
+        XCTAssertEqual(textToSpeechService.stopCount, 1)
     }
 
     func testStopAssistantSpeechClearsActiveSpeechState() {
