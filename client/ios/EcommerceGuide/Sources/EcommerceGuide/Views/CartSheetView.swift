@@ -30,14 +30,16 @@ struct CartSheetView: View {
                             ForEach(items) { item in
                                 CartItemRowView(
                                     item: item,
-                                    quantityAction: quantityAction,
-                                    removeAction: removeAction
+                                    quantityAction: quantityAction
                                 )
                                 .guideSwipeActions(itemID: item.id, openItemID: $openSwipeID, actions: [
                                     SwipeAction(systemImage: "trash", title: "移除", tint: GuideTheme.warning) {
                                         removeAction(item.product.id)
                                     }
                                 ])
+                                .accessibilityAction(named: Text("移除")) {
+                                    removeAction(item.product.id)
+                                }
                                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
                             }
                         }
@@ -134,7 +136,6 @@ struct CartSheetView: View {
 private struct CartItemRowView: View {
     let item: CartItem
     let quantityAction: (String, Int) -> Void
-    let removeAction: (String) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -161,17 +162,6 @@ private struct CartItemRowView: View {
                     quantityStepper
                 }
             }
-
-            Button {
-                removeAction(item.product.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(GuideTheme.tertiaryInk)
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("移除 \(item.product.title)")
         }
         .padding(.vertical, 12)
         .overlay(alignment: .bottom) {
