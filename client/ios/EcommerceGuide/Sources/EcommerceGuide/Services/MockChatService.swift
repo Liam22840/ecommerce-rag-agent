@@ -27,9 +27,22 @@ public struct MockChatService: ChatService {
                     }
 
                     try Task.checkCancellation()
-                    try await Task.sleep(nanoseconds: tokenDelay * 2)
+                    continuation.yield(.plan([
+                        PlanStep(stepID: "step-1", title: "检索相关商品", action: "product_search", status: "running"),
+                        PlanStep(stepID: "step-2", title: "筛选并推荐", action: "select_products", status: "pending")
+                    ]))
+
+                    // Hold the running state long enough for the card skeleton to be visible offline.
+                    try await Task.sleep(nanoseconds: tokenDelay * 10)
+
+                    try Task.checkCancellation()
                     let recommendedProducts = Array(products.prefix(3))
                     continuation.yield(.products(recommendedProducts))
+
+                    continuation.yield(.plan([
+                        PlanStep(stepID: "step-1", title: "检索相关商品", action: "product_search", status: "done", summary: "已找到候选商品"),
+                        PlanStep(stepID: "step-2", title: "筛选并推荐", action: "select_products", status: "done")
+                    ]))
 
                     if recommendedProducts.count >= 2 {
                         try Task.checkCancellation()

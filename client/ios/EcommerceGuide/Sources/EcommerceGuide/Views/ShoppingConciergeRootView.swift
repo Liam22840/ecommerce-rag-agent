@@ -8,6 +8,7 @@ import UIKit
 public struct ShoppingConciergeRootView: View {
     @StateObject private var viewModel: ChatViewModel
     @State private var screen: ShoppingFlowScreen = .onboarding
+    @State private var forward = true
 
     @MainActor
     public init(service: any ChatService = MockChatService()) {
@@ -15,61 +16,55 @@ public struct ShoppingConciergeRootView: View {
     }
 
     public var body: some View {
-        switch screen {
-        case .onboarding:
-            OnboardingScreen {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    screen = .chat
+        ZStack {
+            switch screen {
+            case .onboarding:
+                OnboardingScreen {
+                    navigate(to: .chat, forward: true)
                 }
+                .transition(pushTransition)
+            case .chat:
+                ChatScreen(
+                    viewModel: viewModel,
+                    cameraAction: { navigate(to: .photoSearch, forward: true) },
+                    checkoutAction: { navigate(to: .orderReview, forward: true) }
+                )
+                .transition(pushTransition)
+            case .photoSearch:
+                PhotoSearchScreen(
+                    backAction: { navigate(to: .chat, forward: false) },
+                    captureAction: { imageData, caption in
+                        viewModel.sendPhoto(imageData: imageData, caption: caption)
+                        navigate(to: .chat, forward: false)
+                    }
+                )
+                .transition(pushTransition)
+            case .orderReview:
+                OrderReviewScreen(
+                    items: viewModel.cartItems,
+                    backAction: { navigate(to: .chat, forward: false) },
+                    confirmAction: { navigate(to: .orderSuccess, forward: true) }
+                )
+                .transition(pushTransition)
+            case .orderSuccess:
+                OrderSuccessScreen {
+                    navigate(to: .chat, forward: false)
+                }
+                .transition(pushTransition)
             }
-        case .chat:
-            ChatScreen(
-                viewModel: viewModel,
-                cameraAction: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        screen = .photoSearch
-                    }
-                },
-                checkoutAction: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        screen = .orderReview
-                    }
-                }
-            )
-        case .photoSearch:
-            PhotoSearchScreen(
-                backAction: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        screen = .chat
-                    }
-                },
-                captureAction: { imageData, caption in
-                    viewModel.sendPhoto(imageData: imageData, caption: caption)
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        screen = .chat
-                    }
-                }
-            )
-        case .orderReview:
-            OrderReviewScreen(
-                items: viewModel.cartItems,
-                backAction: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        screen = .chat
-                    }
-                },
-                confirmAction: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        screen = .orderSuccess
-                    }
-                }
-            )
-        case .orderSuccess:
-            OrderSuccessScreen {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    screen = .chat
-                }
-            }
+        }
+    }
+
+    private var pushTransition: AnyTransition {
+        .push(from: forward ? .trailing : .leading)
+    }
+
+    private func navigate(to target: ShoppingFlowScreen, forward isForward: Bool) {
+        // Both mutations belong to one transaction so an in-flight transition
+        // can't observe a direction from a different navigation event.
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            forward = isForward
+            screen = target
         }
     }
 }
@@ -86,6 +81,9 @@ private enum ShoppingFlowScreen {
 @available(iOS 17.0, macOS 13.0, *)
 private struct OnboardingScreen: View {
     let startAction: () -> Void
+
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,17 +109,26 @@ private struct OnboardingScreen: View {
             }
             .frame(width: 160, height: 160)
             .padding(.bottom, 32)
+            .scaleEffect(appeared ? 1 : 0.7)
+            .opacity(appeared ? 1 : 0)
+            .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: appeared)
 
             Text("你的AI购物管家")
                 .font(.system(size: 26, weight: .bold))
                 .foregroundStyle(GuideTheme.inkStrong)
                 .multilineTextAlignment(.center)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 14)
+                .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.12), value: appeared)
 
             Text("智能推荐 · 拍照找货 · 对比决策 · 一键下单")
                 .font(.subheadline)
                 .foregroundStyle(GuideTheme.secondaryInk)
                 .multilineTextAlignment(.center)
                 .padding(.top, 10)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 14)
+                .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.2), value: appeared)
 
             Text("告诉我你想买什么，我来帮你找到最合适的商品")
                 .font(.footnote)
@@ -130,6 +137,9 @@ private struct OnboardingScreen: View {
                 .lineSpacing(2)
                 .padding(.top, 6)
                 .padding(.horizontal, 44)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 14)
+                .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.28), value: appeared)
 
             Button(action: startAction) {
                 Text("开始对话")
@@ -141,8 +151,11 @@ private struct OnboardingScreen: View {
                     .clipShape(Capsule())
                     .shadow(color: GuideTheme.accentShadow, radius: 14, y: 4)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .padding(.top, 36)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 14)
+            .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.36), value: appeared)
 
             Text("已有 128万+ 用户正在使用")
                 .font(.caption2)
@@ -159,6 +172,9 @@ private struct OnboardingScreen: View {
                 endPoint: .center
             )
             .ignoresSafeArea()
+        }
+        .onAppear {
+            appeared = true
         }
     }
 }
@@ -759,32 +775,47 @@ private struct OrderSuccessScreen: View {
     let returnAction: () -> Void
     private let orderNumber = String(UUID().uuidString.prefix(8)).uppercased()
 
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
-            Image(systemName: "checkmark")
-                .font(.system(size: 34, weight: .bold))
-                .foregroundStyle(GuideTheme.success)
-                .frame(width: 72, height: 72)
-                .background(GuideTheme.successSoft)
-                .clipShape(Circle())
-                .padding(.bottom, 20)
+            ZStack {
+                Circle()
+                    .fill(GuideTheme.successSoft)
+                    .frame(width: 72, height: 72)
+                    .scaleEffect(appeared ? 1 : 0.4)
+                    .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: appeared)
 
-            Text("下单成功")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(GuideTheme.inkStrong)
+                CheckmarkShape()
+                    .trim(from: 0, to: appeared ? 1 : 0)
+                    .stroke(GuideTheme.success, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    .frame(width: 30, height: 24)
+                    .animation(.easeOut(duration: 0.5).delay(reduceMotion ? 0 : 0.2), value: appeared)
+            }
+            .padding(.bottom, 20)
 
-            Text("订单已提交，预计3-5个工作日送达")
-                .font(.subheadline)
-                .foregroundStyle(GuideTheme.secondaryInk)
-                .multilineTextAlignment(.center)
-                .padding(.top, 8)
+            Group {
+                Text("下单成功")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(GuideTheme.inkStrong)
 
-            Text("订单号: \(orderNumber)")
-                .font(.caption)
-                .foregroundStyle(GuideTheme.tertiaryInk)
-                .padding(.top, 4)
+                Text("订单已提交，预计3-5个工作日送达")
+                    .font(.subheadline)
+                    .foregroundStyle(GuideTheme.secondaryInk)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 8)
+
+                Text("订单号: \(orderNumber)")
+                    .font(.caption)
+                    .foregroundStyle(GuideTheme.tertiaryInk)
+                    .padding(.top, 4)
+            }
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 14)
+            .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.25), value: appeared)
 
             Button(action: returnAction) {
                 Text("返回聊天")
@@ -795,13 +826,33 @@ private struct OrderSuccessScreen: View {
                     .background(GuideTheme.accent)
                     .clipShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .padding(.top, 28)
+            .opacity(appeared ? 1 : 0)
+            .animation(GuideMotion.entrance(reduceMotion: reduceMotion).delay(reduceMotion ? 0 : 0.45), value: appeared)
 
             Spacer()
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(GuideTheme.panelBackground)
+        .overlay {
+            ConfettiView()
+        }
+        .sensoryFeedback(.success, trigger: appeared)
+        .onAppear {
+            appeared = true
+        }
+    }
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+private struct CheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + rect.width * 0.05, y: rect.midY + rect.height * 0.1))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.36, y: rect.maxY - rect.height * 0.08))
+        path.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.02, y: rect.minY + rect.height * 0.1))
+        return path
     }
 }

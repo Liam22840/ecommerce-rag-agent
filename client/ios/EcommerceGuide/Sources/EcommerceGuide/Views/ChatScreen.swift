@@ -3,10 +3,16 @@ import SwiftUI
 @available(iOS 17.0, macOS 13.0, *)
 public struct ChatScreen: View {
     @StateObject private var viewModel: ChatViewModel
+    @StateObject private var favourites = FavouritesStore()
     @State private var selectedProduct: Product?
     @State private var isCartPresented = false
+    @State private var isFavouritesPresented = false
+    @State private var flight: CartFlight?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let cameraAction: () -> Void
     private let checkoutAction: () -> Void
+
+    private static let skeletonID = "products-skeleton"
 
     @MainActor
     public init() {
@@ -31,7 +37,9 @@ public struct ChatScreen: View {
             VStack(spacing: 0) {
                 ChatHeaderView(
                     cartItems: viewModel.cartItems,
-                    cartAction: { isCartPresented = true }
+                    favouritesCount: favourites.items.count,
+                    cartAction: { isCartPresented = true },
+                    favouritesAction: { isFavouritesPresented = true }
                 )
 
                 Divider()
@@ -52,28 +60,46 @@ public struct ChatScreen: View {
                                     shippingAddress: $viewModel.shippingAddress,
                                     retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
-                                    addToCartAction: { viewModel.addToCart(product: $0) },
+                                    addToCartAction: { addToCart($0) },
                                     orderReplyAction: { viewModel.sendQuickReply($0) },
                                     speechPlaybackState: { viewModel.speechPlaybackState(for: $0) },
                                     speakAction: { viewModel.speakAssistantMessage($0) },
                                     stopSpeechAction: { viewModel.stopAssistantSpeech() }
                                 )
                                 .id(item.id)
+                                .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
+                            }
+
+                            if viewModel.isAwaitingCards {
+                                ProductCardsSkeleton()
+                                    .id(Self.skeletonID)
+                                    .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 18)
+                        .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.timeline.map(\.id))
+                        .animation(GuideMotion.entrance(reduceMotion: reduceMotion), value: viewModel.isAwaitingCards)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(GuideTheme.pageBackground)
-                    .onChange(of: viewModel.timeline) { items in
+                    .onChange(of: viewModel.timeline) { _, items in
                         guard let id = items.last?.id else {
                             return
                         }
 
-                        withAnimation(.easeOut(duration: 0.25)) {
+                        withAnimation(GuideMotion.scroll) {
                             proxy.scrollTo(id, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: viewModel.isAwaitingCards) { _, awaiting in
+                        guard awaiting else {
+                            return
+                        }
+
+                        withAnimation(GuideMotion.scroll) {
+                            proxy.scrollTo(Self.skeletonID, anchor: .bottom)
                         }
                     }
                 }
@@ -93,11 +119,15 @@ public struct ChatScreen: View {
                 )
             }
             .background(GuideTheme.pageBackground)
+            .overlayPreferenceValue(GuideAnchorKey.self) { anchors in
+                flightOverlay(anchors: anchors)
+            }
             .sheet(item: $selectedProduct) { product in
                 ProductDetailSheet(product: product) {
                     viewModel.addToCart(product: product)
                     selectedProduct = nil
                 }
+                .environmentObject(favourites)
             }
             .sheet(isPresented: $isCartPresented) {
                 CartSheetView(
@@ -107,7 +137,41 @@ public struct ChatScreen: View {
                     checkoutAction: checkoutAction
                 )
             }
+            .sheet(isPresented: $isFavouritesPresented) {
+                FavouritesSheetView(
+                    addToCartAction: { viewModel.addToCart(product: $0) }
+                )
+                .environmentObject(favourites)
+            }
         }
+        .environmentObject(favourites)
+    }
+
+    /// Adds to the cart and, when motion is allowed, launches the flight thumbnail
+    /// from the product card to the cart pill.
+    private func addToCart(_ product: Product) {
+        if !reduceMotion {
+            flight = CartFlight(id: UUID(), product: product)
+        }
+        viewModel.addToCart(product: product)
+    }
+
+    @ViewBuilder
+    private func flightOverlay(anchors: GuideAnchorKey.Value) -> some View {
+        GeometryReader { proxy in
+            if let flight,
+               let source = anchors.productImages[flight.product.id],
+               let target = anchors.cartPill {
+                CartFlightView(
+                    flight: flight,
+                    from: CGPoint(x: proxy[source].midX, y: proxy[source].midY),
+                    to: CGPoint(x: proxy[target].midX, y: proxy[target].midY),
+                    onFinished: { self.flight = nil }
+                )
+                .id(flight.id)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 

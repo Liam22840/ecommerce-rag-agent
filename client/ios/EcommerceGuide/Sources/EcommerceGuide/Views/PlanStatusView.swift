@@ -12,6 +12,8 @@ struct PlanStatusView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(tint(for: step.status))
                         .frame(width: 18, height: 18)
+                        .contentTransition(.symbolEffect(.replace))
+                        .symbolEffect(.pulse, isActive: step.status == "running")
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(step.title)
@@ -30,6 +32,7 @@ struct PlanStatusView: View {
             }
         }
         .padding(12)
+        .animation(GuideMotion.snappy, value: steps)
         .frame(maxWidth: 320, alignment: .leading)
         .background(GuideTheme.assistantBubble)
         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))

@@ -27,10 +27,17 @@ struct ProductComparisonView: View {
                                 productAction: productAction,
                                 pickAction: pickAction
                             )
+                            .scrollTransition { content, phase in
+                                content
+                                    .scaleEffect(phase.isIdentity ? 1 : 0.95)
+                                    .opacity(phase.isIdentity ? 1 : 0.75)
+                            }
                         }
                     }
+                    .scrollTargetLayout()
                     .padding(.bottom, 4)
                 }
+                .scrollTargetBehavior(.viewAligned)
 
                 if !comparison.rows.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -70,6 +77,8 @@ private struct ProductComparisonCard: View {
     let productAction: (Product) -> Void
     let pickAction: (Product) -> Void
 
+    @EnvironmentObject private var favourites: FavouritesStore
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Button {
@@ -79,7 +88,15 @@ private struct ProductComparisonCard: View {
                     .frame(width: 56, height: 56)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
+            .overlay(alignment: .topTrailing) {
+                FavouriteButton(isFavourite: favourites.isFavourite(product), compact: true) {
+                    withAnimation(GuideMotion.snappy) {
+                        favourites.toggle(product)
+                    }
+                }
+                .offset(x: 5, y: -5)
+            }
             .accessibilityHint("打开商品详情")
 
             Button {
@@ -126,7 +143,7 @@ private struct ProductComparisonCard: View {
                     .background(GuideTheme.accent)
                     .clipShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
             .padding(.top, 2)
         }
         .padding(10)

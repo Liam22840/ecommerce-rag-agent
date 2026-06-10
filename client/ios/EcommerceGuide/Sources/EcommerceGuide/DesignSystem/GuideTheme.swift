@@ -21,6 +21,8 @@ enum GuideTheme {
     static let successSoft = Color(red: 0.902, green: 0.976, blue: 0.945)
     static let warning = Color(red: 1, green: 0.302, blue: 0.310)
     static let warningSoft = Color(red: 1, green: 0.941, blue: 0.941)
+    static let favourite = Color(red: 0.937, green: 0.267, blue: 0.367)
+    static let favouriteSoft = Color(red: 1, green: 0.925, blue: 0.937)
 
     static let cardRadius: CGFloat = 12
     static let bubbleRadius: CGFloat = 16
