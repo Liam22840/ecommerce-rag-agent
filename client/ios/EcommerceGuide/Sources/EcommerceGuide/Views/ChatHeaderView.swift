@@ -3,12 +3,13 @@ import SwiftUI
 @available(iOS 17.0, macOS 13.0, *)
 struct ChatHeaderView: View {
     let cartItems: [CartItem]
+    let favouritesCount: Int
     let cartAction: () -> Void
+    let favouritesAction: () -> Void
 
     var body: some View {
         HStack(alignment: .center) {
-            Color.clear
-                .frame(width: 48, height: 36)
+            FavouritesPillView(count: favouritesCount, action: favouritesAction)
 
             Spacer(minLength: 8)
 
@@ -26,6 +27,41 @@ struct ChatHeaderView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(GuideTheme.panelBackground)
+    }
+}
+
+@available(iOS 17.0, macOS 13.0, *)
+struct FavouritesPillView: View {
+    let count: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "heart")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(GuideTheme.inkStrong)
+                    .frame(width: 36, height: 36)
+                    .symbolEffect(.bounce, value: count)
+
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .padding(.horizontal, count > 9 ? 3 : 0)
+                        .background(GuideTheme.favourite)
+                        .clipShape(Capsule())
+                        .contentTransition(.numericText(value: Double(count)))
+                        .transition(.scale.combined(with: .opacity))
+                        .offset(x: 4, y: -1)
+                }
+            }
+            .animation(GuideMotion.snappy, value: count)
+            .frame(width: 48, height: 36, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("我的收藏，\(count) 件商品")
     }
 }
 
@@ -51,6 +87,7 @@ struct CartPillView: View {
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(GuideTheme.inkStrong)
                     .frame(width: 36, height: 36)
+                    .symbolEffect(.bounce, value: itemCount)
 
                 if itemCount > 0 {
                     Text("\(itemCount)")
@@ -60,12 +97,19 @@ struct CartPillView: View {
                         .padding(.horizontal, itemCount > 9 ? 3 : 0)
                         .background(GuideTheme.accent)
                         .clipShape(Capsule())
+                        .contentTransition(.numericText(value: Double(itemCount)))
+                        .transition(.scale.combined(with: .opacity))
                         .offset(x: 4, y: -1)
                 }
             }
+            .animation(GuideMotion.snappy, value: itemCount)
             .frame(width: 48, height: 36, alignment: .trailing)
         }
         .buttonStyle(.plain)
+        .anchorPreference(key: GuideAnchorKey.self, value: .bounds) { anchor in
+            GuideAnchorKey.Value(cartPill: anchor)
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: itemCount)
         .accessibilityLabel("购物车，\(itemCount) 件商品，\(formattedTotal)")
     }
 

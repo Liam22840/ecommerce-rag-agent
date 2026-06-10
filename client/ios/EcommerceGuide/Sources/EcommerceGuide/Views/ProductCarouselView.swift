@@ -6,6 +6,8 @@ struct ProductCarouselView: View {
     let productAction: (Product) -> Void
     let addToCartAction: (Product) -> Void
 
+    @State private var openSwipeID: String?
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             AssistantAvatarView()
@@ -14,6 +16,7 @@ struct ProductCarouselView: View {
                 ForEach(products) { product in
                     ProductCardView(
                         product: product,
+                        openSwipeID: $openSwipeID,
                         productAction: productAction,
                         addToCartAction: addToCartAction
                     )
@@ -29,8 +32,11 @@ struct ProductCarouselView: View {
 @available(iOS 17.0, macOS 13.0, *)
 struct ProductCardView: View {
     let product: Product
+    @Binding var openSwipeID: String?
     let productAction: (Product) -> Void
     let addToCartAction: (Product) -> Void
+
+    @EnvironmentObject private var favourites: FavouritesStore
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -41,7 +47,18 @@ struct ProductCardView: View {
                     .frame(width: 72, height: 72)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
+            .anchorPreference(key: GuideAnchorKey.self, value: .bounds) { anchor in
+                GuideAnchorKey.Value(productImages: [product.id: anchor])
+            }
+            .overlay(alignment: .topTrailing) {
+                FavouriteButton(isFavourite: favourites.isFavourite(product), compact: true) {
+                    withAnimation(GuideMotion.snappy) {
+                        favourites.toggle(product)
+                    }
+                }
+                .offset(x: 5, y: -5)
+            }
             .accessibilityHint("打开商品详情")
 
             VStack(alignment: .leading, spacing: 3) {
@@ -93,7 +110,7 @@ struct ProductCardView: View {
                             .background(GuideTheme.accent)
                             .clipShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableButtonStyle())
                     .accessibilityLabel("将 \(product.title) 加入购物车")
                 }
             }
@@ -108,6 +125,16 @@ struct ProductCardView: View {
                 .stroke(Color.black.opacity(0.04))
         }
         .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
+        .guideSwipeActions(itemID: product.id, openItemID: $openSwipeID, actions: [
+            SwipeAction(systemImage: "heart.fill", title: "收藏", tint: GuideTheme.favourite) {
+                withAnimation(GuideMotion.snappy) {
+                    favourites.toggle(product)
+                }
+            },
+            SwipeAction(systemImage: "cart.badge.plus", title: "加购", tint: GuideTheme.accent) {
+                addToCartAction(product)
+            }
+        ])
         .accessibilityLabel("\(product.title), \(product.formattedPrice)")
     }
 }
@@ -127,11 +154,8 @@ struct ProductImageView: View {
                 case .failure:
                     placeholder
                 case .empty:
-                    ZStack {
-                        placeholder
-                        ProgressView()
-                            .tint(GuideTheme.accent)
-                    }
+                    SkeletonBlock(cornerRadius: 0)
+                        .shimmer()
                 @unknown default:
                     placeholder
                 }

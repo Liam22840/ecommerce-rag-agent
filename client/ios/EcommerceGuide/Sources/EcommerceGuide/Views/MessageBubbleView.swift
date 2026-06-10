@@ -36,19 +36,15 @@ struct MessageBubbleView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
-                if !(message.imageData != nil && message.text.isEmpty) {
-                    Text(message.text.isEmpty ? "正在思考..." : message.text)
+                if message.text.isEmpty && message.isStreaming && message.imageData == nil {
+                    TypingIndicatorView()
+                } else if !(message.imageData != nil && message.text.isEmpty) {
+                    Text(message.text)
                         .font(.subheadline)
                         .lineSpacing(2)
                         .foregroundStyle(message.role == .user ? .white : GuideTheme.inkStrong)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                }
-
-                if message.isStreaming {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(message.role == .user ? .white : GuideTheme.accent)
                 }
 
                 if message.role == .assistant, !message.isStreaming, !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
