@@ -46,7 +46,7 @@ struct ProductCardsSkeleton: View {
         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
-                .stroke(Color.black.opacity(0.04))
+                .stroke(GuideTheme.line)
         }
         .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
     }
