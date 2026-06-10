@@ -177,18 +177,7 @@ struct ProductImageView: View {
     }
 
     private var productImageBaseURL: URL {
-        let configured = ProcessInfo.processInfo.environment["ECOMMERCE_GUIDE_BACKEND_URL"]
-            ?? UserDefaults.standard.string(forKey: "EcommerceGuideBackendURL")
-                .flatMap { $0.contains("192.168.0.184") ? nil : $0 }
-        let configuredURL = configured
-            .flatMap(URL.init(string:))
-        let endpoint = configuredURL ?? URL(string: "http://127.0.0.1:8000/api/chat/stream")!
-
-        var components = URLComponents()
-        components.scheme = endpoint.scheme
-        components.host = endpoint.host
-        components.port = endpoint.port
-        return components.url ?? URL(string: "http://127.0.0.1:8000")!
+        BackendEndpoint.baseURL
     }
 
     private var placeholder: some View {
