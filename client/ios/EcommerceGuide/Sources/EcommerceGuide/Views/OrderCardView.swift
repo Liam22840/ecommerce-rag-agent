@@ -6,6 +6,9 @@ import SwiftUI
 @available(iOS 17.0, macOS 13.0, *)
 struct OrderCardView: View {
     let order: Order
+    /// False once the order has been acted on or superseded, so a lingering card in the scroll
+    /// history can't re-confirm or re-cancel an order that has already moved on.
+    let isActionable: Bool
     @Binding var shippingAddress: String
     let replyAction: (String) -> Void
 
@@ -26,6 +29,7 @@ struct OrderCardView: View {
                 // The shopper confirms or edits the address right here; 确认 sends it with the reply.
                 // Editing in chat ("把地址改成…") flows the same way and re-syncs this field.
                 EditableOrderField(title: "收货地址", text: $shippingAddress, axis: .vertical)
+                    .disabled(!isActionable)
 
                 HStack(spacing: 10) {
                     Button {
@@ -39,20 +43,22 @@ struct OrderCardView: View {
                             .background(GuideTheme.pageBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .opacity(isActionable ? 1 : 0.5)
 
                     Button {
                         replyAction("确认")
                     } label: {
                         Text("确认下单")
                             .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(isActionable ? .white : GuideTheme.tertiaryInk)
                             .frame(maxWidth: .infinity)
                             .frame(height: 40)
-                            .background(GuideTheme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(isActionable ? GuideTheme.accent : GuideTheme.line, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
                 .padding(.top, 2)
+                .disabled(!isActionable)
             }
         }
         .padding(14)

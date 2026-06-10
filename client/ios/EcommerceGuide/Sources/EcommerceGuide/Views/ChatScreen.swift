@@ -63,6 +63,7 @@ public struct ChatScreen: View {
                             ForEach(viewModel.timeline) { item in
                                 ChatTimelineItemView(
                                     item: item,
+                                    isOrderActionable: item.id == viewModel.latestOrderTimelineID && !viewModel.isSending,
                                     shippingAddress: $viewModel.shippingAddress,
                                     retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
@@ -196,6 +197,7 @@ public struct ChatScreen: View {
 @available(iOS 17.0, macOS 13.0, *)
 private struct ChatTimelineItemView: View {
     let item: ChatTimelineItem
+    let isOrderActionable: Bool
     @Binding var shippingAddress: String
     let retryAction: () -> Void
     let productAction: (Product) -> Void
@@ -231,7 +233,7 @@ private struct ChatTimelineItemView: View {
         case .cartStatus(_, let text):
             CartStatusView(text: text)
         case .orderStatus(_, let order):
-            OrderCardView(order: order, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
+            OrderCardView(order: order, isActionable: isOrderActionable, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
         }
