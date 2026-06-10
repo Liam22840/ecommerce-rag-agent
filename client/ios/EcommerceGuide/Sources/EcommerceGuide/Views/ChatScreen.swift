@@ -53,7 +53,10 @@ public struct ChatScreen: View {
                                     retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
                                     addToCartAction: { viewModel.addToCart(product: $0) },
-                                    orderReplyAction: { viewModel.sendQuickReply($0) }
+                                    orderReplyAction: { viewModel.sendQuickReply($0) },
+                                    speechPlaybackState: { viewModel.speechPlaybackState(for: $0) },
+                                    speakAction: { viewModel.speakAssistantMessage($0) },
+                                    stopSpeechAction: { viewModel.stopAssistantSpeech() }
                                 )
                                 .id(item.id)
                             }
@@ -116,11 +119,19 @@ private struct ChatTimelineItemView: View {
     let productAction: (Product) -> Void
     let addToCartAction: (Product) -> Void
     let orderReplyAction: (String) -> Void
+    let speechPlaybackState: (ChatMessage) -> TextToSpeechPlaybackState?
+    let speakAction: (ChatMessage) -> Void
+    let stopSpeechAction: () -> Void
 
     var body: some View {
         switch item {
         case .message(let message):
-            MessageBubbleView(message: message)
+            MessageBubbleView(
+                message: message,
+                speechPlaybackState: speechPlaybackState(message),
+                speakAction: speakAction,
+                stopSpeechAction: stopSpeechAction
+            )
         case .plan(_, let steps):
             PlanStatusView(steps: steps)
         case .products(_, let products):

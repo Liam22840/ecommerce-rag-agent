@@ -18,6 +18,7 @@ let package = Package(
         .target(
             name: "EcommerceGuide",
             resources: [
+                .process("Audio"),
                 .process("Fixtures")
             ]
         ),

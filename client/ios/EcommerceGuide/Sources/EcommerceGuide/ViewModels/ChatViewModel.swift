@@ -8,6 +8,9 @@ public final class ChatViewModel: ObservableObject {
     @Published public var cartItems: [CartItem]
     @Published public var isSending: Bool
     @Published public var isListening: Bool
+    @Published public var isAssistantSpeechEnabled: Bool
+    @Published public var assistantSpeechPlaybackState: TextToSpeechPlaybackState
+    @Published public var activeSpeechMessageID: UUID?
     @Published public var errorMessage: String?
     // The shipping address shown in the order card. Sent with every request so the order carries it,
     // and re-synced from the server's order whenever one arrives (e.g. after a conversational change).
@@ -17,32 +20,51 @@ public final class ChatViewModel: ObservableObject {
 
     private let service: any ChatService
     private let speechRecognitionService: any SpeechRecognitionService
+    private let textToSpeechService: any TextToSpeechService
     private var streamTask: Task<Void, Never>?
     private var speechTask: Task<Void, Never>?
     private var lastSubmittedMessage: String?
     private var streamingMessageID: UUID?
     private var currentPlanTimelineID: UUID?
+    private var pendingSpeechMessage: ChatMessage?
 
     public init(
         service: any ChatService = MockChatService(),
         speechRecognitionService: any SpeechRecognitionService = DefaultSpeechRecognitionService(),
+        textToSpeechService: (any TextToSpeechService)? = nil,
+        isAssistantSpeechEnabled: Bool = true,
         conversationID: UUID = UUID(),
         timeline: [ChatTimelineItem] = ChatViewModel.initialTimeline
     ) {
         self.service = service
         self.speechRecognitionService = speechRecognitionService
+        self.textToSpeechService = textToSpeechService ?? DefaultTextToSpeechService()
         self.conversationID = conversationID
         self.timeline = timeline
         self.draftMessage = ""
         self.cartItems = []
         self.isSending = false
         self.isListening = false
+        self.isAssistantSpeechEnabled = isAssistantSpeechEnabled
+        self.assistantSpeechPlaybackState = .idle
+        self.activeSpeechMessageID = nil
+        self.textToSpeechService.setPlaybackStateHandler { [weak self] state in
+            self?.assistantSpeechPlaybackState = state
+            if state == .idle {
+                self?.activeSpeechMessageID = nil
+            }
+        }
+        self.textToSpeechService.prepare(Self.welcomeMessageText)
     }
 
     deinit {
         streamTask?.cancel()
         speechTask?.cancel()
         speechRecognitionService.stopRecognition()
+        let textToSpeechService = textToSpeechService
+        Task { @MainActor in
+            textToSpeechService.stopSpeaking()
+        }
     }
 
     public func sendDraftMessage() {
@@ -132,10 +154,41 @@ public final class ChatViewModel: ObservableObject {
         }
     }
 
+    public func speakAssistantMessage(_ message: ChatMessage) {
+        guard message.role == .assistant, !message.isStreaming else {
+            return
+        }
+
+        speak(message, automatically: false)
+    }
+
+    public func stopAssistantSpeech() {
+        textToSpeechService.stopSpeaking()
+    }
+
+    public func toggleAssistantSpeechEnabled() {
+        isAssistantSpeechEnabled.toggle()
+        if !isAssistantSpeechEnabled {
+            textToSpeechService.stopSpeaking()
+        }
+    }
+
+    public func speechPlaybackState(for message: ChatMessage) -> TextToSpeechPlaybackState? {
+        guard activeSpeechMessageID == message.id,
+              assistantSpeechPlaybackState != .idle else {
+            return nil
+        }
+
+        return assistantSpeechPlaybackState
+    }
+
     private func send(message: String, imageData: Data? = nil) {
         if isListening {
             stopVoiceInput()
         }
+        textToSpeechService.stopSpeaking()
+        activeSpeechMessageID = nil
+        pendingSpeechMessage = nil
 
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -305,12 +358,16 @@ public final class ChatViewModel: ObservableObject {
 
         message.isStreaming = false
         timeline[index] = .message(message)
+        if message.role == .assistant {
+            pendingSpeechMessage = message
+        }
         self.streamingMessageID = nil
     }
 
     private func handle(_ error: Error) {
         isSending = false
         finishStreamingMessage()
+        pendingSpeechMessage = nil
 
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         errorMessage = message
@@ -321,23 +378,48 @@ public final class ChatViewModel: ObservableObject {
     private func finishAfterCancellation() {
         isSending = false
         finishStreamingMessage()
+        pendingSpeechMessage = nil
         streamTask = nil
     }
 
     private func finishCompletedStream() {
         isSending = false
         finishStreamingMessage()
+        speakPendingAssistantMessage()
         streamTask = nil
+    }
+
+    private func speakPendingAssistantMessage() {
+        guard let message = pendingSpeechMessage else {
+            return
+        }
+
+        pendingSpeechMessage = nil
+        speak(message, automatically: true)
+    }
+
+    private func speak(_ message: ChatMessage, automatically: Bool) {
+        guard !automatically || isAssistantSpeechEnabled else {
+            return
+        }
+
+        activeSpeechMessageID = message.id
+        textToSpeechService.speak(message.text)
+        if assistantSpeechPlaybackState != .idle {
+            activeSpeechMessageID = message.id
+        }
     }
 
     nonisolated public static var initialTimeline: [ChatTimelineItem] {
         [
             .message(ChatMessage(
                 role: .assistant,
-                text: "你好，我是你的 AI 购物助手。告诉我你想买什么，我会帮你对比商品、解释取舍，并整理好购物车。"
+                text: welcomeMessageText
             ))
         ]
     }
+
+    nonisolated private static let welcomeMessageText = "你好，我是你的 AI 购物助手。告诉我你想买什么，我会帮你对比商品、解释取舍，并整理好购物车。"
 
     private var recentProductIDs: [String] {
         var ids: [String] = []

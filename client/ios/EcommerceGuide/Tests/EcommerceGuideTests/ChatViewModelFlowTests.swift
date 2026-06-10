@@ -34,6 +34,122 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertEqual(assistantMessage.text, "可以，我来推荐。")
     }
 
+    func testCompletedAssistantResponseIsReadAloudOnce() async throws {
+        let textToSpeechService = RecordingTextToSpeechService()
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("我找到"),
+                .token("一款适合你的商品。"),
+                .done(messageID: "tts-1")
+            ]),
+            textToSpeechService: textToSpeechService,
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐一款面霜"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(textToSpeechService.spokenTexts, ["我找到一款适合你的商品。"])
+    }
+
+    func testWelcomeMessageIsPreparedForTTSCache() {
+        let textToSpeechService = RecordingTextToSpeechService()
+
+        _ = ChatViewModel(textToSpeechService: textToSpeechService)
+
+        XCTAssertEqual(textToSpeechService.preparedTexts, [
+            "你好，我是你的 AI 购物助手。告诉我你想买什么，我会帮你对比商品、解释取舍，并整理好购物车。"
+        ])
+    }
+
+    func testDisabledAutomaticSpeechStillAllowsManualReplay() async throws {
+        let textToSpeechService = RecordingTextToSpeechService()
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("可以手动朗读。"),
+                .done(messageID: "manual-tts")
+            ]),
+            textToSpeechService: textToSpeechService,
+            isAssistantSpeechEnabled: false,
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐一款面霜"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(textToSpeechService.spokenTexts, [])
+
+        guard case .message(let assistantMessage)? = viewModel.timeline.last else {
+            return XCTFail("Expected final assistant message")
+        }
+
+        viewModel.speakAssistantMessage(assistantMessage)
+
+        XCTAssertEqual(textToSpeechService.spokenTexts, ["可以手动朗读。"])
+        XCTAssertEqual(viewModel.activeSpeechMessageID, assistantMessage.id)
+        XCTAssertEqual(viewModel.assistantSpeechPlaybackState, .speaking)
+    }
+
+    func testStopAssistantSpeechClearsActiveSpeechState() {
+        let textToSpeechService = RecordingTextToSpeechService()
+        let assistantMessage = ChatMessage(role: .assistant, text: "正在朗读的内容。")
+        let viewModel = ChatViewModel(
+            textToSpeechService: textToSpeechService,
+            timeline: [.message(assistantMessage)]
+        )
+
+        viewModel.speakAssistantMessage(assistantMessage)
+        XCTAssertEqual(viewModel.activeSpeechMessageID, assistantMessage.id)
+        XCTAssertEqual(viewModel.assistantSpeechPlaybackState, .speaking)
+
+        viewModel.stopAssistantSpeech()
+
+        XCTAssertNil(viewModel.activeSpeechMessageID)
+        XCTAssertEqual(viewModel.assistantSpeechPlaybackState, .idle)
+        XCTAssertEqual(textToSpeechService.stopCount, 1)
+    }
+
+    func testManualSpeechKeepsMessageActiveWhenServiceTransitionsThroughIdleToLoading() {
+        let textToSpeechService = LoadingTextToSpeechService()
+        let assistantMessage = ChatMessage(role: .assistant, text: "需要生成语音。")
+        let viewModel = ChatViewModel(
+            textToSpeechService: textToSpeechService,
+            timeline: [.message(assistantMessage)]
+        )
+
+        viewModel.speakAssistantMessage(assistantMessage)
+
+        XCTAssertEqual(viewModel.activeSpeechMessageID, assistantMessage.id)
+        XCTAssertEqual(viewModel.speechPlaybackState(for: assistantMessage), .loading)
+    }
+
+    func testAutomaticSpeechKeepsMessageActiveWhenServiceTransitionsThroughIdleToLoading() async throws {
+        let textToSpeechService = LoadingTextToSpeechService()
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .token("需要生成语音。"),
+                .done(messageID: "loading-tts")
+            ]),
+            textToSpeechService: textToSpeechService,
+            conversationID: UUID(),
+            timeline: []
+        )
+
+        viewModel.draftMessage = "推荐一款面霜"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        guard case .message(let assistantMessage)? = viewModel.timeline.last else {
+            return XCTFail("Expected final assistant message")
+        }
+        XCTAssertEqual(viewModel.activeSpeechMessageID, assistantMessage.id)
+        XCTAssertEqual(viewModel.speechPlaybackState(for: assistantMessage), .loading)
+    }
+
     func testSendDraftMessageReducesStreamIntoTimelineAndCart() async throws {
         let product = Product.fixture(id: "JACKET-1", title: "Rain Shell")
         let service = ScriptedChatService(events: [
@@ -534,6 +650,52 @@ private final class ScriptedSpeechRecognitionService: SpeechRecognitionService, 
 
     func stopRecognition() {
         stopCount += 1
+    }
+}
+
+private final class RecordingTextToSpeechService: TextToSpeechService, @unchecked Sendable {
+    private(set) var spokenTexts: [String] = []
+    private(set) var preparedTexts: [String] = []
+    private(set) var stopCount = 0
+    private var playbackStateHandler: (@MainActor @Sendable (TextToSpeechPlaybackState) -> Void)?
+
+    func speak(_ text: String) {
+        spokenTexts.append(text)
+        playbackStateHandler?(.speaking)
+    }
+
+    func prepare(_ text: String) {
+        preparedTexts.append(text)
+    }
+
+    func stopSpeaking() {
+        stopCount += 1
+        playbackStateHandler?(.idle)
+    }
+
+    func setPlaybackStateHandler(_ handler: (@MainActor @Sendable (TextToSpeechPlaybackState) -> Void)?) {
+        playbackStateHandler = handler
+        handler?(.idle)
+    }
+}
+
+private final class LoadingTextToSpeechService: TextToSpeechService, @unchecked Sendable {
+    private var playbackStateHandler: (@MainActor @Sendable (TextToSpeechPlaybackState) -> Void)?
+
+    func speak(_ text: String) {
+        playbackStateHandler?(.idle)
+        playbackStateHandler?(.loading)
+    }
+
+    func prepare(_ text: String) {}
+
+    func stopSpeaking() {
+        playbackStateHandler?(.idle)
+    }
+
+    func setPlaybackStateHandler(_ handler: (@MainActor @Sendable (TextToSpeechPlaybackState) -> Void)?) {
+        playbackStateHandler = handler
+        handler?(.idle)
     }
 }
 
