@@ -305,6 +305,41 @@ def test_prepare_falls_back_to_raw_query_when_no_rewrite():
     assert spy.queries == ["三百以内的面霜"]
 
 
+def test_prepare_honors_explicit_single_product_count():
+    assistant = _assistant(llm=None)
+
+    prepared = assistant.prepare("推荐一款适合油皮的洗面奶", session_id=None, top_k=3)
+
+    assert prepared.filters.requested_count == 1
+    assert len(prepared.products) == 1
+    assert "以下1款" in prepared.grounded_answer
+
+
+def test_prepare_splits_one_apple_and_one_android_phone_request():
+    assistant = _assistant(llm=None)
+
+    prepared = assistant.prepare("recomend me 1 apple phone 1 android phone", session_id=None, top_k=3)
+    brands = [product.brand for product in prepared.products]
+
+    assert prepared.filters.requested_count == 2
+    assert prepared.filters.sub_category == "智能手机"
+    assert len(prepared.products) == 2
+    assert brands[0] == "Apple 苹果"
+    assert brands[1] != "Apple 苹果"
+
+
+def test_prepare_splits_compact_apple_android_phone_request():
+    assistant = _assistant(llm=None)
+
+    prepared = assistant.prepare("recommend me 1 apple and 1 android phone", session_id=None, top_k=3)
+    brands = [product.brand for product in prepared.products]
+
+    assert prepared.filters.requested_count == 2
+    assert len(prepared.products) == 2
+    assert brands[0] == "Apple 苹果"
+    assert brands[1] != "Apple 苹果"
+
+
 def test_prepare_prewarms_the_query_embedding():
     spy = _SpyRetriever()
     catalog = ProductCatalog.load(DATASET_ROOT)

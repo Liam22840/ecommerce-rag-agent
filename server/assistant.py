@@ -897,12 +897,13 @@ class ShoppingAssistant:
         recalled = [pid for pid in filters.recall_product_ids if self._catalog.get(pid) is not None]
         if recalled:
             return self._prepare_recall(query, session_id, filters, recalled)
+        result_count = _effective_result_count(top_k, filters)
         # Filter-keyed cache: a context-free product search keyed on the parsed intent. A hit
         # replays the stored answer + cards, skipping embed, retrieval and the answer LLM. The
         # key is set on a miss too, so the generated answer gets stored once it's produced.
         filter_key: str | None = None
         if self._filter_cache.enabled and FilterCache.eligible(filters, recent_product_ids):
-            filter_key = self._filter_cache.key(filters, top_k)
+            filter_key = self._filter_cache.key(filters, result_count)
             cached = self._filter_cache.get(filter_key)
             if cached is not None:
                 return self._prepared_from_cache(query, session_id, filters, cached, filter_key)
@@ -911,8 +912,8 @@ class ShoppingAssistant:
         search_query = filters.rewritten_query or query
         # Over-fetch so that dropping already-seen ("换一批") or excluded ("不要油腻") items still
         # leaves enough to fill top_k.
-        buffer = (len(recent_product_ids) if filters.exclude_seen else 0) + (top_k if filters.excluded_terms else 0)
-        limit = top_k + buffer
+        buffer = (len(recent_product_ids) if filters.exclude_seen else 0) + (result_count if filters.excluded_terms else 0)
+        limit = result_count + buffer
         # A pure price/rating sort must see the WHOLE filtered category, not just the relevance-top-k,
         # or retrieval truncates the true cheapest/highest-rated away before _order_hits sorts. But
         # only when there are no soft relevance signals: with required_terms/requested_specs ("便宜的
@@ -920,6 +921,8 @@ class ShoppingAssistant:
         # would surface the cheapest-overall instead of the cheapest-relevant. The category gate keeps
         # the pool small, so fetching it all is cheap.
         if filters.sort_by != "relevance" and not filters.required_terms and not filters.requested_specs:
+            limit = max(limit, _SORT_CANDIDATE_POOL)
+        if _asks_for_apple_and_android_phones(query, filters):
             limit = max(limit, _SORT_CANDIDATE_POOL)
         retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=limit)
         hits = self._order_hits(retrieval.hits, filters)
@@ -935,7 +938,8 @@ class ShoppingAssistant:
         type_subs = self._type_subcategories(filters)
         if type_subs:
             hits = [hit for hit in hits if hit.product["sub_category"] in type_subs]
-        hits = hits[:top_k]
+        hits = _apply_requested_diversity(query, filters, hits)
+        hits = hits[:result_count]
         products = [
             self._catalog.product_card(hit.product, matched_reason=_reason(hit, filters, self._catalog), filters=filters)
             for hit in hits
@@ -1426,13 +1430,14 @@ class ShoppingAssistant:
             condition = "、".join(constraints) if constraints else query
             return f"没有在商品库中找到完全匹配“{condition}”的商品。可以放宽预算、换一个类目，或补充你更看重的功能。"
 
+        display_hits = hits[: _answer_product_count(filters, len(hits))]
         order_note = "，并按价格从低到高排列" if filters.prefer_low_price else ""
         unmet = (context or {}).get("unmet_terms")
         if unmet:
-            lines = [f"没有在商品库里找到明确标注“{'、'.join(unmet)}”的商品，以下是最接近的{len(hits[:3])}款{order_note}："]
+            lines = [f"没有在商品库里找到明确标注“{'、'.join(unmet)}”的商品，以下是最接近的{len(display_hits)}款{order_note}："]
         else:
-            lines = [f"我按你的条件从商品库里筛选出以下{len(hits[:3])}款{order_note}："]
-        for idx, hit in enumerate(hits[:3], start=1):
+            lines = [f"我按你的条件从商品库里筛选出以下{len(display_hits)}款{order_note}："]
+        for idx, hit in enumerate(display_hits, start=1):
             product = hit.product
             reason = _reason(hit, filters, self._catalog)
             price_label = self._catalog.price_label(product, filters)
@@ -1444,6 +1449,38 @@ class ShoppingAssistant:
             lines.append(line)
         lines.append("以上商品名、品牌、类目、SKU和价格均来自当前商品库；多规格商品以SKU价格明细为准。")
         return "\n".join(lines)
+
+
+def _effective_result_count(top_k: int, filters: SearchFilters) -> int:
+    if filters.requested_count is not None:
+        return max(1, min(filters.requested_count, 10))
+    return max(1, top_k)
+
+
+def _answer_product_count(filters: SearchFilters, available_count: int) -> int:
+    if filters.requested_count is not None:
+        return min(available_count, max(1, min(filters.requested_count, 10)))
+    return min(available_count, 3)
+
+
+def _apply_requested_diversity(query: str, filters: SearchFilters, hits: list[CatalogHit]) -> list[CatalogHit]:
+    if not _asks_for_apple_and_android_phones(query, filters):
+        return hits
+    apple = [hit for hit in hits if hit.product.get("brand") == "Apple 苹果"]
+    android = [hit for hit in hits if hit.product.get("brand") != "Apple 苹果"]
+    if not apple or not android:
+        return hits
+    selected_ids = {apple[0].product["product_id"], android[0].product["product_id"]}
+    rest = [hit for hit in hits if hit.product["product_id"] not in selected_ids]
+    return [apple[0], android[0], *rest]
+
+
+def _asks_for_apple_and_android_phones(query: str, filters: SearchFilters) -> bool:
+    text = query.lower()
+    wants_apple = "apple" in text or "iphone" in text or "苹果" in query
+    wants_android = "android" in text or "安卓" in query
+    wants_phone = filters.sub_category == "智能手机" or "phone" in text or "手机" in query
+    return wants_apple and wants_android and wants_phone
 
 
 def _reason(hit: CatalogHit, filters: SearchFilters, catalog: ProductCatalog) -> str:

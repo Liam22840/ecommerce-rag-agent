@@ -36,7 +36,7 @@ SUB_CATEGORY_ALIASES: dict[str, list[str]] = {
     "面霜": ["面霜", "保湿霜"],
     "精华": ["精华", "肌底液"],
     "真无线耳机": ["蓝牙耳机", "无线耳机", "耳机", "降噪耳机"],
-    "智能手机": ["手机", "拍照手机", "旗舰手机"],
+    "智能手机": ["手机", "拍照手机", "旗舰手机", "phone", "phones", "smartphone", "smartphones", "iphone", "android"],
     "笔记本电脑": ["笔记本", "电脑", "本子"],
     "平板电脑": ["平板", "平板电脑"],
     "跑步鞋": ["跑鞋", "跑步鞋", "慢跑鞋"],
@@ -94,6 +94,9 @@ class SearchFilters:
     intent_type: str = "product_search"
     required_terms: list[str] = field(default_factory=list)
     requested_specs: list[str] = field(default_factory=list)
+    # Number of distinct product cards the user explicitly asked to see. The API top_k remains
+    # the default when this is absent; explicit counts in the user's wording override it.
+    requested_count: int | None = None
     excluded_brands: list[str] = field(default_factory=list)
     excluded_terms: list[str] = field(default_factory=list)
     compare_refs: list[str] = field(default_factory=list)
@@ -303,6 +306,7 @@ class IntentParser:
             filters.intent_type = "comparison"
         filters.required_terms = _parse_required_terms(text)
         filters.requested_specs = _parse_requested_specs(text)
+        filters.requested_count = _parse_requested_count(text)
         filters.excluded_terms = _parse_excluded_terms(text)
         return filters
 
@@ -385,6 +389,7 @@ class IntentParser:
         filters.prefer_low_price = _coerce_bool(payload.get("prefer_low_price")) or filters.sort_by == "price_asc"
         filters.required_terms = _coerce_str_list(payload.get("required_terms"))
         filters.requested_specs = [normalize_spec(s) for s in _coerce_str_list(payload.get("requested_specs"))]
+        filters.requested_count = _coerce_positive_int(payload.get("requested_count"))
         filters.excluded_brands = [b for b in _coerce_str_list(payload.get("excluded_brands")) if b in self._brands]
         filters.excluded_terms = _coerce_str_list(payload.get("excluded_terms"))
         filters.compare_refs = _coerce_str_list(payload.get("compare_refs"))
@@ -407,6 +412,7 @@ class IntentParser:
         merged.intent_type = llm.intent_type if llm.intent_type != "product_search" else rule.intent_type
         merged.required_terms = dedupe(rule.required_terms + llm.required_terms)
         merged.requested_specs = dedupe(rule.requested_specs + llm.requested_specs)
+        merged.requested_count = llm.requested_count if llm.requested_count is not None else rule.requested_count
         merged.excluded_brands = dedupe(rule.excluded_brands + llm.excluded_brands)
         merged.excluded_terms = dedupe(rule.excluded_terms + llm.excluded_terms)
         merged.compare_refs = llm.compare_refs  # references are only extracted by the LLM
@@ -575,6 +581,72 @@ def _parse_requested_specs(text: str) -> list[str]:
     return list(dict.fromkeys(specs))
 
 
+_ENGLISH_COUNT_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+_COUNT_TOKEN = r"(\d+|[一二两三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)"
+_CN_PRODUCT_UNIT = r"(?:个|件|款|台|双|瓶|包|盒)"
+_CN_EXPLICIT_PRODUCT_UNIT = r"(?:款|台|双|瓶|包|盒)"
+_EN_PRODUCT_NOUN = (
+    r"(?:iphone|android\s+phone|apple\s+phone|phone|phones|smartphone|smartphones|"
+    r"earbud|earbuds|headphone|headphones|laptop|laptops|tablet|tablets)"
+)
+
+
+def _count_token_to_int(token: str) -> int | None:
+    token = token.strip().lower()
+    if token.isdigit():
+        return int(token)
+    if token in _ENGLISH_COUNT_WORDS:
+        return _ENGLISH_COUNT_WORDS[token]
+    return chinese_to_int(token)
+
+
+def _parse_requested_count(text: str) -> int | None:
+    counts: list[int] = []
+
+    # Chinese phrasing: "推荐一款手机", "1个苹果手机，1个安卓手机". Count the slot marker
+    # itself; the product noun is useful for meaning elsewhere, but including it here can greedily
+    # swallow the next slot in compact text.
+    cn_patterns = [
+        rf"(\d+)\s*{_CN_PRODUCT_UNIT}",
+        rf"([一二两三四五六七八九十]+)\s*{_CN_EXPLICIT_PRODUCT_UNIT}",
+    ]
+    for cn_pattern in cn_patterns:
+        for match in re.finditer(cn_pattern, text, flags=re.IGNORECASE):
+            value = _count_token_to_int(match.group(1))
+            if value:
+                counts.append(value)
+
+    # English/mixed phrasing: "1 apple phone 1 android phone". Count each explicit product slot.
+    en_pattern = rf"\b{_COUNT_TOKEN}\s+(?:[a-zA-Z]+\s+){{0,3}}{_EN_PRODUCT_NOUN}\b"
+    for match in re.finditer(en_pattern, text, flags=re.IGNORECASE):
+        value = _count_token_to_int(match.group(1))
+        if value:
+            counts.append(value)
+
+    platform_pattern = rf"\b{_COUNT_TOKEN}\s+(?:apple|iphone|ios|android)\b"
+    platform_counts = []
+    for match in re.finditer(platform_pattern, text, flags=re.IGNORECASE):
+        value = _count_token_to_int(match.group(1))
+        if value:
+            platform_counts.append(value)
+
+    if not counts and not platform_counts:
+        return None
+    return min(max(sum(counts), sum(platform_counts)), 10)
+
+
 def _looks_like_comparison(text: str) -> bool:
     return any(hint in text for hint in COMPARISON_HINTS)
 
@@ -610,6 +682,18 @@ def _coerce_price(value: Any) -> float | None:
     if price < 0:
         return None
     return price
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return min(number, 10)
 
 
 def _coerce_str_list(value: Any, max_items: int = 16, max_len: int = 20) -> list[str]:
