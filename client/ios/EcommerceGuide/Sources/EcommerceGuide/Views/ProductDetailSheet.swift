@@ -6,14 +6,15 @@ struct ProductDetailSheet: View {
     let addToCartAction: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var favourites: FavouritesStore
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    ProductImageView(product: product)
+                    ProductMediaPager(product: product)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 240)
+                        .frame(height: 300)
                         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
@@ -32,9 +33,19 @@ struct ProductDetailSheet: View {
                             .foregroundStyle(GuideTheme.inkStrong)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text(product.formattedPrice)
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(GuideTheme.accent)
+                        HStack(alignment: .center) {
+                            Text(product.formattedPrice)
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(GuideTheme.accent)
+
+                            Spacer()
+
+                            FavouriteButton(isFavourite: favourites.isFavourite(product)) {
+                                withAnimation(GuideMotion.snappy) {
+                                    favourites.toggle(product)
+                                }
+                            }
+                        }
 
                         if let priceSummary = product.priceSummary,
                            !priceSummary.isEmpty,
@@ -108,6 +119,7 @@ struct ProductDetailSheet: View {
                     .accessibilityLabel("关闭")
                 }
             }
+            .presentationDragIndicator(.visible)
         }
     }
 }

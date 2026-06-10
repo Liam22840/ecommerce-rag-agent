@@ -9,6 +9,8 @@ struct OrderCardView: View {
     @Binding var shippingAddress: String
     let replyAction: (String) -> Void
 
+    @State private var badgeAppeared = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             statusBadge
@@ -72,6 +74,12 @@ struct OrderCardView: View {
             Text(style.label)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(style.tint)
+        }
+        .scaleEffect(badgeAppeared ? 1 : 0.85)
+        .opacity(badgeAppeared ? 1 : 0)
+        .animation(GuideMotion.snappy, value: badgeAppeared)
+        .onAppear {
+            badgeAppeared = true
         }
     }
 

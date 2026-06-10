@@ -8,6 +8,7 @@ struct CartSheetView: View {
     let checkoutAction: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var openSwipeID: String?
 
     private var total: Decimal {
         items.reduce(Decimal.zero) { partialResult, item in
@@ -25,15 +26,22 @@ struct CartSheetView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        VStack(spacing: 0) {
                             ForEach(items) { item in
                                 CartItemRowView(
                                     item: item,
                                     quantityAction: quantityAction,
                                     removeAction: removeAction
                                 )
+                                .guideSwipeActions(itemID: item.id, openItemID: $openSwipeID, actions: [
+                                    SwipeAction(systemImage: "trash", title: "移除", tint: GuideTheme.warning) {
+                                        removeAction(item.product.id)
+                                    }
+                                ])
+                                .transition(.opacity.combined(with: .scale(scale: 0.96)))
                             }
                         }
+                        .animation(GuideMotion.snappy, value: items.map(\.id))
                         .padding(.horizontal, 16)
                     }
                 }
@@ -86,6 +94,8 @@ struct CartSheetView: View {
                 Text(formattedTotal)
                     .font(.title3.weight(.bold))
                     .foregroundStyle(GuideTheme.accent)
+                    .contentTransition(.numericText())
+                    .animation(GuideMotion.snappy, value: total)
             }
 
             Spacer(minLength: 12)
@@ -179,6 +189,8 @@ private struct CartItemRowView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(GuideTheme.inkStrong)
                 .frame(width: 28)
+                .contentTransition(.numericText(value: Double(item.quantity)))
+                .animation(GuideMotion.snappy, value: item.quantity)
 
             stepButton(systemImage: "plus", delta: 1, tint: GuideTheme.accent)
         }
@@ -187,6 +199,7 @@ private struct CartItemRowView: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(GuideTheme.line)
         }
+        .sensoryFeedback(.selection, trigger: item.quantity)
     }
 
     private func stepButton(systemImage: String, delta: Int, tint: Color) -> some View {
