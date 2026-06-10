@@ -61,7 +61,7 @@ struct ProductComparisonView: View {
             .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
-                    .stroke(Color.black.opacity(0.04))
+                    .stroke(GuideTheme.line)
             }
             .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
 
@@ -152,7 +152,7 @@ private struct ProductComparisonCard: View {
         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
-                .stroke(isWinner ? GuideTheme.accent.opacity(0.32) : Color.black.opacity(0.04))
+                .stroke(isWinner ? GuideTheme.accent.opacity(0.32) : GuideTheme.line)
         }
         .shadow(color: GuideTheme.cardShadow, radius: 3, y: 1)
         .accessibilityElement(children: .combine)

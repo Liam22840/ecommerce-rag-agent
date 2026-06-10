@@ -18,7 +18,7 @@ struct ProductDetailSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous)
-                                .stroke(Color.black.opacity(0.04))
+                                .stroke(GuideTheme.line)
                         }
                         .shadow(color: GuideTheme.cardShadow, radius: 6, y: 2)
 
