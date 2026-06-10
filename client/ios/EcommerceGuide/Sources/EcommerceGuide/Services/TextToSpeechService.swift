@@ -318,14 +318,14 @@ public final class RemoteTextToSpeechService: NSObject, TextToSpeechService, AVA
             ?? UserDefaults.standard.string(forKey: "EcommerceGuideBackendURL")
                 .flatMap { $0.contains("192.168.0.184") ? nil : $0 }
         let endpoint = configured.flatMap { URL(string: $0) }
-            ?? URL(string: "http://192.168.0.176:8000/api/chat/stream")!
+            ?? URL(string: "http://127.0.0.1:8000/api/chat/stream")!
 
         var components = URLComponents()
         components.scheme = endpoint.scheme
         components.host = endpoint.host
         components.port = endpoint.port
         components.path = "/api/tts"
-        return components.url ?? URL(string: "http://192.168.0.176:8000/api/tts")!
+        return components.url ?? URL(string: "http://127.0.0.1:8000/api/tts")!
     }
 
     private nonisolated static func diskCacheURL(for text: String) -> URL? {

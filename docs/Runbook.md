@@ -133,17 +133,13 @@ curl -sS -X POST http://127.0.0.1:8000/api/tts \
 open client/ios/EcommerceGuideApp/EcommerceGuideApp.xcodeproj
 ```
 
-选择 `EcommerceGuideApp` scheme 和一个 iPhone Simulator。默认 scheme 已配置：
-
-```text
-ECOMMERCE_GUIDE_BACKEND_URL=http://192.168.0.176:8000/api/chat/stream
-```
-
-本机演示时建议改成：
+选择 `EcommerceGuideApp` scheme 和一个 iPhone Simulator。默认 scheme 已指向本机后端，开箱即用：
 
 ```text
 ECOMMERCE_GUIDE_BACKEND_URL=http://127.0.0.1:8000/api/chat/stream
 ```
+
+Simulator 和后端跑在同一台 Mac 上时，`127.0.0.1` 始终可达，不用改动。只有用真机调试时，才把它改成这台 Mac 的局域网 IP（如 `http://192.168.x.x:8000/api/chat/stream`）。
 
 如果需要离线 mock：
 

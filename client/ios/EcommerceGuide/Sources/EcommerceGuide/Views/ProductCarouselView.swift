@@ -182,13 +182,13 @@ struct ProductImageView: View {
                 .flatMap { $0.contains("192.168.0.184") ? nil : $0 }
         let configuredURL = configured
             .flatMap(URL.init(string:))
-        let endpoint = configuredURL ?? URL(string: "http://192.168.0.176:8000/api/chat/stream")!
+        let endpoint = configuredURL ?? URL(string: "http://127.0.0.1:8000/api/chat/stream")!
 
         var components = URLComponents()
         components.scheme = endpoint.scheme
         components.host = endpoint.host
         components.port = endpoint.port
-        return components.url ?? URL(string: "http://192.168.0.176:8000")!
+        return components.url ?? URL(string: "http://127.0.0.1:8000")!
     }
 
     private var placeholder: some View {

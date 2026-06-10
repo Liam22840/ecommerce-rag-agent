@@ -56,7 +56,7 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "ECOMMERCE_GUIDE_BACKEND_URL"
-            value = "http://192.168.0.176:8000/api/chat/stream"
+            value = "http://127.0.0.1:8000/api/chat/stream"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
