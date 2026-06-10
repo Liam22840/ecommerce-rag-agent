@@ -1,115 +1,109 @@
-# ecommerce-rag-agent
+# 电商智能导购助手
 
-A multi-modal e-commerce intelligent shopping agent based on RAG.
-基于 RAG 的多模态电商智能导购 Agent.
+这是一个基于检索增强生成的多模态电商导购系统。用户可以用文字、语音或图片表达购物需求，系统会在真实商品库中检索商品，给出有依据的推荐、对比、加购和模拟下单结果。价格、规格、库存和订单状态都由后端结构化数据核对，模型只负责理解用户意图和组织自然语言。
 
-## What this repo contains (so far)
+## 项目内容
 
-- `ecommerce_agent_dataset/`: 100+ products across 4 categories, with text fields and one image per product.
-- `ingestion/`: Python package with chunk extraction, the Doubao multimodal embedding client, and the Milvus Lite store.
-- `ingest.py`: CLI to run the full pipeline.
+- `ecommerce_agent_dataset/`：四个类目的一百余个商品，包含标题、品牌、类目、规格价格、描述、问答、评价和主图。
+- `ingestion/`：商品切块、豆包多模态向量生成、Milvus Lite 入库和向量缓存。
+- `server/`：FastAPI 后端，包含检索、意图识别、路由、对比、购物车、订单、规划器、图搜和语音播报接口。
+- `client/ios/`：SwiftUI 原生 iOS 应用，包含流式聊天、商品卡片、商品详情、收藏、拍照找货、普通话语音输入、语音播报、购物车和订单确认。
+- `docs/`：提交说明、运行手册、架构设计、评测用例和各模块设计文档。
 
-## 设计文档 (Design docs)
+## 文档入口
 
-先读 [`docs/Overview.md`](docs/Overview.md)：一页讲清整个系统怎么运转，带一张流程图。想深入某一块再看下表。下表也给出评分维度到文档的索引，方便按维度查阅：
+评审或答辩时建议先看提交版文档，再按需要看模块细节。
 
-| 评分维度 | 文档 |
+| 用途 | 文档 |
 | --- | --- |
-| 3.1 数据工程与特征治理 | [`RetrievalAndData.md`](docs/RetrievalAndData.md) |
-| 3.2 模型 / Agent 编排 | [`IntentAndRouting.md`](docs/IntentAndRouting.md)、[`CartCheckoutAgent.md`](docs/CartCheckoutAgent.md)、[`ComparisonDecisionAgent.md`](docs/ComparisonDecisionAgent.md)、[`PlannerAgent.md`](docs/PlannerAgent.md) |
-| 3.3 后端服务化 | [`BackendService.md`](docs/BackendService.md) |
+| 提交文档入口 | [`docs/Submission.md`](docs/Submission.md) |
+| 项目文档 | [`docs/ProjectDocument.md`](docs/ProjectDocument.md) |
+| 设计文档 | [`docs/DesignDocument.md`](docs/DesignDocument.md) |
+| 说明文档 | [`docs/UsageDocument.md`](docs/UsageDocument.md) |
+| 部署、启动和体验流程 | [`docs/Runbook.md`](docs/Runbook.md) |
+| 系统架构细节 | [`docs/Architecture.md`](docs/Architecture.md) |
+| 黑箱测试文案和预期结果 | [`docs/EvaluationCases.md`](docs/EvaluationCases.md) |
+| 系统总览 | [`docs/Overview.md`](docs/Overview.md) |
+| 数据工程与检索 | [`docs/RetrievalAndData.md`](docs/RetrievalAndData.md) |
+| 意图、路由和防跑偏 | [`docs/IntentAndRouting.md`](docs/IntentAndRouting.md) |
+| 后端接口、流式输出和缓存 | [`docs/BackendService.md`](docs/BackendService.md) |
+| iOS 原生体验 | [`docs/ios-ui-design.md`](docs/ios-ui-design.md) |
+| 购物车与下单 | [`docs/CartCheckoutAgent.md`](docs/CartCheckoutAgent.md) |
+| 对比决策 | [`docs/ComparisonDecisionAgent.md`](docs/ComparisonDecisionAgent.md) |
+| 多步任务规划 | [`docs/PlannerAgent.md`](docs/PlannerAgent.md) |
 
-## Setup
+## 环境准备
 
 ```bash
 uv venv
 uv pip install -r requirements.txt
 cp .env.example .env
-# Then edit .env and set CHAT_API_KEY / ARK_EMBEDDING_API_KEY.
+# 编辑 .env，填入对话、向量和语音播报所需的密钥。
 ```
 
-## Running the ingestion
+后端支持这些主要配置：
 
-Smoke run on 2 products (good for verifying the API + Milvus end-to-end before committing API credit to all 100):
+| 配置 | 说明 |
+| --- | --- |
+| `CHAT_API_KEY` / `ARK_CHAT_API_KEY` | 对话模型密钥。 |
+| `CHAT_BASE_URL` / `ARK_CHAT_BASE_URL` | OpenAI 兼容对话接口地址。 |
+| `CHAT_MODEL` / `ARK_CHAT_MODEL` | 对话模型名称。 |
+| `ARK_EMBEDDING_API_KEY` | 豆包多模态向量模型密钥。 |
+| `ENABLE_VECTOR_SEARCH` | 是否启用向量检索；关闭后退回关键词检索。 |
+| `ENABLE_LLM` | 是否启用模型回答；关闭后使用确定性兜底回答。 |
+| `ENABLE_LLM_INTENT` | 是否启用模型意图识别。 |
+| `ENABLE_TTS` | 是否启用后端语音播报接口。 |
+| `TTS_API_KEY` / `GEMINI_API_KEY` | 语音播报模型密钥。 |
+
+完整配置见 [`.env.example`](.env.example) 和 [`docs/Architecture.md`](docs/Architecture.md)。
+
+## 生成向量库
+
+快速验证 2 个商品：
 
 ```bash
 .venv/bin/python ingest.py --limit 2
 ```
 
-Full run on all 100 products:
+完整入库：
 
 ```bash
 .venv/bin/python ingest.py
 ```
 
-Output lands at:
-- `data/milvus.db`: populated Milvus Lite database
-- `data/embedding_cache.jsonl`: embedding cache (re-runs are fast)
+输出位置：
 
-Both commands print `Milvus collection row count: N` when finished. That
-line is the verification the DB was populated correctly.
+- `data/milvus.db`：Milvus Lite 向量库。
+- `data/embedding_cache.jsonl`：向量缓存，重复运行会复用。
 
-## Querying from the backend
+命令结束时会打印 `Milvus collection row count: N`，表示入库完成。
 
-The backend reads `data/milvus.db` directly via `pymilvus`:
+## 启动后端
 
-```python
-from pymilvus import MilvusClient
-
-client = MilvusClient(uri="data/milvus.db")
-results = client.search(
-    collection_name="products",
-    data=[query_vector],  # use the same Doubao multimodal endpoint to embed the query
-    limit=5,
-    output_fields=["chunk_id", "product_id", "chunk_type", "text",
-                   "category", "sub_category", "brand", "base_price"],
-)
-```
-
-For product card rendering, the backend reads the raw dataset JSONs:
-
-```python
-import json
-from glob import glob
-
-PRODUCTS = {}
-for path in glob("ecommerce_agent_dataset/*/data/*.json"):
-    p = json.load(open(path, encoding="utf-8"))
-    PRODUCTS[p["product_id"]] = p
-```
-
-## Running the backend API
-
-Create `.env` from the example and fill in the real API keys locally:
+真实体验建议全开模型、向量和语音：
 
 ```bash
-cp .env.example .env
-# edit .env and set CHAT_API_KEY / ARK_EMBEDDING_API_KEY
-```
-
-The backend uses separate settings for chat and embeddings. Keep real keys in `.env` only:
-
-- `CHAT_API_KEY`: key for the chat model
-- `CHAT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
-- `CHAT_MODEL=gemini-3.1-flash-lite` (Gemini Flash-Lite via its OpenAI-compatible endpoint)
-- `ARK_EMBEDDING_API_KEY`: key for query/product embeddings
-- `ARK_EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`
-- `ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215`
-
-Start the FastAPI service:
-
-```bash
+ENABLE_VECTOR_SEARCH=true ENABLE_LLM=true ENABLE_LLM_INTENT=true ENABLE_TTS=true \
 .venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8000
 ```
 
-Core endpoints:
+本地无密钥时也可以验证确定性链路：
+
+```bash
+ENABLE_VECTOR_SEARCH=false ENABLE_LLM=false ENABLE_TTS=false \
+.venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8000
+```
+
+核心接口：
 
 - `GET /health`
-- `POST /api/chat` for a full JSON response with answer + product cards
-- `POST /api/chat/stream` for SSE streaming replies
-- `GET /api/products/{product_id}` for product-card detail data
+- `POST /api/chat`
+- `POST /api/chat/stream`
+- `POST /api/v1/chat/stream`
+- `GET /api/products/{product_id}`
+- `POST /api/tts`
 
-Example:
+接口验证：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/api/chat \
@@ -117,12 +111,32 @@ curl -sS -X POST http://127.0.0.1:8000/api/chat \
   -d '{"message":"推荐一款适合油皮的洗面奶"}'
 ```
 
-If the embedding key or the vector DB is unavailable, the service degrades to
-local lexical retrieval plus a deterministic grounded answer instead of
-hallucinating product facts.
+如果向量模型或向量库不可用，系统会降级到关键词检索和确定性回答；不会编造商品事实。
 
-## Running the tests
+## 启动 iOS 应用
+
+使用 Xcode 打开：
+
+```bash
+open client/ios/EcommerceGuideApp/EcommerceGuideApp.xcodeproj
+```
+
+Swift Package 当前最低平台是 iOS 17 / macOS 14，需要使用支持该平台的 Xcode。
+
+`EcommerceGuideApp` scheme 默认通过 `SSEChatService` 连接后端。scheme 里可以配置：
+
+- `ECOMMERCE_GUIDE_BACKEND_URL=http://127.0.0.1:8000/api/chat/stream`
+- `ECOMMERCE_GUIDE_SERVICE=mock`：需要离线演示时才切到本地 mock。
+- `ECOMMERCE_GUIDE_TTS_URL=http://127.0.0.1:8000/api/tts`：需要单独指定语音播报接口时使用。
+
+完整步骤见 [`docs/Runbook.md`](docs/Runbook.md)。
+
+## 运行测试
 
 ```bash
 .venv/bin/python -m pytest -v
+cd client/ios/EcommerceGuide
+swift test
 ```
+
+常用黑箱测试文案和预期结果见 [`docs/EvaluationCases.md`](docs/EvaluationCases.md)。

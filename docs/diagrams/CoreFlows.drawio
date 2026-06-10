@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-06-10T00:00:00.000Z" agent="draw.io" version="24.7.17" type="device">
+  <diagram id="rag-flow" name="RAG检索流程">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="rag_title" value="RAG 检索与事实核对流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=24;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="330" y="25" width="500" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="q" value="用户需求&#xa;自然语言 / 图片补充" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="120" width="160" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="intent" value="结构化意图&#xa;类目 / 价格 / 品牌 / 排除项 / 排序偏好" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="300" y="120" width="200" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="vector" value="向量检索&#xa;语义召回文本块和图片块" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="590" y="80" width="190" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="lexical" value="关键词检索&#xa;标题 / 品牌 / 类目 / 描述 / 问答 / 评价" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="590" y="190" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hard_filter" value="硬过滤&#xa;价格、类目、品牌、库存、明确排除条件" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="860" y="135" width="210" height="85" as="geometry"/>
+        </mxCell>
+        <mxCell id="rrf" value="排名融合&#xa;向量结果 + 关键词结果" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="120" y="360" width="190" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="rerank" value="排序与重排&#xa;相关度 / 价格偏好 / 最近展示排除" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="390" y="360" width="210" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="facts" value="商品事实压缩&#xa;保留标题、SKU、价格、库存和证据摘要" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="690" y="360" width="240" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="cards" value="返回给客户端&#xa;商品卡 + 基于事实的回答" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="450" y="590" width="230" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_q_intent" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="q" target="intent">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_intent_vector" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="intent" target="vector">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_intent_lexical" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="intent" target="lexical">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_vector_filter" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="vector" target="hard_filter">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_lexical_filter" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="lexical" target="hard_filter">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_filter_rrf" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="hard_filter" target="rrf">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="965" y="310"/>
+              <mxPoint x="215" y="310"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_rrf_rerank" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="rrf" target="rerank">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_rerank_facts" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="rerank" target="facts">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_facts_cards" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="facts" target="cards">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="planner-cart-flow" name="Planner与购物车流程">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="pc_title" value="Planner 与购物车执行流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=24;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="330" y="25" width="500" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="request" value="复合请求&#xa;推荐、筛选、对比、加购、结算" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="120" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="plan" value="Planner 生成计划&#xa;白名单步骤 + 参数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="330" y="120" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="validate" value="结构校验&#xa;步骤顺序、商品来源、动作合法性" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="610" y="120" width="210" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="show_plan" value="先发 plan 事件&#xa;前端展示浅灰色步骤" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="900" y="120" width="190" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="search_step" value="步骤 1：搜索商品&#xa;复用推荐检索模块" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="120" y="330" width="190" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="select_step" value="步骤 2：选择候选&#xa;从真实商品卡中按价格/相关度选择" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="390" y="330" width="220" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="compare_step" value="步骤 3：对比决策&#xa;复用对比模块选出赢家" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="700" y="330" width="210" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="cart_step" value="步骤 4：购物车动作&#xa;加购 / 改数量 / 结算" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13" vertex="1" parent="1">
+          <mxGeometry x="470" y="520" width="220" height="75" as="geometry"/>
+        </mxCell>
+        <mxCell id="facts_price" value="事实安全核对&#xa;商品 id、SKU、价格、库存、订单金额均由代码计算" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="360" y="680" width="440" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_req_plan" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="request" target="plan">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_plan_validate" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="plan" target="validate">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_validate_show" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="validate" target="show_plan">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_show_search" value="running / done 更新" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1" edge="1" parent="1" source="show_plan" target="search_step">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="995" y="270"/>
+              <mxPoint x="215" y="270"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_search_select" value="真实搜索结果" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="search_step" target="select_step">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_select_compare" value="真实候选商品" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="select_step" target="compare_step">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_compare_cart" value="对比赢家 / 指定商品" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="compare_step" target="cart_step">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="805" y="470"/>
+              <mxPoint x="580" y="470"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_cart_facts" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;strokeWidth=2" edge="1" parent="1" source="cart_step" target="facts_price">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
