@@ -223,6 +223,7 @@ private struct PhotoSearchScreen: View {
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
+        .keyboardDismissToolbar()
         .cameraCover(isPresented: $isCameraPresented) { data in
             stage(data)
         }
@@ -271,6 +272,7 @@ private struct PhotoSearchScreen: View {
                 .buttonStyle(.plain)
 
                 Button {
+                    dismissKeyboard()
                     captureAction(imageData, caption)
                 } label: {
                     Text("发送")
@@ -555,8 +557,12 @@ private struct OrderReviewScreen: View {
                     }
                     .padding(12)
                 }
+                .dismissesKeyboardOnScroll()
 
-                Button(action: confirmAction) {
+                Button {
+                    dismissKeyboard()
+                    confirmAction()
+                } label: {
                     Text("提交订单 \(formattedTotal)")
                         .font(.headline.weight(.semibold))
                         .foregroundStyle(.white)
@@ -580,6 +586,7 @@ private struct OrderReviewScreen: View {
             }
             .background(GuideTheme.pageBackground)
             .navigationTitle("确认订单")
+            .keyboardDismissToolbar()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(action: backAction) {

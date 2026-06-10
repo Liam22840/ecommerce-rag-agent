@@ -84,6 +84,8 @@ public struct ChatScreen: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(GuideTheme.pageBackground)
+                    .dismissesKeyboardOnScroll()
+                    .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
                     .onChange(of: viewModel.timeline) { _, items in
                         guard let id = items.last?.id else {
                             return
@@ -119,6 +121,7 @@ public struct ChatScreen: View {
                 )
             }
             .background(GuideTheme.pageBackground)
+            .keyboardDismissToolbar()
             .overlayPreferenceValue(GuideAnchorKey.self) { anchors in
                 flightOverlay(anchors: anchors)
             }

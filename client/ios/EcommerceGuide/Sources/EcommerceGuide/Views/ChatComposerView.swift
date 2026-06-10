@@ -41,6 +41,7 @@ struct ChatComposerView: View {
                 .disabled(isListening)
                 .onSubmit {
                     if canSend {
+                        dismissKeyboard()
                         sendAction()
                     }
                 }
@@ -79,7 +80,10 @@ struct ChatComposerView: View {
         }
 
         if canSend {
-            return sendAction
+            return {
+                dismissKeyboard()
+                sendAction()
+            }
         }
 
         return voiceAction
