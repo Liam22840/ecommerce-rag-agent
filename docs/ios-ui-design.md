@@ -1,73 +1,218 @@
-# iOS Frontend UI Design
+# iOS 原生体验设计
 
-## Direction
+这份文档说明 iOS 客户端如何承接后端能力。客户端不是网页壳，而是 SwiftUI 原生应用：用户可以在对话流里看流式回复、商品卡片、对比结果、计划进度、购物车状态和订单确认，也可以使用语音输入、语音播报、拍照找货、收藏、详情页和动效反馈。
 
-The iOS client is a native SwiftUI shopping-assistant demo. The first screen is
-the conversation, not a landing page: users can type a product need, watch the
-assistant stream a response, inspect inline product cards, and simulate cart
-actions without a live backend.
+## 产品入口
 
-## Frontend Architecture
+应用启动后先展示一个简短的引导页，用户点击“开始对话”进入聊天主界面。主界面是实际可用的导购体验，不是营销落地页。
 
-- `SwiftUI` for screens and components.
-- `Observable` view models with Swift concurrency for streaming state.
-- `ChatService` protocol to switch between local fixtures and the future backend.
-- `MockChatService` as the default demo path while the backend API is still being
-  built.
-- `SSEChatService` as the integration shell for the eventual streaming endpoint.
+客户端支持这些页面：
 
-The Simulator host app defaults to the mock service. To exercise a backend
-without changing source, set the launch environment variable
-`ECOMMERCE_GUIDE_SERVICE=sse` in the `EcommerceGuideApp` scheme, or set the
-`EcommerceGuideService` user default to `sse`.
+| 页面 | 作用 |
+| --- | --- |
+| 引导页 | 说明“智能推荐、拍照找货、对比决策、一键下单”四个核心能力。 |
+| 聊天页 | 输入文字、语音或图片后的对话主流程。 |
+| 拍照找货页 | 支持相机和相册，发送图片和补充描述。 |
+| 购物车页 | 查看已加购商品和数量。 |
+| 收藏页 | 查看本地持久化收藏商品，支持打开详情、加购和滑动移除。 |
+| 订单确认页 | 查看商品清单、总价和收货地址。 |
+| 订单成功页 | 确认下单后展示提交成功和庆祝动画。 |
+| 订单状态卡 | 在聊天流内展示待确认、已提交或已取消状态。 |
 
-## Backend Contract Assumptions
+## 客户端架构
 
-The iOS app assumes the backend will eventually expose:
+| 模块 | 作用 |
+| --- | --- |
+| `EcommerceGuideHostApp` | Xcode Host App 入口，负责选择真实后端或 mock 服务。 |
+| `ShoppingConciergeRootView` | 控制引导页、聊天页、拍照页、订单页之间的切换。 |
+| `ChatViewModel` | 管理消息、SSE 事件、购物车、订单、计划状态、语音输入、语音播报和商品骨架屏状态。 |
+| `FavouritesStore` | 用 `UserDefaults` 持久化收藏商品。 |
+| `SSEChatService` | 连接后端 `/api/chat/stream`，解析流式事件。 |
+| `MockChatService` | 离线演示和单元测试使用。 |
+| `MandarinSpeechRecognitionService` | 调用系统普通话语音识别。 |
+| `RemoteTextToSpeechService` | 请求后端 `/api/tts`，缓存音频并控制播放状态。 |
+| `GuideMotion` / `Shimmer` / `SwipeActions` | 统一入口动效、按钮按压、骨架屏 shimmer 和滑动操作。 |
+
+## 平台要求
+
+Swift Package 当前最低平台是 iOS 17 和 macOS 14。macOS 下限提高到 14，是因为收藏按钮、骨架屏、滑动操作、商品飞入购物车和庆祝动画使用了较新的 SwiftUI 动效能力。iOS 侧仍以 iOS 17 为最低版本。
+
+## 真实后端和 mock 的选择
+
+Xcode Host App 默认走真实 SSE 后端。只有显式设置下面变量时，才使用本地 mock：
+
+```text
+ECOMMERCE_GUIDE_SERVICE=mock
+```
+
+真实后端地址通过下面变量设置：
+
+```text
+ECOMMERCE_GUIDE_BACKEND_URL=http://127.0.0.1:8000/api/chat/stream
+```
+
+如果不设置该变量，客户端会使用 scheme 或代码中的默认地址。Simulator 访问本机后端时建议使用 `127.0.0.1`；真机调试时需要换成电脑在同一局域网下的 IP。
+
+语音播报接口默认根据后端地址推导为 `/api/tts`。如需单独指定：
+
+```text
+ECOMMERCE_GUIDE_TTS_URL=http://127.0.0.1:8000/api/tts
+```
+
+## 流式聊天协议
+
+客户端请求：
 
 ```http
-POST /api/v1/chat/stream
+POST /api/chat/stream
 Content-Type: application/json
 Accept: text/event-stream
 ```
 
-Request body:
+请求体包含会话、用户消息、最近商品、购物车、对比商品、收货地址和可选图片附件：
 
 ```json
 {
   "conversation_id": "uuid",
   "message": "推荐一款适合油皮的洗面奶",
+  "compare_product_ids": [],
   "attachments": [],
   "client_context": {
-    "cart_items": []
+    "cart_items": [],
+    "recent_product_ids": [],
+    "compare_product_ids": [],
+    "address": "北京市朝阳区望京SOHO T1 12层"
   }
 }
 ```
 
-Streaming events:
+客户端处理这些事件：
 
-```text
-event: token
-data: {"text":"推荐"}
+| 事件 | 客户端表现 |
+| --- | --- |
+| `token` | 追加到当前助手气泡。 |
+| `products` | 插入商品卡片轮播。 |
+| `comparison` | 插入对比卡片。 |
+| `cart` | 更新本地购物车，并显示绿色状态条。 |
+| `order` | 插入订单状态卡，支持改地址和确认。 |
+| `plan` | 插入或更新计划进度卡。 |
+| `done` | 结束 loading，触发自动语音播报。 |
 
-event: products
-data: {"items":[{"product_id":"p_beauty_011","title":"...","brand":"珊珂","category":"美妆护肤","sub_category":"洁面","base_price":52,"image_path":"1_美妆护肤/images/p_beauty_011_live.jpg","reason":"适合预算内温和清洁"}]}
+## 商品加载和骨架屏
 
-event: cart
-data: {"items":[{"product_id":"p_beauty_011","quantity":1}],"summary":"已加入购物车"}
+Planner 或后端路由确认接下来会返回商品卡时，客户端会先展示商品卡骨架屏，而不是留下空白气泡。骨架屏由 `ProductCardsSkeleton` 渲染，使用 shimmer 动效表示“商品正在加载”。如果系统设置了减少动态效果，动效会自动降级，避免影响可访问性。
 
-event: done
-data: {"message_id":"uuid"}
+## 计划进度展示
+
+复合任务会先展示完整计划，即使步骤还没跑完。每个步骤有四种主要状态：
+
+| 状态 | 展示 |
+| --- | --- |
+| `pending` | 浅灰文字，表示等待执行。 |
+| `running` | 高亮图标，表示正在执行。 |
+| `done` | 绿色完成图标和摘要。 |
+| `failed` | 警示图标和失败原因。 |
+
+这种设计让用户先知道系统准备做什么，再看到每一步的执行结果。例如“推荐跑鞋，对比最便宜的两双，然后把更适合日常跑步的加入购物车”，客户端会依次看到搜索、筛选、对比、加购四个步骤。
+
+## 商品卡片与详情
+
+商品卡片只展示后端返回的真实字段：标题、品牌、类目、价格、价格说明、图片、评分/月销和推荐理由。图片通过后端静态资源路径加载。图片加载中会显示骨架占位；加载失败时显示按类目生成的占位图标。
+
+多规格商品以 SKU 价格说明为准。客户端不会从模型回答中解析价格，也不会自己推算 SKU。
+
+商品卡支持这些交互：
+
+| 操作 | 效果 |
+| --- | --- |
+| 点击图片或标题 | 打开商品详情页。 |
+| 点击爱心 | 收藏或取消收藏，带心形反馈动效。 |
+| 点击“加购” | 加入购物车，并在允许动效时播放商品缩略图飞入购物车。 |
+| 左滑商品卡 | 显示“收藏”和“加购”快捷操作。 |
+
+## 商品详情和收藏
+
+商品详情页使用 `ProductMediaPager` 展示商品图片、推荐理由和规格信息。商品图片支持双指缩放，双击可恢复默认缩放。由于当前数据集每个商品只有一张主图，详情页的其他分页放真实内容：推荐理由、规格、评分和月销，而不是重复图片。
+
+收藏功能由 `FavouritesStore` 管理，数据保存在本地 `UserDefaults`。收藏入口在聊天页顶部左侧，显示收藏数量；收藏页为空时显示空状态，有收藏时展示商品列表。收藏列表中的商品可以打开详情、直接加购，也可以左滑移除。
+
+## 购物车和订单
+
+购物车状态由后端 `cart` 事件驱动。客户端本地保留购物车列表，并在每轮请求时传回后端，使“再加一件”“删除第二个”“下单”等自然语言操作有上下文。
+
+用户从商品卡或收藏页加购时，客户端会立即更新本地购物车，并显示状态条。允许动效时，商品缩略图会沿曲线路径飞入顶部购物车入口；如果用户开启减少动态效果，则跳过飞行动画。
+
+订单确认有两种入口：
+
+- 用户在聊天里说“下单”，后端返回待确认订单卡。
+- 用户打开订单确认页查看商品清单、金额和地址。
+
+待确认订单卡支持直接编辑收货地址。用户也可以在聊天里说“把地址改成……”，后端会刷新订单草稿，客户端再把地址同步到输入框。
+
+订单确认页支持从购物车进入，提交成功后进入订单成功页。订单成功页会播放一次彩带庆祝动画；如果系统开启减少动态效果，则不渲染该动画。
+
+## 拍照找货
+
+拍照找货页面支持两种来源：
+
+- 真机使用系统相机拍摄。
+- Simulator 或真机使用相册选择图片。
+
+图片会先在端侧压缩成 JPEG，再随聊天请求作为 base64 附件发送。用户可以补充一句描述，例如“我想要同款外套”。后端会把图片和文字一起用于图搜。
+
+## 语音输入
+
+麦克风按钮在输入框为空时出现。用户点击后，系统请求语音识别和麦克风权限，使用普通话识别服务把语音实时转成文本。识别完成后，文本会自动发送到后端。
+
+语音输入只是输入方式的变化；后端仍走同一套意图识别、检索、对比和购物车链路。
+
+## 语音播报
+
+助手回答完成后，客户端会自动播报。用户也可以点击消息气泡上的播放按钮手动重播，或在播报中停止。
+
+播报优先请求后端：
+
+```http
+POST /api/tts
+Content-Type: application/json
+Accept: audio/wav
 ```
 
-## Safety Rules
+客户端会把生成的音频按文本缓存到本地，重复播放同一句时不再请求后端。如果云端 TTS 不可用，客户端会自动退回系统语音合成。
 
-- API keys stay backend-only and must never ship in the iOS app.
-- The client only displays product fields returned by the backend or bundled
-  fixtures.
-- Price, product title, and SKU-like facts should be treated as trusted backend
-  data, not generated assistant prose.
-- Cart events with only `product_id` are shown as status updates; to replace the
-  native cart list, the backend should include full product objects in
-  `cart_items`.
-- If the backend is unavailable, the mock service keeps the app demoable.
+## 安全规则
+
+- API 密钥只放后端，不能写入 iOS 应用。
+- 客户端只展示后端返回的商品事实，不从模型正文中抽取价格或 SKU。
+- 购物车和订单金额以后端返回为准。
+- 图片上传只保留本轮请求使用，不在客户端做额外持久化。
+- 后端不可用时，可以设置 `ECOMMERCE_GUIDE_SERVICE=mock` 做离线演示，但真实验收应使用 SSE 后端。
+
+## 动效和可访问性
+
+客户端把动效集中在设计系统里，避免各页面各写一套。主要动效包括：
+
+| 动效 | 用途 |
+| --- | --- |
+| 入口动效 | 引导页元素依次进入。 |
+| 时间线插入 | 新消息、商品卡、计划卡进入对话流。 |
+| shimmer 骨架屏 | 商品卡加载时提示正在等待结果。 |
+| 按钮按压反馈 | 收藏、加购、确认等按钮更像真实控件。 |
+| 滑动操作 | 商品卡和收藏列表左滑显示快捷操作。 |
+| 飞入购物车 | 加购时显示商品缩略图飞向购物车。 |
+| 彩带庆祝 | 订单确认成功后展示一次性庆祝动画。 |
+
+所有装饰性动效都会尊重系统“减少动态效果”设置，必要时降级为淡入淡出或直接关闭。
+
+## 测试覆盖
+
+iOS 测试位于 `client/ios/EcommerceGuide/Tests/EcommerceGuideTests/`，覆盖：
+
+- SSE 事件解析。
+- 商品和购物车模型解码。
+- 语音输入流程。
+- TTS 自动播报、手动重播、停止和缓存准备。
+- 拍照附件编码。
+- 收藏持久化、移除和商品列表状态。
+- Planner 商品骨架屏、空气泡抑制和时间线更新。
+- mock 服务的离线演示流程。

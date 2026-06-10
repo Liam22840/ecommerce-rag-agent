@@ -1,4 +1,4 @@
-# 数据与检索 (Data & Retrieval)
+# 数据与检索
 
 这份讲商品数据是怎么存的，以及用户问一句话之后，系统怎么从一百个商品里找出最相关的几个。听懂意图、决定怎么回答在 [`IntentAndRouting.md`](IntentAndRouting.md)，接口和缓存在 [`BackendService.md`](BackendService.md)。
 
@@ -15,6 +15,24 @@
 > - 交给模型的事实由 `product_facts()` 生成（裁剪 + 压缩）。
 > - 库存是启动时按 `product_id` 合成播种的，不是真实仓储，详见 [`CartCheckoutAgent.md`](CartCheckoutAgent.md) 的「库存」节。
 
+## 数据流图
+
+```mermaid
+flowchart LR
+    RAW[商品 JSON 和图片] --> LOAD[商品目录加载]
+    LOAD --> FACTS[压缩商品事实]
+    LOAD --> CARD[商品卡字段]
+    LOAD --> SKU[SKU 和价格索引]
+    RAW --> CHUNK[按概要、问答、评价、图片切块]
+    CHUNK --> EMBED[多模态向量]
+    EMBED --> CACHE[向量缓存]
+    EMBED --> MILVUS[(Milvus Lite)]
+    MILVUS --> RET[向量检索]
+    FACTS --> ANSWER[模型回答依据]
+    CARD --> IOS[iOS 商品卡]
+    SKU --> CART[购物车和订单金额]
+```
+
 ## 入库前先把商品切成小块
 
 要让商品能被「按意思」搜到，得先把它切成一块块可检索的小单元，再分别转成向量。我们不是按固定字数硬切，而是**按内容的自然边界切**，每块都是一个能独立看懂的单元：
@@ -27,6 +45,13 @@
 这样切，召回和精确度都更好：用户问保湿，能命中评价里聊保湿的那块；问某个功能，能命中问答里那块。检索完再按商品去重，同一个商品只留最匹配的那一块，不会让一个商品刷屏。
 
 > **技术细节**：切块在 `ingestion/chunk.py`；每块 id 形如 `{product_id}::{suffix}`，入库后回到 `product_id` 去重。
+
+| 块类型 | 内容 | 适合解决的问题 |
+| --- | --- | --- |
+| 概要块 | 标题、类目、卖点、营销描述 | 用户说大致需求或场景时召回商品。 |
+| 问答块 | 官方问答 | 用户问参数、规格、适用人群时召回证据。 |
+| 评价块 | 用户评价和评分 | 用户问舒适、保湿、口感等体验时召回证据。 |
+| 图片块 | 商品主图 | 用户上传图片找同款或相似商品时召回。 |
 
 ## 怎么变成向量、存在哪
 
@@ -65,6 +90,22 @@
 > - 价格 / 评分重排在 `ShoppingAssistant._order_hits`，只在没有 `required_terms` / `requested_specs` 时触发。
 > - 排除词的确定性兜底是 `catalog.violates_excluded`。
 > - `retrieval_source` 四种取值：`vector` / `lexical` / `hybrid` / `none`。
+
+## 检索流程图
+
+```mermaid
+flowchart TD
+    Q[用户需求] --> INTENT[结构化条件]
+    INTENT --> VEC[向量检索]
+    INTENT --> LEX[关键词检索]
+    VEC --> FILTER1[价格、类目、品牌硬过滤]
+    LEX --> FILTER2[价格、类目、品牌硬过滤]
+    FILTER1 --> RRF[排名融合]
+    FILTER2 --> RRF
+    RRF --> EXCLUDE[排除条件后处理]
+    EXCLUDE --> SORT[低价、评分或相关度排序]
+    SORT --> TOP[返回商品卡和事实]
+```
 
 ## 不能出错的数据
 

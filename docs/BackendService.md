@@ -1,4 +1,4 @@
-# 后端服务 (Backend Service)
+# 后端服务
 
 这份讲后端这层：有哪些接口、流式输出怎么发、配置在哪、怎么让它感觉快、以及出了岔子怎么兜住不崩。听懂意图和路由在 [`IntentAndRouting.md`](IntentAndRouting.md)，数据和检索在 [`RetrievalAndData.md`](RetrievalAndData.md)。入口在 `server/app.py`。
 
@@ -6,9 +6,21 @@
 
 前端发来用户的一句话，外加一些上下文（购物车里有什么、最近展示过哪些商品、收货地址等）。后端先确认这句话不为空，然后交给导购的大脑去处理：路由器判断这句想干嘛，按结果分派给找商品 / 对比 / 购物车 / 多步任务各自的模块，最后把回答和商品卡拼成一个响应返回。带图片的请求在路由之前就先走图搜。
 
-有两种返回方式：一种是**一次性**把完整结果返回（`/api/chat`），适合简单调用；另一种是**流式**（`/api/chat/stream`），一边生成一边往外发，用户不用干等。Demo 用的是流式。
+有两种聊天返回方式：一种是**一次性**把完整结果返回（`/api/chat`），适合测试和调试；另一种是**流式**（`/api/chat/stream`），一边生成一边往外发，用户不用干等。iOS 演示应用用的是流式。语音播报单独走 `/api/tts`，输入文字后返回 `audio/wav`。
 
-> **技术细节**：核心接口 `POST /api/chat`（整包 JSON）、`POST /api/chat/stream`（SSE，另有别名 `/api/v1/chat/stream`）、`GET /api/products/{id}`（商品详情）、`GET /health`（存活探测）；商品图片由 `/assets/products` 静态目录提供。
+> **技术细节**：核心接口 `POST /api/chat`（整包 JSON）、`POST /api/chat/stream`（SSE，另有别名 `/api/v1/chat/stream`）、`GET /api/products/{id}`（商品详情）、`POST /api/tts`（语音播报）、`GET /health`（存活探测）；商品图片由 `/assets/products` 静态目录提供。
+
+## 接口清单
+
+| 接口 | 方法 | 返回 | 用途 |
+| --- | --- | --- | --- |
+| `/health` | `GET` | JSON | 存活探测。 |
+| `/api/chat` | `POST` | JSON | 一次性返回回答、商品卡、对比、购物车、订单和计划。 |
+| `/api/chat/stream` | `POST` | SSE | iOS 主链路，流式返回 token 和结构化事件。 |
+| `/api/v1/chat/stream` | `POST` | SSE | 兼容旧客户端路径。 |
+| `/api/products/{product_id}` | `GET` | JSON | 返回商品原始详情。 |
+| `/assets/products/...` | `GET` | 图片 | 商品图片静态资源。 |
+| `/api/tts` | `POST` | `audio/wav` | 将回答文本转成语音播报音频。 |
 
 ## 流式是怎么一帧帧发出来的
 
@@ -25,6 +37,31 @@
 
 > **技术细节**：内容类型 `text/event-stream; charset=utf-8`；事件名 `token / products / comparison / cart / order / plan / done`；订单帧的 `type` 是 `order_submitted`（已提交）或 `order_draft`（待确认和已取消都归这个）。
 
+## 语音播报接口
+
+`/api/tts` 接收一段文字，调用 Gemini TTS 生成音频，再返回 WAV。iOS 端会缓存同一段文本的音频；如果后端 TTS 不可用，iOS 会降级到系统语音合成。
+
+```http
+POST /api/tts
+Content-Type: application/json
+Accept: audio/wav
+```
+
+```json
+{"text":"我找到一款适合你的商品。"}
+```
+
+需要的配置：
+
+| 配置 | 说明 |
+| --- | --- |
+| `ENABLE_TTS` | 是否启用 TTS。 |
+| `TTS_API_KEY` / `GEMINI_API_KEY` | 语音模型密钥；没有时接口返回 503。 |
+| `TTS_BASE_URL` | Gemini TTS 接口地址。 |
+| `TTS_MODEL` | 默认 `gemini-3.1-flash-tts-preview`。 |
+| `TTS_VOICE` | 默认 `Sulafat`。 |
+| `TTS_TIMEOUT_SECONDS` | TTS 请求超时时间。 |
+
 ## 怎么让它感觉快
 
 一条全新的查询，本来要排队等三件慢事：模型读懂问题（约 1.2 秒）、把问题转成向量（约 1.75 秒）、模型写出回答的第一个字（约 1.1 秒），加起来用户要干等四秒多。我们用几招把这段等待藏起来：
@@ -39,6 +76,17 @@
 
 > **技术细节**：开场白 `opener_*`；预热 `ProductRetriever.prewarm_query()`；缓存 `QueryCache`（按归一化 query + top_k）和 `FilterCache`（按解析后的 `SearchFilters`），都只缓存无上下文的 `product_search`；不走缓存的判断含 `has_session_history`；缓存命中重建上下文用 `record_cached_turn`。
 
+## 缓存策略表
+
+| 场景 | 是否缓存 | 原因 |
+| --- | --- | --- |
+| 无上下文的普通推荐 | 是 | 相同问题或相同结构化条件可以直接复用。 |
+| 会话已有历史 | 否 | “便宜点”“第一个”依赖上下文，缓存容易答错。 |
+| 购物车或订单操作 | 否 | 购物车状态每轮都可能变化。 |
+| 对比决策 | 否 | 对比对象和最近展示商品强相关。 |
+| Planner 多步任务 | 否 | 中间步骤会改变购物车和订单状态。 |
+| 图片请求 | 否 | 图片内容不适合用纯文本缓存键。 |
+
 ## 出岔子了怎么办（降级容错）
 
 核心原则：某个外部能力挂了，尽量还能给个能解释的结果，而不是直接报错。
@@ -46,6 +94,7 @@
 - **向量检索挂了**（缺 key、库打不开、接口失败）：写一条警告、标记为「降级」，但关键词检索照常工作，照样能找出商品。
 - **模型挂了**：一次性返回用确定性的方式拼一个有依据的回答，流式则按固定块输出兜底文案，并说明模型暂时不可用。兜底回答仍然只基于真实命中的商品，不编。
 - **路由器挂了**：退回关键词路由。
+- **TTS 挂了**：`/api/tts` 返回 503，iOS 自动使用系统语音播报，不影响聊天和购物流程。
 
 ## 返回里有什么
 
@@ -57,4 +106,4 @@
 
 测试覆盖意图（模型 + 规则兜底）、检索（含融合）、对比、多步规划、购物车与下单、库存、收货地址、多轮记忆、排除判定、诚实回复、路由分类等。跑 `.venv/bin/python -m pytest -q` 即可。注意：Milvus 在受限沙箱里可能因为绑不上本地 socket 而失败，正常本机权限下能过。
 
-已经做完的：模型意图解析、多轮记忆、混合检索、首屏极速、两级缓存、图搜、购物车与下单、多步规划、库存、上下文路由。往后可以做的：检索精排、真实支付与物流、把会话状态落到数据库、加日志追踪和评测集。
+已经做完的：模型意图解析、多轮记忆、混合检索、首屏极速、两级缓存、图搜、购物车与下单、多步规划、库存、上下文路由、TTS 语音播报接口。往后可以做的：检索精排、真实支付与物流、把会话状态落到数据库、加日志追踪和线上评测集。

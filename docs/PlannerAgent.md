@@ -1,4 +1,4 @@
-# 多步任务 (Planner Agent)
+# 多步任务
 
 这份讲怎么处理一句话里要连着做好几件事的需求，比如：
 
@@ -32,6 +32,37 @@
 执行时每一步都实时往前端发进度，用户能看着步骤一个个完成，而不是干等到最后才出结果。
 
 > **技术细节**：调度在 `server/assistant.py`；搜索复用 `IntentParser` + `ProductRetriever`，对比复用 `ComparisonService`，加购复用 `CommerceService.apply_candidate`；逐步进度由 `_prepare_planned_task_updates` 发出。
+
+## 计划执行流程图
+
+```mermaid
+flowchart TD
+    Q[复合请求] --> ROUTER[路由到多步任务]
+    ROUTER --> PLAN[模型或规则生成计划]
+    PLAN --> CHECK[白名单和结构校验]
+    CHECK --> FRAME[先向前端发送完整计划]
+    FRAME --> STEP1[执行第 1 步]
+    STEP1 --> UPDATE1[发送 running / done]
+    UPDATE1 --> STEP2[执行第 2 步]
+    STEP2 --> UPDATE2[发送 running / done]
+    UPDATE2 --> STEPN[继续执行后续步骤]
+    STEPN --> FINAL[返回最终商品、对比、购物车或订单]
+```
+
+## 支持的步骤
+
+| 步骤 | 作用 | 事实来源 |
+| --- | --- | --- |
+| `product_search` | 搜索商品 | 正常意图解析和检索链路。 |
+| `select_products` | 从上一步结果中选择低价、高价、评分或相关商品 | 上一步真实商品卡。 |
+| `comparison` | 对比候选商品 | 对比模块和真实商品事实。 |
+| `cart_action` | 把选中商品加入购物车 | 购物车模块和 SKU 定价。 |
+| `checkout` | 生成待确认订单 | 当前购物车和订单状态。 |
+| `ask_clarification` | 缺关键信息时反问 | 路由器或 Planner 的澄清结果。 |
+
+## 前端状态展示
+
+计划一生成，后端就会先发送 `plan` 事件，前端以浅灰色展示所有步骤。执行过程中，每一步依次变成 `running`，完成后变成 `done` 并显示摘要；失败时变成 `failed`，后续步骤不会盲目继续。这样用户能先看到系统准备做什么，再看到每一步结果。
 
 ## 几个例子
 
