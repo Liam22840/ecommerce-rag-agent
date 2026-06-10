@@ -6,6 +6,7 @@ struct ChatComposerView: View {
     let isSending: Bool
     let isListening: Bool
     let cameraAction: () -> Void
+    let photoLibraryAction: () -> Void
     let voiceAction: () -> Void
     let sendAction: () -> Void
     let cancelAction: () -> Void
@@ -16,16 +17,19 @@ struct ChatComposerView: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            Button(action: cameraAction) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(GuideTheme.tertiaryInk)
-                    .frame(width: 36, height: 36)
-                    .background(GuideTheme.pageBackground)
-                    .clipShape(Circle())
+            HStack(spacing: 6) {
+                Button(action: cameraAction) {
+                    composerIcon("camera.fill")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("相机")
+
+                Button(action: photoLibraryAction) {
+                    composerIcon("photo.on.rectangle")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("从相册选择")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("相机")
 
             TextField("说出你想买什么...", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
@@ -60,6 +64,15 @@ struct ChatComposerView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(GuideTheme.panelBackground)
+    }
+
+    private func composerIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(GuideTheme.tertiaryInk)
+            .frame(width: 36, height: 36)
+            .background(GuideTheme.pageBackground)
+            .clipShape(Circle())
     }
 
     private var buttonIcon: String {
