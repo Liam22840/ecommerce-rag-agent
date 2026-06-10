@@ -509,6 +509,36 @@ final class ChatViewModelFlowTests: XCTestCase {
         XCTAssertTrue(viewModel.timeline.containsOrderStatus("订单待确认"))
     }
 
+    func testSubmittedOrderStatusClearsExistingCartItems() async throws {
+        let product = Product.fixture(id: "BAG-3", title: "Travel Bag")
+        let viewModel = ChatViewModel(
+            service: ScriptedChatService(events: [
+                .orderStatus(Order(status: "submitted", summary: "订单已提交")),
+                .done(messageID: "order-submitted")
+            ]),
+            conversationID: UUID(),
+            timeline: []
+        )
+        viewModel.addToCart(product: product)
+
+        viewModel.draftMessage = "确认"
+        viewModel.sendDraftMessage()
+        try await waitUntilNotSending(viewModel)
+
+        XCTAssertEqual(viewModel.cartItems, [])
+        XCTAssertTrue(viewModel.timeline.containsOrderStatus("订单已提交"))
+    }
+
+    func testClearCartRemovesExistingCartItems() {
+        let product = Product.fixture(id: "BAG-4", title: "Weekender Bag")
+        let viewModel = ChatViewModel(conversationID: UUID(), timeline: [])
+        viewModel.addToCart(product: product)
+
+        viewModel.clearCart()
+
+        XCTAssertEqual(viewModel.cartItems, [])
+    }
+
     func testMockChatServiceEmitsScriptedFlowWithoutNetwork() async throws {
         let service = MockChatService(tokenDelay: 0, fixtureName: "mock_products")
         let request = ChatRequest(

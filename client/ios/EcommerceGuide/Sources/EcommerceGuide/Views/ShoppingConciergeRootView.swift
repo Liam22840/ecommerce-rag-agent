@@ -77,7 +77,10 @@ public struct ShoppingConciergeRootView: View {
                 OrderReviewScreen(
                     items: viewModel.cartItems,
                     backAction: { navigate(to: .chat, forward: false) },
-                    confirmAction: { navigate(to: .orderSuccess, forward: true) }
+                    confirmAction: {
+                        viewModel.clearCart()
+                        navigate(to: .orderSuccess, forward: true)
+                    }
                 )
                 .transition(pushTransition)
             case .orderSuccess:
