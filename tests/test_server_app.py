@@ -298,8 +298,8 @@ def test_chat_endpoint_compares_explicit_product_ids_with_structured_rows():
     assert body["comparison"]["focus"] == ["保湿"]
     assert body["comparison"]["rows"]
     assert any(row["dimension"] == "保湿" for row in body["comparison"]["rows"])
-    assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
-    assert "证据不足处不会做绝对判断" in body["answer"]
+    # detail lives in the comparison card's rows now; the prose narration was dropped
+    assert "15g 体验装 89元；50g 标准装 268元" in str(body["comparison"]["rows"])
 
 
 def test_chat_endpoint_compares_recent_products_by_ordinal_reference():
@@ -328,8 +328,9 @@ def test_chat_endpoint_compares_recent_products_by_ordinal_reference():
     body = second.json()
     assert [product["product_id"] for product in body["products"]] == ["p_beauty_007", "p_beauty_022"]
     assert body["comparison"]["winner_product_id"] in {"p_beauty_007", "p_beauty_022", None}
-    assert "第一个" not in body["answer"]
-    assert "保湿" in body["answer"]
+    # the comparison conclusion lives in the card now, not a prose answer bubble
+    assert "第一个" not in str(body["comparison"])  # uses real product names, not the ordinal
+    assert any("保湿" in focus for focus in body["comparison"]["focus"])
 
 
 def test_chat_endpoint_price_comparison_recommends_the_compared_sku_not_title_spec():
@@ -359,7 +360,8 @@ def test_chat_endpoint_price_comparison_recommends_the_compared_sku_not_title_sp
     assert body["comparison"]["winner_product_id"] == "p_beauty_007"
     assert "薇诺娜 15g 体验装（89元）" in body["comparison"]["recommendation"]
     assert "薇诺娜 15g 体验装（89元）" in body["comparison"]["summary"]
-    assert "15g 体验装 89元；50g 标准装 268元" in body["answer"]
+    # the per-SKU detail now lives in the comparison card's rows, not a prose answer
+    assert "15g 体验装 89元；50g 标准装 268元" in str(body["comparison"]["rows"])
 
 
 def test_chat_endpoint_preserves_original_recommendation_context_after_comparison():
@@ -456,7 +458,6 @@ def test_chat_endpoint_compares_digital_products_with_dynamic_attribute():
     assert [product["product_id"] for product in body["products"]] == ["p_digital_007", "p_digital_018"]
     assert "音质" in body["comparison"]["focus"]
     assert any(row["dimension"] == "音质" for row in body["comparison"]["rows"])
-    assert "商品库" in body["answer"]
 
 
 def test_chat_endpoint_compares_sports_products_without_beauty_specific_logic():

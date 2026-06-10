@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from server.catalog import CatalogHit, ProductCatalog
     from server.intent import SearchFilters
-    from server.schemas import ProductComparison
 
 
 # --- Streaming lead-in ---------------------------------------------------------
@@ -540,37 +539,3 @@ def chitchat_messages(query: str, scope: str | None = None) -> list[dict[str, st
     return [{"role": "system", "content": system}, {"role": "user", "content": query}]
 
 
-# --- Comparison narration ------------------------------------------------------
-
-COMPARISON_NARRATION_SYSTEM = (
-    "你是电商导购助手。下面给你的是系统已经算好的商品对比结果，请用自然、简洁的中文把结论讲给用户，帮他做决定。\n"
-    "要求：\n"
-    "1. 不要改变“总体更推荐”的结论，也不要推翻任何逐维度结论。\n"
-    "2. 只能用给到的信息，不要编造商品库里没有的参数、功效或评价。\n"
-    "3. 价格直接照抄给的“价格”字段。\n"
-    "4. 先给结论（更推荐哪个、一句话为什么），再点一个最关键的差异即可；总共两三句话。逐维度的细节由下面的对比表展示，正文不要复述。\n"
-    "5. 纯文本中文，不要使用任何 Markdown 标记。"
-)
-
-
-def comparison_narration_messages(comparison: ProductComparison) -> list[dict[str, str]]:
-    id_to_title = {product.product_id: product.title for product in comparison.products}
-    rows = [
-        {
-            "维度": row.dimension,
-            "本维度更优": id_to_title.get(row.winner_product_id, "不明显"),
-            "各商品": {id_to_title.get(v.product_id, v.product_id): v.value for v in row.values},
-        }
-        for row in comparison.rows
-    ]
-    payload = {
-        "商品": [{"名称": product.title, "价格": product.price_label} for product in comparison.products],
-        "对比维度": comparison.focus,
-        "逐维度结论": rows,
-        "总体更推荐": id_to_title.get(comparison.winner_product_id, "无明显赢家"),
-        "系统结论": comparison.recommendation,
-    }
-    return [
-        {"role": "system", "content": COMPARISON_NARRATION_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]

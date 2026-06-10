@@ -40,11 +40,16 @@ struct ProductComparisonView: View {
                 .scrollTargetBehavior(.viewAligned)
 
                 if !comparison.rows.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(comparison.rows, id: \.dimension) { row in
-                            ComparisonDimensionRow(row: row, products: comparison.products)
+                    DisclosureGroup("查看详细对比") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(comparison.rows, id: \.dimension) { row in
+                                ComparisonDimensionRow(row: row, products: comparison.products)
+                            }
                         }
+                        .padding(.top, 6)
                     }
+                    .font(.footnote.weight(.semibold))
+                    .tint(GuideTheme.accent)
                 }
 
                 if let recommendation = comparison.recommendation, !recommendation.isEmpty {
