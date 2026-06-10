@@ -9,6 +9,21 @@ public struct ShoppingConciergeRootView: View {
     @StateObject private var viewModel: ChatViewModel
     @State private var screen: ShoppingFlowScreen = .onboarding
     @State private var forward = true
+    @State private var isCameraPresented = false
+    @State private var isPhotoLibraryPresented = false
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var stagedPhotoData: Data?
+    @State private var stagedPhotoPreview: Image?
+    @State private var stagedPhotoCaption = ""
+
+    // The Simulator has no camera, so the composer camera button falls back to the real photo picker there.
+    private var cameraAvailable: Bool {
+        #if os(iOS)
+        return UIImagePickerController.isSourceTypeAvailable(.camera)
+        #else
+        return false
+        #endif
+    }
 
     @MainActor
     public init(service: any ChatService = MockChatService()) {
@@ -26,19 +41,38 @@ public struct ShoppingConciergeRootView: View {
             case .chat:
                 ChatScreen(
                     viewModel: viewModel,
-                    cameraAction: { navigate(to: .photoSearch, forward: true) },
+                    cameraAction: { presentSystemPhotoCapture() },
+                    photoLibraryAction: { presentPhotoLibrary() },
                     checkoutAction: { navigate(to: .orderReview, forward: true) }
                 )
                 .transition(pushTransition)
-            case .photoSearch:
-                PhotoSearchScreen(
-                    backAction: { navigate(to: .chat, forward: false) },
-                    captureAction: { imageData, caption in
-                        viewModel.sendPhoto(imageData: imageData, caption: caption)
-                        navigate(to: .chat, forward: false)
-                    }
-                )
-                .transition(pushTransition)
+            case .photoReview:
+                if let stagedPhotoData {
+                    PhotoReviewScreen(
+                        imageData: stagedPhotoData,
+                        preview: stagedPhotoPreview,
+                        caption: $stagedPhotoCaption,
+                        backAction: {
+                            clearStagedPhoto()
+                            navigate(to: .chat, forward: false)
+                        },
+                        retakeAction: { presentSystemPhotoCapture() },
+                        captureAction: { imageData, caption in
+                            viewModel.sendPhoto(imageData: imageData, caption: caption)
+                            clearStagedPhoto()
+                            navigate(to: .chat, forward: false)
+                        }
+                    )
+                    .transition(pushTransition)
+                } else {
+                    ChatScreen(
+                        viewModel: viewModel,
+                        cameraAction: { presentSystemPhotoCapture() },
+                        photoLibraryAction: { presentPhotoLibrary() },
+                        checkoutAction: { navigate(to: .orderReview, forward: true) }
+                    )
+                    .transition(pushTransition)
+                }
             case .orderReview:
                 OrderReviewScreen(
                     items: viewModel.cartItems,
@@ -51,6 +85,22 @@ public struct ShoppingConciergeRootView: View {
                     navigate(to: .chat, forward: false)
                 }
                 .transition(pushTransition)
+            }
+        }
+        .cameraCover(isPresented: $isCameraPresented) { data in
+            stagePhoto(data)
+        }
+        .photosPicker(isPresented: $isPhotoLibraryPresented, selection: $pickerItem, matching: .images)
+        .onChange(of: pickerItem) { _, newItem in
+            guard let newItem else { return }
+            Task {
+                let data = try? await newItem.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    pickerItem = nil
+                    if let data {
+                        stagePhoto(data)
+                    }
+                }
             }
         }
     }
@@ -67,13 +117,42 @@ public struct ShoppingConciergeRootView: View {
             screen = target
         }
     }
+
+    private func presentSystemPhotoCapture() {
+        dismissKeyboard()
+        if cameraAvailable {
+            isCameraPresented = true
+        } else {
+            presentPhotoLibrary()
+        }
+    }
+
+    private func presentPhotoLibrary() {
+        dismissKeyboard()
+        isPhotoLibraryPresented = true
+    }
+
+    private func stagePhoto(_ data: Data) {
+        let jpeg = normalizedJPEG(data)
+        stagedPhotoData = jpeg
+        stagedPhotoPreview = platformImage(data: jpeg)
+        stagedPhotoCaption = ""
+        navigate(to: .photoReview, forward: true)
+    }
+
+    private func clearStagedPhoto() {
+        stagedPhotoData = nil
+        stagedPhotoPreview = nil
+        stagedPhotoCaption = ""
+        pickerItem = nil
+    }
 }
 
 @available(iOS 17.0, macOS 13.0, *)
 private enum ShoppingFlowScreen {
     case onboarding
     case chat
-    case photoSearch
+    case photoReview
     case orderReview
     case orderSuccess
 }
@@ -180,114 +259,75 @@ private struct OnboardingScreen: View {
 }
 
 @available(iOS 17.0, macOS 13.0, *)
-private struct PhotoSearchScreen: View {
+private struct PhotoReviewScreen: View {
+    let imageData: Data
+    let preview: Image?
+    @Binding var caption: String
     let backAction: () -> Void
+    let retakeAction: () -> Void
     let captureAction: (Data, String) -> Void
-
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var isCameraPresented = false
-    @State private var isSearching = false
-    // Once an image is picked it's staged here (not sent) so the shopper can add a caption first.
-    // The preview is decoded once at stage time, not in `body`, so typing the caption doesn't re-decode it.
-    @State private var stagedImage: Data?
-    @State private var stagedPreview: Image?
-    @State private var caption: String = ""
-
-    // The Simulator has no camera, so the shutter is only live on a real device.
-    private var cameraAvailable: Bool {
-        #if os(iOS)
-        return UIImagePickerController.isSourceTypeAvailable(.camera)
-        #else
-        return false
-        #endif
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
 
-            if let stagedImage {
-                reviewView(imageData: stagedImage)
-            } else {
-                ZStack {
-                    viewfinder
-
-                    if isSearching {
-                        searchingOverlay
-                    }
+            VStack(spacing: 18) {
+                if let image = preview {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 430)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(maxWidth: .infinity, maxHeight: 430)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                controls
+                TextField("想找什么？例如：我想要同款外套", text: $caption)
+                    .textFieldStyle(.plain)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack(spacing: 14) {
+                    Button {
+                        dismissKeyboard()
+                        retakeAction()
+                    } label: {
+                        Text("重拍")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        dismissKeyboard()
+                        captureAction(imageData, caption)
+                    } label: {
+                        Text("发送")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(GuideTheme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .keyboardDismissToolbar()
-        .cameraCover(isPresented: $isCameraPresented) { data in
-            stage(data)
-        }
-    }
-
-    // Stage a picked/captured photo: normalise to JPEG and decode the preview once (not on each render).
-    private func stage(_ data: Data) {
-        let jpeg = normalizedJPEG(data)
-        stagedImage = jpeg
-        stagedPreview = platformImage(data: jpeg)
-    }
-
-    // After a photo is chosen: preview it, let the shopper type an optional caption ("我想要同款外套"),
-    // and only send on tap so the image and the words go together.
-    private func reviewView(imageData: Data) -> some View {
-        VStack(spacing: 18) {
-            if let image = stagedPreview {
-                image
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 360)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-
-            TextField("想找什么？例如：我想要同款外套", text: $caption)
-                .textFieldStyle(.plain)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            HStack(spacing: 14) {
-                Button {
-                    stagedImage = nil
-                    stagedPreview = nil
-                    caption = ""
-                    pickerItem = nil
-                } label: {
-                    Text("重选")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    dismissKeyboard()
-                    captureAction(imageData, caption)
-                } label: {
-                    Text("发送")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(GuideTheme.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
     }
 
     private var header: some View {
@@ -303,7 +343,7 @@ private struct PhotoSearchScreen: View {
 
             Spacer()
 
-            Text("拍照找同款")
+            Text("确认照片")
                 .font(.headline.weight(.semibold))
 
             Spacer()
@@ -313,91 +353,6 @@ private struct PhotoSearchScreen: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-    }
-
-    private var viewfinder: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.white.opacity(0.5), lineWidth: 2)
-
-                ForEach(PhotoCorner.allCases, id: \.self) { corner in
-                    PhotoSearchCorner(corner: corner)
-                        .stroke(GuideTheme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                }
-            }
-            .aspectRatio(3.0 / 4.0, contentMode: .fit)
-            .frame(maxWidth: 280)
-
-            Text("将商品对准框内")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.62))
-                .padding(.top, 14)
-        }
-        .padding(.horizontal, 48)
-    }
-
-    private var searchingOverlay: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .controlSize(.large)
-                .tint(GuideTheme.accent)
-
-            Text("正在识别商品...")
-                .font(.subheadline.weight(.medium))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.62))
-    }
-
-    private var controls: some View {
-        HStack(spacing: 36) {
-            // Pick an existing photo (works on Simulator and device).
-            PhotosPicker(selection: $pickerItem, matching: .images) {
-                Image(systemName: "photo.on.rectangle")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 54, height: 54)
-                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .disabled(isSearching)
-            .accessibilityLabel("从相册选择商品图片")
-
-            // Shutter: opens the live camera (device only; dimmed where there's no camera).
-            Button {
-                guard cameraAvailable, !isSearching else { return }
-                isCameraPresented = true
-            } label: {
-                Circle()
-                    .fill(GuideTheme.accent)
-                    .frame(width: 56, height: 56)
-                    .padding(6)
-                    .background(Color.white, in: Circle())
-                    .overlay { Circle().stroke(Color.white.opacity(0.82), lineWidth: 4) }
-                    .opacity(cameraAvailable ? 1 : 0.35)
-            }
-            .buttonStyle(.plain)
-            .disabled(!cameraAvailable || isSearching)
-            .accessibilityLabel("拍照")
-
-            // Keeps the shutter centred opposite the album button.
-            Color.clear.frame(width: 54, height: 54)
-        }
-        .padding(.top, 20)
-        .padding(.bottom, 32)
-        .onChange(of: pickerItem) { newItem in
-            guard let newItem else { return }
-            isSearching = true
-            Task {
-                let data = try? await newItem.loadTransferable(type: Data.self)
-                await MainActor.run {
-                    isSearching = false
-                    if let data {
-                        stage(data)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -483,45 +438,6 @@ private struct CameraPicker: UIViewControllerRepresentable {
     }
 }
 #endif
-
-@available(iOS 17.0, macOS 13.0, *)
-private enum PhotoCorner: CaseIterable {
-    case topLeft
-    case topRight
-    case bottomLeft
-    case bottomRight
-}
-
-@available(iOS 17.0, macOS 13.0, *)
-private struct PhotoSearchCorner: Shape {
-    let corner: PhotoCorner
-
-    func path(in rect: CGRect) -> Path {
-        let length: CGFloat = 24
-        var path = Path()
-
-        switch corner {
-        case .topLeft:
-            path.move(to: CGPoint(x: rect.minX, y: rect.minY + length))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.minX + length, y: rect.minY))
-        case .topRight:
-            path.move(to: CGPoint(x: rect.maxX - length, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + length))
-        case .bottomLeft:
-            path.move(to: CGPoint(x: rect.minX, y: rect.maxY - length))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.minX + length, y: rect.maxY))
-        case .bottomRight:
-            path.move(to: CGPoint(x: rect.maxX - length, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - length))
-        }
-
-        return path
-    }
-}
 
 @available(iOS 17.0, macOS 13.0, *)
 private struct OrderReviewScreen: View {

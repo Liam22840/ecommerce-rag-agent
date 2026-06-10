@@ -11,6 +11,7 @@ public struct ChatScreen: View {
     @State private var flight: CartFlight?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let cameraAction: () -> Void
+    private let photoLibraryAction: () -> Void
     private let checkoutAction: () -> Void
 
     private static let skeletonID = "products-skeleton"
@@ -19,6 +20,7 @@ public struct ChatScreen: View {
     public init() {
         _viewModel = StateObject(wrappedValue: ChatViewModel())
         self.cameraAction = {}
+        self.photoLibraryAction = {}
         self.checkoutAction = {}
     }
 
@@ -26,10 +28,12 @@ public struct ChatScreen: View {
     public init(
         viewModel: ChatViewModel,
         cameraAction: @escaping () -> Void = {},
+        photoLibraryAction: @escaping () -> Void = {},
         checkoutAction: @escaping () -> Void = {}
     ) {
         _viewModel = StateObject(wrappedValue: viewModel)
         self.cameraAction = cameraAction
+        self.photoLibraryAction = photoLibraryAction
         self.checkoutAction = checkoutAction
     }
 
@@ -117,6 +121,7 @@ public struct ChatScreen: View {
                     isSending: viewModel.isSending,
                     isListening: viewModel.isListening,
                     cameraAction: cameraAction,
+                    photoLibraryAction: photoLibraryAction,
                     voiceAction: { viewModel.toggleVoiceInput() },
                     sendAction: { viewModel.sendDraftMessage() },
                     cancelAction: { viewModel.cancelStreaming() }
