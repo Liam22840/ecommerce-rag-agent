@@ -129,6 +129,30 @@ def test_product_image_asset_endpoint():
     assert resp.content
 
 
+def test_tts_endpoint_returns_wav_audio():
+    class FakeTTSClient:
+        def synthesize_wav(self, text: str) -> bytes:
+            assert text == "你好"
+            return b"RIFFxxxxWAVEfmt data"
+
+    settings = Settings(
+        dataset_root=DATASET_ROOT,
+        chat_api_key=None,
+        embedding_api_key=None,
+        enable_vector_search=False,
+        enable_llm=False,
+        enable_query_cache=False,
+        enable_tts=True,
+    )
+    client = TestClient(create_app(settings=settings, tts_client=FakeTTSClient()))
+
+    resp = client.post("/api/tts", json={"text": "你好"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/wav"
+    assert resp.content.startswith(b"RIFF")
+
+
 def test_stream_endpoint_uses_sse_events():
     client = _client()
 

@@ -57,15 +57,26 @@ class Settings:
     # text, so paraphrases of one intent share an entry. Complements the exact query cache.
     enable_filter_cache: bool = True
     filter_cache_max_entries: int = 500
+    enable_tts: bool = True
+    tts_api_key: str | None = None
+    tts_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    tts_model: str = "gemini-3.1-flash-tts-preview"
+    tts_voice: str = "Sulafat"
+    tts_timeout_seconds: float = 30.0
 
     @classmethod
     def load(cls) -> "Settings":
         load_dotenv(PROJECT_ROOT / ".env")
+        chat_api_key = _first_optional_env("CHAT_API_KEY", "ARK_CHAT_API_KEY")
         return cls(
-            chat_api_key=_optional_env("CHAT_API_KEY"),
+            chat_api_key=chat_api_key,
             embedding_api_key=_optional_env("ARK_EMBEDDING_API_KEY"),
-            chat_base_url=os.environ.get("CHAT_BASE_URL", cls.chat_base_url),
-            chat_model=os.environ.get("CHAT_MODEL", cls.chat_model),
+            chat_base_url=_first_env(
+                cls.chat_base_url,
+                "CHAT_BASE_URL",
+                "ARK_CHAT_BASE_URL",
+            ),
+            chat_model=_first_env(cls.chat_model, "CHAT_MODEL", "ARK_CHAT_MODEL"),
             embedding_base_url=os.environ.get(
                 "ARK_EMBEDDING_BASE_URL", cls.embedding_base_url
             ),
@@ -97,6 +108,18 @@ class Settings:
             filter_cache_max_entries=int(
                 os.environ.get("RAG_FILTER_CACHE_MAX", cls.filter_cache_max_entries)
             ),
+            enable_tts=_bool_env("ENABLE_TTS", cls.enable_tts),
+            tts_api_key=_first_optional_env("TTS_API_KEY", "GEMINI_API_KEY") or chat_api_key,
+            tts_base_url=_first_env(
+                cls.tts_base_url,
+                "TTS_BASE_URL",
+                "GEMINI_TTS_BASE_URL",
+            ),
+            tts_model=os.environ.get("TTS_MODEL", cls.tts_model),
+            tts_voice=os.environ.get("TTS_VOICE", cls.tts_voice),
+            tts_timeout_seconds=float(
+                os.environ.get("TTS_TIMEOUT_SECONDS", cls.tts_timeout_seconds)
+            ),
         )
 
 
@@ -105,6 +128,18 @@ def _optional_env(name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value
+
+
+def _first_optional_env(*names: str) -> str | None:
+    for name in names:
+        value = _optional_env(name)
+        if value is not None:
+            return value
+    return None
+
+
+def _first_env(default: str, *names: str) -> str:
+    return _first_optional_env(*names) or default
 
 
 def _bool_env(name: str, default: bool) -> bool:
