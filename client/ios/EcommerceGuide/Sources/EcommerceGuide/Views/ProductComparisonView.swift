@@ -40,11 +40,16 @@ struct ProductComparisonView: View {
                 .scrollTargetBehavior(.viewAligned)
 
                 if !comparison.rows.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(comparison.rows, id: \.dimension) { row in
-                            ComparisonDimensionRow(row: row, products: comparison.products)
+                    DisclosureGroup("查看详细对比") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(comparison.rows, id: \.dimension) { row in
+                                ComparisonDimensionRow(row: row, products: comparison.products)
+                            }
                         }
+                        .padding(.top, 6)
                     }
+                    .font(.footnote.weight(.semibold))
+                    .tint(GuideTheme.accent)
                 }
 
                 if let recommendation = comparison.recommendation, !recommendation.isEmpty {
@@ -125,6 +130,10 @@ private struct ProductComparisonCard: View {
 
             ProductProsConsView(product: product)
 
+            // Pin the badge and button to the bottom so every card lines them up,
+            // even though only the winner shows the 推荐 badge.
+            Spacer(minLength: 8)
+
             if isWinner {
                 Label("推荐", systemImage: "checkmark.seal.fill")
                     .font(.caption2.weight(.semibold))
@@ -147,7 +156,8 @@ private struct ProductComparisonCard: View {
             .padding(.top, 2)
         }
         .padding(10)
-        .frame(width: 180, alignment: .topLeading)
+        .frame(width: 180)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(isWinner ? GuideTheme.accentSoft : GuideTheme.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: GuideTheme.cardRadius, style: .continuous))
         .overlay {

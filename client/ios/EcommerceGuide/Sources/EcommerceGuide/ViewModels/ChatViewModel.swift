@@ -21,6 +21,12 @@ public final class ChatViewModel: ObservableObject {
 
     public let conversationID: UUID
 
+    /// Each order update appends a fresh card, so only the most recent one reflects the live order.
+    /// Earlier order cards are history and must not re-fire 确认 / 取消.
+    public var latestOrderTimelineID: UUID? {
+        timeline.last { if case .orderStatus = $0 { return true }; return false }?.id
+    }
+
     private let service: any ChatService
     private let speechRecognitionService: any SpeechRecognitionService
     private let textToSpeechService: any TextToSpeechService

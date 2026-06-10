@@ -25,7 +25,6 @@ from server.prompts import (
     CLARIFY_FALLBACK,
     build_messages,
     chitchat_messages,
-    comparison_narration_messages,
     exclusion_judge_messages,
     opener_continuation,
     opener_lead,
@@ -761,10 +760,12 @@ class ShoppingAssistant:
             recent_product_ids=recent_product_ids,
         )
         products = comparison.products
-        grounded_answer = self._comparison_answer(comparison)
-        # Let the LLM narrate the (deterministic) comparison result. The template above is
-        # the fallback. No messages for a clarification, there is nothing to narrate.
-        messages = [] if comparison.clarification else comparison_narration_messages(comparison)
+        # The comparison card already shows the summary, the per-dimension rows and the
+        # recommendation, so a separate prose narration just repeats it. Leave the answer empty —
+        # the client drops the empty bubble and keeps only the opener. A clarification has no card,
+        # so it still speaks.
+        grounded_answer = comparison.clarification or ""
+        messages: list[dict[str, str]] = []
         self._remember_shown_products(session_id, products)
         if session_id and comparison.winner_product_id:
             self._session(session_id).last_winner_id = comparison.winner_product_id
@@ -1386,23 +1387,6 @@ class ShoppingAssistant:
             }
             for turn in turns
         ]
-
-    def _comparison_answer(self, comparison: ProductComparison) -> str:
-        if comparison.clarification:
-            return comparison.clarification
-        lines = [comparison.summary]
-        for row in comparison.rows:
-            values = []
-            for value in row.values:
-                title = next(
-                    (product.title for product in comparison.products if product.product_id == value.product_id),
-                    value.product_id,
-                )
-                values.append(f"{title}：{value.value}")
-            lines.append(f"- {row.dimension}：{'；'.join(values)}。{row.verdict}")
-        lines.append(comparison.recommendation)
-        lines.append("以上对比仅使用当前商品库的结构化字段、描述、问答和评价证据；证据不足处不会做绝对判断。")
-        return "\n".join(lines)
 
     def _grounded_answer(
         self,

@@ -101,7 +101,7 @@ class ComparisonService:
         asked = {spec.label for spec in focus_specs if spec.asked}
         price_led = any(spec.label == "价格" for spec in focus_specs)
         winner_product_id, recommendation = self._recommend(products, rows, filters, asked, price_led)
-        summary = self._summary(products, focus_specs, winner_product_id, recommendation, filters)
+        summary = self._summary(products, focus_specs, filters)
         return ProductComparison(
             products=cards,
             focus=[spec.label for spec in focus_specs],
@@ -434,19 +434,17 @@ class ComparisonService:
         self,
         products: list[dict[str, Any]],
         specs: list[DimensionSpec],
-        winner_product_id: str | None,
-        recommendation: str,
         filters: SearchFilters,
     ) -> str:
+        # Just the comparison basis. The verdict lives in the recommendation field and the
+        # winner badge, so repeating it here as a 结论 only doubles up the same sentence.
         price_priority = any(spec.label == "价格" for spec in specs)
         names = " vs ".join(
             self._price_subject(product["product_id"], products, filters) if price_priority else product["title"]
             for product in products
         )
         focus = "、".join(spec.label for spec in specs) or "商品库证据"
-        if winner_product_id:
-            return f"已按{focus}对比：{names}。结论：{recommendation}"
-        return f"已按{focus}对比：{names}。结论：{recommendation}"
+        return f"已按{focus}对比：{names}。"
 
     @staticmethod
     def _title(product_id: str, products: list[dict[str, Any]]) -> str:

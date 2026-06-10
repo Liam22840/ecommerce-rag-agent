@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from server.catalog import CatalogHit, ProductCatalog
     from server.intent import SearchFilters
-    from server.schemas import ProductComparison
 
 
 # --- Streaming lead-in ---------------------------------------------------------
@@ -68,11 +67,9 @@ def photo_opener() -> str:
 SYSTEM_PROMPT = """你是一个电商智能导购助手。
 你只能依据提供的商品事实回答，不能编造商品、价格、库存、优惠券、功效或参数。
 如果候选商品不足以满足用户条件，要明确说明没有找到完全匹配项，并给出可继续筛选的问题。
-回答要简洁、可执行，优先说明为什么推荐，以及和用户条件的对应关系。
-商品名、品牌、类目、规格、SKU 和价格都必须使用商品事实中的结构化字段。
-价格必须优先照抄 price_label；需要解释多规格时照抄 price_summary。
-禁止把 title 里的规格和 lowest_price 混在一起表达；如果 title 中的规格不同于 lowest_price_sku，只能说“xx元起（最低价SKU）”，并列出 SKU 价格明细。
-库存按商品事实里的 available 字段如实说明：available 为 0 表示已售罄，不要把售罄的商品作为首选推荐；库存偏低时可点明“仅剩 N 件”。不得编造或推测库存数字。
+回答要短。每款商品的价格、规格和库存会由商品卡单独展示，所以正文不要复述这些细节：每款最多用一句话点出它最贴合用户需求的亮点，不要逐条罗列 SKU、各规格价格或库存数字。整段回答控制在三四句话以内。
+商品名、品牌、价格只能照抄商品事实里的结构化字段，不能编造或改写。确实需要在正文提到价格时，只说一个起价（照抄 price_label 里的“xx元起”），不展开多规格价格明细。
+available 为 0 的商品已售罄，不要作为首选推荐；其余库存数字交给商品卡，正文不必报。
 当 result_status 不是 ok 时，按字段含义如实说明，不要把上一轮已展示的商品当作新推荐再列一遍；no_cheaper 时点出 context.cheapest_shown 作为当前最低价。这些情况都顺势建议换品类或调整条件。
 当 context.unmet_terms 非空时，商品库里没有明确标注这些属性或规格的商品：要如实说明（以下只是最接近的几款），并且不能声称某个候选具备它的商品事实里没有体现的属性或规格。
 用纯文本回答，不要使用任何 Markdown 标记（不要出现 **、*、#、`、列表符号等）；需要分条时直接用“1. 2. 3.”和换行。
@@ -100,9 +97,11 @@ def build_messages(
         "candidate_products": facts,
         "result_status": result_status,
         "instruction": (
-            f"请基于候选商品回答。候选商品共{len(facts)}款，逐一说明候选商品，不要额外推荐不存在的商品。"
+            f"请基于候选商品回答。候选商品共{len(facts)}款，最多推荐3款，不要额外推荐不存在的商品。"
+            "正文务必简短（三四句话以内），每款一句话点出亮点即可。"
+            "价格、规格、库存这些细节由商品卡展示，正文不要逐条罗列 SKU 价格明细或库存数字。"
             "库存只按每个商品的 available 字段如实说明（available 为 0 即已售罄），不要编造库存数字。"
-            "所有商品事实和价格必须来自 candidate_products，不允许自行推断或改写 SKU 价格。"
+            "不要提到不存在的优惠或平台活动。所有商品事实和价格必须来自 candidate_products，不允许自行推断或改写 SKU 价格。"
         ),
     }
     if context:
@@ -543,38 +542,3 @@ def chitchat_messages(query: str, scope: str | None = None) -> list[dict[str, st
         system += "\n本店在售品类：" + scope + "。"
     return [{"role": "system", "content": system}, {"role": "user", "content": query}]
 
-
-# --- Comparison narration ------------------------------------------------------
-
-COMPARISON_NARRATION_SYSTEM = (
-    "你是电商导购助手。下面给你的是系统已经算好的商品对比结果，请用自然、简洁的中文把结论讲给用户，帮他做决定。\n"
-    "要求：\n"
-    "1. 不要改变“总体更推荐”的结论，也不要推翻任何逐维度结论。\n"
-    "2. 只能用给到的信息，不要编造商品库里没有的参数、功效或评价。\n"
-    "3. 价格直接照抄给的“价格”字段。\n"
-    "4. 先给结论（更推荐哪个、为什么），再点出主要差异；2 到 4 句话即可。\n"
-    "5. 纯文本中文，不要使用任何 Markdown 标记。"
-)
-
-
-def comparison_narration_messages(comparison: ProductComparison) -> list[dict[str, str]]:
-    id_to_title = {product.product_id: product.title for product in comparison.products}
-    rows = [
-        {
-            "维度": row.dimension,
-            "本维度更优": id_to_title.get(row.winner_product_id, "不明显"),
-            "各商品": {id_to_title.get(v.product_id, v.product_id): v.value for v in row.values},
-        }
-        for row in comparison.rows
-    ]
-    payload = {
-        "商品": [{"名称": product.title, "价格": product.price_label} for product in comparison.products],
-        "对比维度": comparison.focus,
-        "逐维度结论": rows,
-        "总体更推荐": id_to_title.get(comparison.winner_product_id, "无明显赢家"),
-        "系统结论": comparison.recommendation,
-    }
-    return [
-        {"role": "system", "content": COMPARISON_NARRATION_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
