@@ -15,6 +15,10 @@ public struct ChatScreen: View {
     private let checkoutAction: () -> Void
 
     private static let skeletonID = "products-skeleton"
+    // A fixed invisible element pinned at the very end of the list. Scrolling to a stable id always
+    // lands at the true bottom, unlike scrolling to the last timeline item — whose id changes every
+    // turn and is often a just-inserted empty bubble, which makes LazyVStack jump to a wrong estimate.
+    private static let bottomAnchorID = "chat-bottom-anchor"
 
     @MainActor
     public init() {
@@ -63,6 +67,7 @@ public struct ChatScreen: View {
                             ForEach(viewModel.timeline) { item in
                                 ChatTimelineItemView(
                                     item: item,
+                                    isOrderActionable: item.id == viewModel.latestOrderTimelineID && !viewModel.isSending,
                                     shippingAddress: $viewModel.shippingAddress,
                                     retryAction: { viewModel.retryLastMessage() },
                                     productAction: { selectedProduct = $0 },
@@ -81,6 +86,10 @@ public struct ChatScreen: View {
                                     .id(Self.skeletonID)
                                     .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
                             }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.bottomAnchorID)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
@@ -92,13 +101,9 @@ public struct ChatScreen: View {
                     .background(GuideTheme.pageBackground)
                     .dismissesKeyboardOnScroll()
                     .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
-                    .onChange(of: viewModel.timeline) { _, items in
-                        guard let id = items.last?.id else {
-                            return
-                        }
-
+                    .onChange(of: viewModel.timeline) { _, _ in
                         withAnimation(GuideMotion.scroll) {
-                            proxy.scrollTo(id, anchor: .bottom)
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
                     }
                     .onChange(of: viewModel.isAwaitingCards) { _, awaiting in
@@ -107,7 +112,7 @@ public struct ChatScreen: View {
                         }
 
                         withAnimation(GuideMotion.scroll) {
-                            proxy.scrollTo(Self.skeletonID, anchor: .bottom)
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
@@ -196,6 +201,7 @@ public struct ChatScreen: View {
 @available(iOS 17.0, macOS 13.0, *)
 private struct ChatTimelineItemView: View {
     let item: ChatTimelineItem
+    let isOrderActionable: Bool
     @Binding var shippingAddress: String
     let retryAction: () -> Void
     let productAction: (Product) -> Void
@@ -231,7 +237,7 @@ private struct ChatTimelineItemView: View {
         case .cartStatus(_, let text):
             CartStatusView(text: text)
         case .orderStatus(_, let order):
-            OrderCardView(order: order, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
+            OrderCardView(order: order, isActionable: isOrderActionable, shippingAddress: $shippingAddress, replyAction: orderReplyAction)
         case .error(_, let message):
             ErrorRetryView(message: message, retryAction: retryAction)
         }
