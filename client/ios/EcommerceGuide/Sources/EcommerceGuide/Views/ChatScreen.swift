@@ -15,6 +15,10 @@ public struct ChatScreen: View {
     private let checkoutAction: () -> Void
 
     private static let skeletonID = "products-skeleton"
+    // A fixed invisible element pinned at the very end of the list. Scrolling to a stable id always
+    // lands at the true bottom, unlike scrolling to the last timeline item — whose id changes every
+    // turn and is often a just-inserted empty bubble, which makes LazyVStack jump to a wrong estimate.
+    private static let bottomAnchorID = "chat-bottom-anchor"
 
     @MainActor
     public init() {
@@ -82,6 +86,10 @@ public struct ChatScreen: View {
                                     .id(Self.skeletonID)
                                     .transition(GuideMotion.timelineInsertion(reduceMotion: reduceMotion))
                             }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.bottomAnchorID)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
@@ -93,13 +101,9 @@ public struct ChatScreen: View {
                     .background(GuideTheme.pageBackground)
                     .dismissesKeyboardOnScroll()
                     .simultaneousGesture(TapGesture().onEnded { dismissKeyboard() })
-                    .onChange(of: viewModel.timeline) { _, items in
-                        guard let id = items.last?.id else {
-                            return
-                        }
-
+                    .onChange(of: viewModel.timeline) { _, _ in
                         withAnimation(GuideMotion.scroll) {
-                            proxy.scrollTo(id, anchor: .bottom)
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
                     }
                     .onChange(of: viewModel.isAwaitingCards) { _, awaiting in
@@ -108,7 +112,7 @@ public struct ChatScreen: View {
                         }
 
                         withAnimation(GuideMotion.scroll) {
-                            proxy.scrollTo(Self.skeletonID, anchor: .bottom)
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
