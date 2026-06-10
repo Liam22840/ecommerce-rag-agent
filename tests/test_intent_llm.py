@@ -83,6 +83,12 @@ def test_merge_keeps_rule_specs_when_llm_drops_them():
     assert f.prefer_low_price is True          # OR with rule
 
 
+def test_llm_requested_count_is_validated_and_merged():
+    resp = json.dumps({"sub_category": "智能手机", "requested_count": 2})
+    f = _parser(resp).parse("推荐1个苹果手机1个安卓手机")
+    assert f.requested_count == 2
+
+
 def test_merge_validated_llm_category_survives_unmapped_subcategory():
     resp = json.dumps({"category": "美妆护肤", "sub_category": "唇釉"})
     f = _parser(resp).parse("推荐口红")

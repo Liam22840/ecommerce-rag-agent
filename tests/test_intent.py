@@ -119,6 +119,27 @@ def test_parses_requested_specs():
     assert filters.requested_specs == ["50g"]
 
 
+def test_parses_explicit_requested_product_count():
+    assert _parser().parse("推荐一款适合油皮的洗面奶").requested_count == 1
+    assert _parser().parse("给我五个鞋子").requested_count == 5
+    assert _parser().parse("推荐1个苹果手机1个安卓手机").requested_count == 2
+    assert _parser().parse("recommend me 1 apple phone 1 android phone").requested_count == 2
+    assert _parser().parse("recommend me 1 apple and 1 android phone").requested_count == 2
+    assert _parser().parse("recommend me one apple phone one android phone").requested_count == 2
+
+
+def test_parses_generic_shoes_as_shoe_type():
+    filters = _parser().parse("给我五个鞋子")
+
+    assert filters.category == "服饰运动"
+    assert filters.sub_category is None
+    assert "运动鞋" in filters.required_terms
+
+
+def test_chinese_ge_can_be_an_indefinite_article_not_a_count():
+    assert _parser().parse("推荐一个适合敏感肌的保湿护肤品").requested_count is None
+
+
 def test_parses_min_price_above_and_not_below():
     assert _parser().parse("1000元以上的手机").min_price == 1000.0
     assert _parser().parse("不低于500的耳机").min_price == 500.0

@@ -97,9 +97,11 @@ def build_messages(
         "candidate_products": facts,
         "result_status": result_status,
         "instruction": (
-            "请基于候选商品回答，最多推荐3款，正文务必简短（三四句话以内）。"
-            "价格、规格、库存这些细节由商品卡展示，正文不要逐条罗列 SKU 价格明细或库存数字，每款一句话点出亮点即可。"
-            "不要提到不存在的优惠或平台活动。所有价格必须来自 candidate_products，不允许自行推断或改写。"
+            f"请基于候选商品回答。候选商品共{len(facts)}款，最多推荐3款，不要额外推荐不存在的商品。"
+            "正文务必简短（三四句话以内），每款一句话点出亮点即可。"
+            "价格、规格、库存这些细节由商品卡展示，正文不要逐条罗列 SKU 价格明细或库存数字。"
+            "库存只按每个商品的 available 字段如实说明（available 为 0 即已售罄），不要编造库存数字。"
+            "不要提到不存在的优惠或平台活动。所有商品事实和价格必须来自 candidate_products，不允许自行推断或改写 SKU 价格。"
         ),
     }
     if context:
@@ -205,28 +207,30 @@ INTENT_SYSTEM_PROMPT = (
     "6. sort_by：用户要便宜/低价优先→price_asc；要评分高/口碑好→rating_desc；要贵/高端优先→price_desc；否则→relevance。\n"
     "7. required_terms 放明确卖点词（如 敏感肌、保湿、防水）；requested_specs 放容量规格（如 50g、256GB、500ml）。"
     "价格/档次类形容词（高端、高级、便宜、平价、性价比、入门等）只反映在 sort_by/prefer_low_price，不要放进 required_terms。\n"
-    "8. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品，用其原话里最具体的指代（带型号/系列，如「理肤泉特安」而非只写「理肤泉」）；否则填 []。\n"
-    "9. 列表字段没内容返回 []，标量没内容返回 null。\n"
-    "10. 给了 recent_turns（最近几轮的解析结果，以及当时展示过的商品和价格）时，如果本轮是承接上文的追问"
+    "8. requested_count：用户明确说要几款/几个不同商品时填数量；分别点名多个槽位时取总数（如「1个苹果手机1个安卓手机」→2）。没有明确数量填 null。"
+    "注意这不是购物数量，不能把「买两件同一商品」当成 requested_count。\n"
+    "9. compare_refs：仅当 intent_type=comparison 时，填用户点名要对比的商品，用其原话里最具体的指代（带型号/系列，如「理肤泉特安」而非只写「理肤泉」）；否则填 []。\n"
+    "10. 列表字段没内容返回 []，标量没内容返回 null。\n"
+    "11. 给了 recent_turns（最近几轮的解析结果，以及当时展示过的商品和价格）时，如果本轮是承接上文的追问"
     "（改写、追加条件、对刚才结果提相对要求、或指回之前提过的商品），就结合 recent_turns 把本轮理解成具体筛选条件："
     "继承仍然适用的 category/sub_category/required_terms，并把相对要求落到已有字段上（例如想更便宜，就把 max_price 设到"
     " recent_turns 里已展示的最低价以下）。只能用 recent_turns 里真实出现过的信息，不要编造；若本轮是新品类或无关话题，就忽略 recent_turns。"
     "本轮若点名了新的品牌或品类（哪怕没明说品类，只要品牌明显属于另一个类目，如从跑步鞋转到“巴黎欧莱雅”），视为新话题，不要继承上一轮的 category/sub_category。\n"
-    "11. rewritten_query：本轮依赖上文时，结合 recent_turns 改写成一句可独立检索的完整中文查询；本轮本身已完整，或属于 chitchat/comparison 时填 null。\n"
-    "12. exclude_seen：仅当用户明确要换新、看不一样的（如“换一批”“还有别的吗”“不要重复的”“看看其它的”）时设为 true。"
+    "12. rewritten_query：本轮依赖上文时，结合 recent_turns 改写成一句可独立检索的完整中文查询；本轮本身已完整，或属于 chitchat/comparison 时填 null。\n"
+    "13. exclude_seen：仅当用户明确要换新、看不一样的（如“换一批”“还有别的吗”“不要重复的”“看看其它的”）时设为 true。"
     "只是追加或修改筛选条件（如“不要X牌的”“便宜点的”“再要保湿的”）不是换新，应为 false——这类要保留仍然符合条件的已展示商品。\n"
-    "13. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列，最近展示的排在最前）。"
+    "14. session_products 是本轮会话里展示过的商品（含 id，按展示先后排列，最近展示的排在最前）。"
     "用户指回、或针对之前看过的某个/某些商品提问（再看看它，或问它的品牌、价格、参数、规格、优缺点，"
     "如“第三个是什么牌子”“介绍下第二个”“它怎么样”“最后一个多少钱”）时，intent_type=product_search，"
     "定位到对应商品并把其 id 原样填进 recall_product_ids；否则填 []。针对已展示商品的这类提问不是 chitchat。\n"
-    "14. intent_type=comparison 且用户要对比的是 session_products 里展示过的商品时，定位到对应商品，把要对比的 id（通常两个）"
+    "15. intent_type=comparison 且用户要对比的是 session_products 里展示过的商品时，定位到对应商品，把要对比的 id（通常两个）"
     "原样填进 compare_product_ids。用序号指代（如「第一个」）时按 session_products 顺序数（第一个=列表最前=最近展示的第一款），"
     "定位到对应 id；定位不到具体 id 的点名商品仍走 compare_refs；否则 compare_product_ids 填 []。\n"
     '只输出如下 JSON：{"intent_type":"product_search|comparison|chitchat",'
     '"category":string|null,"sub_category":string|null,"brand":string|null,'
     '"min_price":number|null,"max_price":number|null,'
     '"sort_by":"relevance|price_asc|price_desc|rating_desc","prefer_low_price":boolean,'
-    '"required_terms":[string],"requested_specs":[string],'
+    '"required_terms":[string],"requested_specs":[string],"requested_count":number|null,'
     '"excluded_brands":[string],"excluded_terms":[string],"compare_refs":[string],'
     '"rewritten_query":string|null,"exclude_seen":boolean,"recall_product_ids":[string],'
     '"compare_product_ids":[string]}'
@@ -537,5 +541,4 @@ def chitchat_messages(query: str, scope: str | None = None) -> list[dict[str, st
     if scope:
         system += "\n本店在售品类：" + scope + "。"
     return [{"role": "system", "content": system}, {"role": "user", "content": query}]
-
 

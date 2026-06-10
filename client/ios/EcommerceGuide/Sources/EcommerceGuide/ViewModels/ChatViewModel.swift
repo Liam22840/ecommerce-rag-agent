@@ -145,6 +145,10 @@ public final class ChatViewModel: ObservableObject {
         cartItems.removeAll { $0.product.id == productID }
     }
 
+    public func clearCart() {
+        cartItems = []
+    }
+
     public func cancelStreaming() {
         streamTask?.cancel()
         streamTask = nil
@@ -359,6 +363,9 @@ public final class ChatViewModel: ObservableObject {
             // Keep the editable field in step with the order (e.g. after a conversational "改地址").
             if !order.address.isEmpty {
                 shippingAddress = order.address
+            }
+            if order.status == "submitted" {
+                cartItems = []
             }
             timeline.append(.orderStatus(id: UUID(), order: order))
         case .done:
