@@ -315,6 +315,16 @@ def test_prepare_honors_explicit_single_product_count():
     assert "以下1款" in prepared.grounded_answer
 
 
+def test_prepare_honors_generic_shoe_count_and_keeps_results_to_shoes():
+    assistant = _assistant(llm=None)
+
+    prepared = assistant.prepare("给我五个鞋子", session_id=None, top_k=3)
+
+    assert prepared.filters.requested_count == 5
+    assert len(prepared.products) == 5
+    assert all(product.sub_category.endswith("鞋") for product in prepared.products)
+
+
 def test_prepare_splits_one_apple_and_one_android_phone_request():
     assistant = _assistant(llm=None)
 

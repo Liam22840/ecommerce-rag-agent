@@ -15,7 +15,7 @@ from typing import Any
 from server.textutil import normalize
 
 
-_CACHE_SCHEMA = "query-cache-v2-requested-count"
+_CACHE_SCHEMA = "query-cache-v3-requested-count-and-shoe-types"
 
 
 class QueryCache:

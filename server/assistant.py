@@ -922,6 +922,9 @@ class ShoppingAssistant:
         # the pool small, so fetching it all is cheap.
         if filters.sort_by != "relevance" and not filters.required_terms and not filters.requested_specs:
             limit = max(limit, _SORT_CANDIDATE_POOL)
+        type_subs = self._type_subcategories(filters)
+        if type_subs:
+            limit = max(limit, _SORT_CANDIDATE_POOL)
         if _asks_for_apple_and_android_phones(query, filters):
             limit = max(limit, _SORT_CANDIDATE_POOL)
         retrieval = self._retriever.retrieve(query=search_query, filters=filters, limit=limit)
@@ -935,7 +938,6 @@ class ShoppingAssistant:
         # The user named a product type the catalogue can only gate as a sub-category group (运动鞋 ->
         # 跑步鞋/篮球鞋/徒步鞋). Keep only cards in that group so an out-of-type "closest" match (a hoodie
         # for a shoe query) is dropped and the answer is an honest no-match rather than off-type padding.
-        type_subs = self._type_subcategories(filters)
         if type_subs:
             hits = [hit for hit in hits if hit.product["sub_category"] in type_subs]
         hits = _apply_requested_diversity(query, filters, hits)

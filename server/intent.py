@@ -21,6 +21,7 @@ from server.textutil import chinese_to_int, dedupe, json_object, normalize, norm
 REQUIRED_TERM_ALIASES: dict[str, list[str]] = {
     "敏感肌": ["敏感肌", "敏感性", "敏感皮", "干敏", "易敏", "敏皮"],
     "保湿": ["保湿", "补水", "锁水", "滋润"],
+    "运动鞋": ["鞋", "鞋子", "shoes", "shoe"],
 }
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -621,6 +622,7 @@ def _parse_requested_count(text: str) -> int | None:
     cn_patterns = [
         rf"(\d+)\s*{_CN_PRODUCT_UNIT}",
         rf"([一二两三四五六七八九十]+)\s*{_CN_EXPLICIT_PRODUCT_UNIT}",
+        r"([二两三四五六七八九十]+)\s*(?:个|件)",
     ]
     for cn_pattern in cn_patterns:
         for match in re.finditer(cn_pattern, text, flags=re.IGNORECASE):

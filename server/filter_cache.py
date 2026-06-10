@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # deliberately excluded: they are about phrasing or conversation state, not the intent itself.
 _SCALAR_FIELDS = ("max_price", "min_price", "category", "sub_category", "brand", "prefer_low_price", "sort_by")
 _LIST_FIELDS = ("required_terms", "requested_specs", "excluded_brands", "excluded_terms")
-_CACHE_SCHEMA = "filter-cache-v2-requested-count"
+_CACHE_SCHEMA = "filter-cache-v3-requested-count-and-shoe-types"
 
 
 class FilterCache(QueryCache):
