@@ -80,7 +80,7 @@ public struct SSEChatService: ChatService {
             return url
         }
 
-        return URL(string: "http://192.168.0.176:8000/api/chat/stream")!
+        return URL(string: "http://127.0.0.1:8000/api/chat/stream")!
     }
 }
 
