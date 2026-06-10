@@ -22,6 +22,33 @@ def test_settings_loads_dedicated_keys_from_env(monkeypatch):
     assert settings.embedding_api_key == "embedding"
 
 
+def test_settings_loads_ark_chat_aliases_from_env(monkeypatch):
+    monkeypatch.setenv("CHAT_API_KEY", "")
+    monkeypatch.setenv("CHAT_BASE_URL", "")
+    monkeypatch.setenv("CHAT_MODEL", "")
+    monkeypatch.setenv("ARK_CHAT_API_KEY", "ark-chat")
+    monkeypatch.setenv("ARK_CHAT_BASE_URL", "https://ark-chat.example")
+    monkeypatch.setenv("ARK_CHAT_MODEL", "ark-chat-model")
+
+    settings = Settings.load()
+
+    assert settings.chat_api_key == "ark-chat"
+    assert settings.chat_base_url == "https://ark-chat.example"
+    assert settings.chat_model == "ark-chat-model"
+
+
+def test_settings_uses_chat_key_for_tts_by_default(monkeypatch):
+    monkeypatch.setenv("CHAT_API_KEY", "chat")
+    monkeypatch.setenv("TTS_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+
+    settings = Settings.load()
+
+    assert settings.tts_api_key == "chat"
+    assert settings.tts_model == "gemini-3.1-flash-tts-preview"
+    assert settings.tts_voice == "Sulafat"
+
+
 def test_bool_env_parses_truthy_and_falsy(monkeypatch):
     for raw in ("1", "true", "TRUE", "yes", "on"):
         monkeypatch.setenv("RAG_FLAG", raw)

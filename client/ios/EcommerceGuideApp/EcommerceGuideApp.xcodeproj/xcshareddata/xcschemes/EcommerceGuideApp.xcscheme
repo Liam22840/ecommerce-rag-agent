@@ -52,15 +52,14 @@
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
-         <CommandLineArgument
-            argument = "-EcommerceGuideBackendURL"
-            isEnabled = "YES">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "http://192.168.0.184:8000/api/chat/stream"
-            isEnabled = "YES">
-         </CommandLineArgument>
       </CommandLineArguments>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "ECOMMERCE_GUIDE_BACKEND_URL"
+            value = "http://192.168.0.176:8000/api/chat/stream"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

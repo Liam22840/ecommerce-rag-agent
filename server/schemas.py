@@ -154,3 +154,7 @@ class ChatResponse(BaseModel):
     retrieval_source: Literal["vector", "lexical", "hybrid", "none"]
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
+
+
+class TextToSpeechRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)

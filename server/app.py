@@ -9,7 +9,7 @@ from collections.abc import Iterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.assistant import PreparedChat, ShoppingAssistant, _chunk_text
@@ -22,9 +22,15 @@ from server.planner import looks_like_planned_task
 from server.query_cache import QueryCache
 from server.retrieval import ProductRetriever
 from server.schemas import ChatRequest, ChatResponse, ExecutionPlan
+from server.schemas import TextToSpeechRequest
+from server.tts import GeminiTextToSpeechClient, TextToSpeechUnavailable
 
 
-def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    assistant: ShoppingAssistant | None = None,
+    tts_client: GeminiTextToSpeechClient | None = None,
+) -> FastAPI:
     settings = settings or Settings.load()
     app = FastAPI(title="E-commerce RAG Agent API", version="0.1.1")
     app.add_middleware(
@@ -71,6 +77,13 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         settings.query_cache_path,
         max_entries=settings.query_cache_max_entries,
         enabled=settings.enable_query_cache,
+    )
+    app.state.tts_client = tts_client or GeminiTextToSpeechClient(
+        api_key=settings.tts_api_key if settings.enable_tts else None,
+        base_url=settings.tts_base_url,
+        model=settings.tts_model,
+        voice=settings.tts_voice,
+        timeout_seconds=settings.tts_timeout_seconds,
     )
 
     @app.get("/health")
@@ -129,6 +142,19 @@ def create_app(settings: Settings | None = None, assistant: ShoppingAssistant | 
         if product is None:
             raise HTTPException(status_code=404, detail="product not found")
         return product
+
+    @app.post("/api/tts")
+    def text_to_speech(request: TextToSpeechRequest) -> Response:
+        tts_client: GeminiTextToSpeechClient = app.state.tts_client
+        try:
+            audio = tts_client.synthesize_wav(request.text)
+        except TextToSpeechUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        return Response(
+            content=audio,
+            media_type="audio/wav",
+            headers={"Cache-Control": "no-store"},
+        )
 
     return app
 
